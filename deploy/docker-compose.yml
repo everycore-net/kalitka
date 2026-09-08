@@ -1,0 +1,69 @@
+# Kalitka runs in the request path of your reverse proxy and needs nothing else:
+# no Docker socket, no host access, no database. State is a small volume.
+#
+#   cp .env.example .env   # fill in
+#   docker compose up -d --build
+
+services:
+
+  kalitka:
+    build:
+      context: ..
+    image: kalitka:latest
+    restart: unless-stopped
+    environment:
+      Kalitka__BotToken: ${KALITKA_BOT_TOKEN}
+      Kalitka__WebhookPath: ${KALITKA_WEBHOOK_PATH}
+      Kalitka__WebhookSecret: ${KALITKA_WEBHOOK_SECRET}
+      Kalitka__AdminIds__0: ${KALITKA_ADMIN_ID}
+
+      Kalitka__HmacSecret: ${KALITKA_HMAC_SECRET}
+      Kalitka__GateHost: ${KALITKA_HOST}
+      Kalitka__CookieDomain: ${KALITKA_COOKIE_DOMAIN}
+      # How long an approval lasts. Also changeable at runtime with /session.
+      Kalitka__SessionMinutes: "720"
+
+      # The forwardAuth is fail-closed. These networks skip the gate entirely
+      # and are your tested way back in when the gate itself is broken.
+      Kalitka__BypassNetworks__0: 192.168.0.0/16
+      Kalitka__BypassNetworks__1: 10.0.0.0/8
+      Kalitka__BypassNetworks__2: 172.16.0.0/12
+
+      # Hosts guarded on first start. Afterwards the list lives in the volume
+      # and is changed with /hosts and the internal endpoint.
+      # Kalitka__EnforcedHosts__0: app.example.com
+
+      Kalitka__ListsPath: /data/lists.json
+      Kalitka__EnforcedPath: /data/enforced.json
+      Kalitka__SettingsPath: /data/settings.json
+
+      # Optional: Google sign-in as the second way in.
+      Kalitka__GoogleClientId: ${KALITKA_GOOGLE_CLIENT_ID:-}
+      Kalitka__GoogleClientSecret: ${KALITKA_GOOGLE_CLIENT_SECRET:-}
+      # Kalitka__GoogleDomains__0: example.com
+      # Kalitka__GoogleEmails__0: someone@gmail.com
+
+      # Optional: let another service arm/disarm hosts over /internal/*.
+      Kalitka__InternalSecret: ${KALITKA_INTERNAL_SECRET:-}
+    volumes:
+      - kalitka-data:/data
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.kalitka.entrypoints=websecure
+      - traefik.http.routers.kalitka.rule=Host(`${KALITKA_HOST}`)
+      - traefik.http.services.kalitka.loadbalancer.server.port=8080
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  kalitka-data:
+
+networks:
+  proxy:
+    external: true

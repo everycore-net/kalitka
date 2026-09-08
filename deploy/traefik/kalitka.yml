@@ -1,0 +1,37 @@
+# Traefik dynamic configuration: the middleware that asks kalitka before every
+# request, and how to attach it.
+#
+# Two things matter here:
+#
+#  * trustForwardHeader is false. Kalitka decides on the client address, so it
+#    must come from Traefik, not from whatever the client claims.
+#
+#  * The middleware can be attached to every router right away. A host that is
+#    not armed passes straight through, so you can roll this out first and
+#    arm hosts one at a time with /hosts.
+
+http:
+  middlewares:
+    kalitka:
+      forwardAuth:
+        address: "http://kalitka:8080/auth"
+        trustForwardHeader: false
+
+  # Example of attaching it to a router defined in this file. With the Docker
+  # provider you would instead add a label to the container:
+  #   traefik.http.routers.<name>.middlewares=kalitka@file
+  routers:
+    example:
+      rule: "Host(`app.example.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - kalitka
+      service: example
+      tls: {}
+
+  services:
+    example:
+      loadBalancer:
+        servers:
+          - url: "http://app:8080"
