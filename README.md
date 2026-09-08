@@ -111,10 +111,26 @@ silently, a service that does not come up does not.
 
 ## Things worth knowing before you deploy
 
+**Set `TrustedProxies`, or none of the IP logic means anything.** Forwarded
+headers are only believed when the request arrives from a proxy you name here,
+and the client address is then read from `X-Forwarded-For` *from the right*,
+past those proxies. Reading the leftmost entry — the obvious thing to do — lets
+the caller choose their own address, and with it their own place on your allow
+list.
+
+If `TrustedProxies` is empty, headers are ignored entirely and every visitor
+appears to come from the proxy. That is safe on its own, but combined with a
+`BypassNetworks` entry that happens to contain the proxy's own address it would
+wave everyone through — so that combination is refused at startup instead.
+
 **Keep a way back in.** forwardAuth is fail-closed: if kalitka is down, nothing
 reaches the guarded hosts. `BypassNetworks` (your LAN) is the tested way back;
 removing the middleware line is the last resort. Test the bypass *before* you
 need it.
+
+**Only guarded hosts are valid targets.** A redirect target has to be a host
+that is currently armed, not merely one under your domain — otherwise a forged
+`Host` header could steer visitors to a name you never guarded.
 
 **Sessions are a signed cookie, not server state.** Nothing to persist, and
 rotating `HmacSecret` logs everyone out at once. The cookie is set on the parent

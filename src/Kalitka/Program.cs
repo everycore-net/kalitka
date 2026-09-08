@@ -33,26 +33,46 @@ foreach (var (value, name) in new[]
 if (!options.WebhookPath.StartsWith('/'))
     throw new InvalidOperationException("Kalitka__WebhookPath must start with '/'.");
 
+// Behind a proxy with no trusted proxies configured, every visitor looks like
+// the proxy itself. If that address happens to fall inside a bypass network —
+// and a proxy on a Docker network usually does — the gate would wave everyone
+// through while looking perfectly configured. Refuse rather than pretend.
+if (options.BypassNetworks.Length > 0 && options.TrustedProxies.Length == 0)
+{
+    throw new InvalidOperationException(
+        "Kalitka__BypassNetworks is set but Kalitka__TrustedProxies is empty. "
+        + "Without trusted proxies every request appears to come from the proxy, "
+        + "which would put all visitors inside the bypass network. "
+        + "Set TrustedProxies to the address range your reverse proxy connects from.");
+}
+
+if (options.TrustedProxies.Length == 0)
+{
+    app.Logger.LogWarning(
+        "No trusted proxies configured: forwarded headers are ignored and every "
+        + "decision uses the address the connection came from. Behind a reverse "
+        + "proxy that means all visitors share one address.");
+}
+
 app.MapGet("/health", () => Results.Text("ok"));
 
 // ---------------------------------------------------------------------------
 // The forwardAuth endpoint. Your reverse proxy asks this before every request
 // to a guarded host: 200 means let it through, 302 sends the visitor here.
 // ---------------------------------------------------------------------------
-app.MapMethods("/auth", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService gate) =>
+app.MapMethods("/auth", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService gate, ILogger<Program> log) =>
 {
-    var host = ctx.Request.Headers["X-Forwarded-Host"].ToString();
-    if (string.IsNullOrEmpty(host)) host = ctx.Request.Host.Host;
+    var host = ClientHost(ctx, gate);
 
     // Not armed for this host? Straight through — even though the middleware is
     // attached. This is what lets you roll the middleware out first and arm
     // hosts one at a time.
     if (!gate.IsEnforced(host)) return Results.Ok();
 
-    var ip = FirstIp(ctx.Request.Headers["X-Forwarded-For"].ToString());
-    if (string.IsNullOrEmpty(ip)) ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "";
+    var ip = ResolveIp(ctx, gate);
 
-    if (gate.IsBypassed(ip) || gate.IsAllowedIp(ip)) return Results.Ok();
+    if (gate.IsBypassed(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "bypass-network"); return Results.Ok(); }
+    if (gate.IsAllowedIp(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "allow-list"); return Results.Ok(); }
     if (gate.IsCookieValid(ctx.Request.Cookies[gate.CookieName], host)) return Results.Ok();
 
     return Results.Redirect(
@@ -72,8 +92,7 @@ app.MapPost("/request", async (HttpContext ctx, GateService gate, GoogleAuth goo
     var target = form["target"].ToString();
     var input = form["input"].ToString();
 
-    var ip = FirstIp(ctx.Request.Headers["X-Forwarded-For"].ToString());
-    if (string.IsNullOrEmpty(ip)) ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "";
+    var ip = ResolveIp(ctx, gate);
 
     var (state, id) = await gate.Request(target, input, ip, ctx.RequestAborted);
 
@@ -118,7 +137,7 @@ app.MapGet("/google/login", (HttpContext ctx, GateService gate, GoogleAuth googl
     if (!google.Enabled) return Results.NotFound();
 
     var target = ctx.Request.Query["target"].ToString();
-    if (!gate.IsOurHost(target)) return Results.BadRequest();
+    if (!gate.IsGuardedHost(target)) return Results.BadRequest();
 
     return Results.Redirect(google.AuthorizationUrl(gate.BuildState(target)), false);
 });
@@ -128,7 +147,7 @@ app.MapGet("/oauth2/callback", async (HttpContext ctx, GateService gate, GoogleA
     var code = ctx.Request.Query["code"].ToString();
     var state = ctx.Request.Query["state"].ToString();
 
-    if (string.IsNullOrEmpty(code) || !gate.TryReadState(state, out var target) || !gate.IsOurHost(target))
+    if (string.IsNullOrEmpty(code) || !gate.TryReadState(state, out var target) || !gate.IsGuardedHost(target))
         return Results.Content(Pages.Message("Error", "Sign-in was not valid. Please try again."),
             "text/html; charset=utf-8");
 
@@ -244,8 +263,37 @@ app.MapFallback(() => Results.Content(Pages.Message("404", "Nothing here."),
 app.Run();
 return;
 
-static string FirstIp(string forwardedFor) =>
-    forwardedFor.Split(',', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "";
+/// <summary>
+/// The client address, honouring forwarded headers only when the request came
+/// from a proxy we trust. See <see cref="ClientIp"/> for why the leftmost
+/// X-Forwarded-For entry is the wrong one to read.
+/// </summary>
+static string ResolveIp(HttpContext ctx, GateService gate) =>
+    ClientIp.Resolve(
+        ctx.Connection.RemoteIpAddress?.ToString(),
+        ctx.Request.Headers["X-Forwarded-For"].ToString(),
+        ctx.Request.Headers["X-Real-Ip"].ToString(),
+        gate.TrustedProxies).Ip;
+
+/// <summary>
+/// The host being asked for. X-Forwarded-Host is only believed when it came
+/// from a trusted proxy; otherwise the Host header is all we have, and either
+/// way the name still has to be one kalitka actually guards.
+/// </summary>
+static string ClientHost(HttpContext ctx, GateService gate)
+{
+    var trusted = ClientIp.Resolve(
+        ctx.Connection.RemoteIpAddress?.ToString(),
+        ctx.Request.Headers["X-Forwarded-For"].ToString(),
+        ctx.Request.Headers["X-Real-Ip"].ToString(),
+        gate.TrustedProxies).ForwardedHonoured;
+
+    var forwarded = ctx.Request.Headers["X-Forwarded-Host"].ToString();
+    if (trusted && !string.IsNullOrEmpty(forwarded))
+        return forwarded.Split(',')[0].Trim();
+
+    return ctx.Request.Host.Host;
+}
 
 static void SetSessionCookie(HttpContext ctx, GateService gate, string value)
 {

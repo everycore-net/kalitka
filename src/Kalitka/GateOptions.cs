@@ -66,11 +66,42 @@ public sealed class GateOptions
     public string GateHost { get; set; } = "";
 
     /// <summary>
+    /// The reverse proxies kalitka sits behind, in CIDR form. Forwarded headers
+    /// are honoured <b>only</b> for requests arriving from one of these, and the
+    /// client address is then found by walking <c>X-Forwarded-For</c> from the
+    /// right past these entries.
+    ///
+    /// Empty means: trust no headers, decide on the socket address. That is the
+    /// safe direction, but behind a proxy it makes every visitor look like the
+    /// proxy — which is why <see cref="BypassNetworks"/> without this set is
+    /// refused at startup rather than silently letting everyone in.
+    /// </summary>
+    public string[] TrustedProxies { get; set; } = Array.Empty<string>();
+
+    /// <summary>
     /// Networks that skip the gate entirely, in CIDR form. The forwardAuth is
     /// fail-closed, so this is the tested way back in when something breaks.
     /// Leave empty if the gate has no trusted network.
     /// </summary>
     public string[] BypassNetworks { get; set; } = Array.Empty<string>();
+
+    // ---- Rate limiting ------------------------------------------------------
+
+    /// <summary>
+    /// How many times one address may ring within <see cref="RateWindowMinutes"/>.
+    /// Beyond that the door simply does not answer: no page, no notification.
+    /// <c>/mute</c> is the manual version of this; the limit is what stops the
+    /// first hundred rings before you ever reach for it. 0 disables the limit.
+    /// </summary>
+    public int MaxRequestsPerIp { get; set; } = 5;
+
+    public int RateWindowMinutes { get; set; } = 10;
+
+    /// <summary>
+    /// Ceiling on requests waiting for an answer at any moment. Protects the
+    /// operator, not the server: nobody triages fifty notifications. 0 disables.
+    /// </summary>
+    public int MaxPending { get; set; } = 50;
 
     /// <summary>
     /// Hosts the gate is actually enforced for. Hosts not listed pass straight

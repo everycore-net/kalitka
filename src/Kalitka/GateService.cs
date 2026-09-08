@@ -43,6 +43,13 @@ public sealed class GateService
     private readonly object _enforcedLock = new();
     private readonly byte[] _key;
 
+    private readonly List<IPNetwork> _trustedProxies;
+    private readonly List<IPNetwork> _bypassNetworks;
+
+    // Sliding window per address, kept in memory: a restart forgetting who rang
+    // twice is not a problem worth a database.
+    private readonly ConcurrentDictionary<string, List<DateTimeOffset>> _recentByIp = new();
+
     private int _sessionMinutes;
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
 
@@ -58,9 +65,16 @@ public sealed class GateService
         _key = Encoding.UTF8.GetBytes(_options.HmacSecret);
         _sessionMinutes = _options.SessionMinutes;
 
+        _trustedProxies = ClientIp.ParseNetworks(_options.TrustedProxies,
+            bad => _log.LogWarning("Ignoring malformed TrustedProxies entry {Entry}", bad));
+        _bypassNetworks = ClientIp.ParseNetworks(_options.BypassNetworks,
+            bad => _log.LogWarning("Ignoring malformed BypassNetworks entry {Entry}", bad));
+
         LoadEnforced();
         LoadSettings();
     }
+
+    public IReadOnlyList<IPNetwork> TrustedProxies => _trustedProxies;
 
     public string InternalSecret => _options.InternalSecret;
     public string CookieName => _options.CookieName;
@@ -208,21 +222,16 @@ public sealed class GateService
     }
 
     /// <summary>
-    /// Only our own hosts may be redirect targets, or the gate becomes an open
-    /// redirect. The parent domain is derived from <see cref="GateOptions.GateHost"/>:
-    /// gate.example.com allows example.com and anything below it.
+    /// A redirect target must be a host kalitka is actually guarding — nothing
+    /// wider. Matching on "anything under our domain" was not enough: it let a
+    /// forged Host header steer visitors to a name we never guarded, and turned
+    /// the gate into an open redirect for the whole domain.
+    ///
+    /// Since an unguarded host never redirects here in the first place, the
+    /// armed set is the complete and correct list of valid targets.
     /// </summary>
-    public bool IsOurHost(string host)
-    {
-        if (string.IsNullOrWhiteSpace(host)) return false;
-
-        var dot = _options.GateHost.IndexOf('.');
-        if (dot < 0) return false;
-
-        var parent = _options.GateHost[(dot + 1)..];
-        return host.Equals(parent, StringComparison.OrdinalIgnoreCase)
-            || host.EndsWith("." + parent, StringComparison.OrdinalIgnoreCase);
-    }
+    public bool IsGuardedHost(string host) =>
+        !string.IsNullOrWhiteSpace(host) && IsEnforced(host);
 
     // ---- The way back in ----------------------------------------------------
 
@@ -234,13 +243,51 @@ public sealed class GateService
     public bool IsBypassed(string ip)
     {
         if (!IPAddress.TryParse(ip, out var address)) return false;
+        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
 
-        foreach (var network in _options.BypassNetworks)
+        foreach (var network in _bypassNetworks)
         {
-            try { if (IPNetwork.Parse(network.Trim()).Contains(address)) return true; }
-            catch { /* a malformed entry must not break the check */ }
+            if (network.BaseAddress.AddressFamily != address.AddressFamily) continue;
+            if (network.Contains(address)) return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Has this address rung too often lately? Over the limit the door stays
+    /// shut and silent — no page, no notification, nothing to learn from.
+    /// </summary>
+    public bool IsRateLimited(string ip)
+    {
+        if (_options.MaxRequestsPerIp <= 0 || string.IsNullOrEmpty(ip)) return false;
+
+        var now = DateTimeOffset.UtcNow;
+        var window = now.AddMinutes(-_options.RateWindowMinutes);
+
+        var times = _recentByIp.GetOrAdd(ip, _ => new List<DateTimeOffset>());
+        lock (times)
+        {
+            times.RemoveAll(t => t < window);
+            if (times.Count >= _options.MaxRequestsPerIp) return true;
+            times.Add(now);
+        }
+
+        // Keep the dictionary from growing without bound on a scan.
+        if (_recentByIp.Count > 10_000)
+        {
+            foreach (var kv in _recentByIp)
+            {
+                lock (kv.Value) { if (kv.Value.All(t => t < window)) _recentByIp.TryRemove(kv.Key, out _); }
+            }
+        }
+
+        return false;
+    }
+
+    private int PendingCount()
+    {
+        var cutoff = DateTimeOffset.Now.AddMinutes(-_options.PendingMinutes);
+        return _pending.Count(kv => kv.Value.State == "waiting" && kv.Value.Raised >= cutoff);
     }
 
     public bool IsAllowedIp(string ip) => _lists.IsAllowed(ip, "");
@@ -262,29 +309,51 @@ public sealed class GateService
     {
         input = (input ?? "").Trim();
         if (input.Length is 0 or > 120) return ("invalid", "");
-        if (!IsOurHost(target)) return ("invalid", "");
+
+        if (!IsGuardedHost(target))
+        {
+            Audit.Decision(_log, "rejected", target, ip, reason: "target-not-guarded");
+            return ("invalid", "");
+        }
 
         var place = await _geo.Locate(ip, ct);
 
         // Allow list: straight through, no question asked.
-        if (_lists.IsAllowed(ip, input)) return ("allowed", "");
+        if (_lists.IsAllowed(ip, input))
+        {
+            Audit.Decision(_log, "allowed", target, ip, identity: input, reason: "allow-list");
+            return ("allowed", "");
+        }
 
         // Block list: silent rejection, and above all no notification.
         if (_lists.IsBlocked(ip, input, place.CountryCode))
         {
-            _log.LogInformation("Blocked caller turned away: ip={Ip} input={Input} country={Country}",
-                ip, input, place.CountryCode);
+            Audit.Decision(_log, "denied", target, ip, identity: input, reason: "block-list");
             return ("blocked", "");
         }
 
         if (IsMuted)
         {
             _lists.Add("block", "ip", ip, Now());
-            _log.LogInformation("Muted — silently blocked {Ip}", ip);
+            Audit.Decision(_log, "denied", target, ip, identity: input, reason: "muted");
+            return ("blocked", "");
+        }
+
+        // Over the limit the caller gets the same silent refusal as a blocked
+        // one: telling them they were throttled only tells them when to retry.
+        if (IsRateLimited(ip))
+        {
+            Audit.Decision(_log, "denied", target, ip, identity: input, reason: "rate-limited");
             return ("blocked", "");
         }
 
         DropExpired();
+
+        if (_options.MaxPending > 0 && PendingCount() >= _options.MaxPending)
+        {
+            Audit.Decision(_log, "denied", target, ip, identity: input, reason: "pending-limit");
+            return ("blocked", "");
+        }
 
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
         var request = new PendingRequest
@@ -294,6 +363,8 @@ public sealed class GateService
             Raised = DateTimeOffset.Now, State = "waiting"
         };
         _pending[id] = request;
+
+        Audit.Decision(_log, "asked", target, ip, requestId: id, identity: input);
 
         // Notify only now, after the visitor typed something. Otherwise every
         // passing scanner would ring the bell.
@@ -397,9 +468,25 @@ public sealed class GateService
 
         // With several admins the same request is on several phones. Only the
         // first press counts, otherwise the lists collect duplicates.
+        //
+        // This is also the replay guard: an old message keeps its buttons
+        // forever, and a press days later must not resurrect a decision. The
+        // state is terminal after the first press, and the request has to still
+        // be inside its lifetime — an approval nobody is waiting for any more
+        // is not an approval.
         if (request.State != "waiting")
         {
             await _telegram.AnswerCallback(callbackId, "already handled", ct);
+            return;
+        }
+
+        if (request.Raised < DateTimeOffset.Now.AddMinutes(-_options.PendingMinutes))
+        {
+            _pending.TryRemove(request.Id, out _);
+            await _telegram.AnswerCallback(callbackId, "expired", ct);
+            await _telegram.EditMessage(chatId, messageId, "That request has expired.", null, ct);
+            Audit.Decision(_log, "ignored", request.Target, request.Ip,
+                requestId: request.Id, identity: request.Input, adminId: fromId, reason: "callback-too-late");
             return;
         }
 
@@ -452,6 +539,10 @@ public sealed class GateService
                 await _telegram.AnswerCallback(callbackId, null, ct);
                 return;
         }
+
+        Audit.Decision(_log, request.State == "approved" ? "approved" : "denied",
+            request.Target, request.Ip, requestId: request.Id, identity: request.Input,
+            adminId: fromId, reason: verb);
 
         await _telegram.AnswerCallback(callbackId, null, ct);
         await _telegram.EditMessage(chatId, messageId, $"{Describe(request)}\n\n<b>{outcome}</b>", null, ct);

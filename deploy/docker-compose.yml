@@ -23,11 +23,24 @@ services:
       # How long an approval lasts. Also changeable at runtime with /session.
       Kalitka__SessionMinutes: "720"
 
+      # Which proxies may speak for a client. Forwarded headers are honoured
+      # ONLY for requests arriving from one of these, and the client address is
+      # then read from X-Forwarded-For from the right, past them.
+      # For Docker this is the bridge subnet:
+      #   docker network inspect proxy -f '{{(index .IPAM.Config 0).Subnet}}'
+      Kalitka__TrustedProxies__0: 172.18.0.0/16
+
       # The forwardAuth is fail-closed. These networks skip the gate entirely
       # and are your tested way back in when the gate itself is broken.
+      # They are matched against the CLIENT address, so TrustedProxies has to be
+      # right first — the app refuses to start if it is missing.
       Kalitka__BypassNetworks__0: 192.168.0.0/16
       Kalitka__BypassNetworks__1: 10.0.0.0/8
-      Kalitka__BypassNetworks__2: 172.16.0.0/12
+
+      # How often one address may ring, and how many may wait at once.
+      Kalitka__MaxRequestsPerIp: "5"
+      Kalitka__RateWindowMinutes: "10"
+      Kalitka__MaxPending: "50"
 
       # Hosts guarded on first start. Afterwards the list lives in the volume
       # and is changed with /hosts and the internal endpoint.
