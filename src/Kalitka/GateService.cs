@@ -486,6 +486,53 @@ public sealed class GateService
         await _telegram.SendMessage(chatId, text.ToString(), new { inline_keyboard = rows.ToArray() }, ct);
     }
 
+    /// <summary>
+    /// Adds an entry by hand, without waiting for someone to ring first.
+    /// Until this existed the lists could only grow as a reaction: you could
+    /// not wave a colleague through before their first visit, nor turn away an
+    /// address you already knew was trouble.
+    /// </summary>
+    public string ListAddCommand(string list, string argument)
+    {
+        var usage = list == "allow"
+            ? "Usage: <code>/allow ip 203.0.113.5</code> or <code>/allow name anna@example.com</code>"
+            : "Usage: <code>/block ip 203.0.113.5</code>, <code>/block name mallory</code> or <code>/block country CN</code>";
+
+        var parts = (argument ?? "").Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) return usage;
+
+        var type = parts[0].ToLowerInvariant() switch
+        {
+            "ip"                => "ip",
+            "name" or "input"   => "input",
+            "country"           => "country",
+            _                   => ""
+        };
+        if (type.Length == 0) return usage;
+
+        // Country on the allow list would mean "everyone from there walks in".
+        if (list == "allow" && type == "country")
+            return "Country works on the block list only — as a way in it is far too coarse.";
+
+        var value = parts[1].Trim();
+        if (value.Length is 0 or > 120) return usage;
+
+        if (type == "ip" && !IPAddress.TryParse(value, out _))
+            return "That does not look like an IP address.";
+
+        if (type == "country" && value.Length != 2)
+            return "Country must be a two-letter code, e.g. <code>CN</code>.";
+
+        _lists.Add(list, type, value, Now());
+
+        var where = list == "allow" ? "allow list" : "block list";
+        var effect = list == "allow"
+            ? "They will be let through without asking."
+            : "They will be turned away silently, with no notification.";
+
+        return $"Added to the {where}: [{H(type)}] <code>{H(value)}</code>\n{effect}";
+    }
+
     public string MuteCommand(string argument)
     {
         if (argument.Trim() is "off" or "0")

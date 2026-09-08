@@ -205,13 +205,21 @@ app.MapPost(options.WebhookPath, async (HttpContext ctx, GateService gate, ILogg
                 {
                     case "/blocked": await gate.ShowBlockList(chatId, ctx.RequestAborted); break;
                     case "/allowed": await gate.ShowAllowList(chatId, ctx.RequestAborted); break;
+                    case "/allow":   await gate.Reply(chatId, gate.ListAddCommand("allow", argument), ctx.RequestAborted); break;
+                    case "/block":   await gate.Reply(chatId, gate.ListAddCommand("block", argument), ctx.RequestAborted); break;
                     case "/hosts":   await gate.Reply(chatId, gate.HostsCommand(), ctx.RequestAborted); break;
                     case "/mute":    await gate.Reply(chatId, gate.MuteCommand(argument), ctx.RequestAborted); break;
                     case "/unmute":  await gate.Reply(chatId, gate.MuteCommand("off"), ctx.RequestAborted); break;
                     case "/session": await gate.Reply(chatId, gate.SessionCommand(argument), ctx.RequestAborted); break;
                     default:
                         await gate.Reply(chatId,
-                            "kalitka: /blocked, /allowed, /hosts, /mute [min], /unmute, /session [min]",
+                            "kalitka:\n"
+                            + "/allowed, /blocked — show the lists\n"
+                            + "/allow ip|name &lt;value&gt; — let someone in before they ask\n"
+                            + "/block ip|name|country &lt;value&gt; — turn someone away in advance\n"
+                            + "/hosts — which hosts are guarded\n"
+                            + "/mute [min], /unmute\n"
+                            + "/session [min] — how long an approval lasts",
                             ctx.RequestAborted);
                         break;
                 }

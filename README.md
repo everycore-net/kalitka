@@ -83,12 +83,21 @@ curl -X POST -H "X-Kalitka-Internal: <secret>" \
 
 | Command | What it does |
 |---|---|
-| `/blocked` | show the block list, with buttons to remove entries |
-| `/allowed` | show the allow list |
+| `/allowed` | show the allow list, with buttons to remove entries |
+| `/blocked` | show the block list |
+| `/allow ip\|name <value>` | let someone through before they ever ask |
+| `/block ip\|name\|country <value>` | turn someone away in advance |
 | `/hosts` | which hosts are currently guarded |
 | `/mute [min]` | stop notifying; silently block every new caller by IP |
 | `/unmute` | back to normal |
 | `/session [min]` | how long an approval lasts |
+
+Entries also appear on the lists straight from a request: the buttons under a
+notification let you approve *and* remember the IP or the name in one press.
+The commands are for the cases where you know in advance — a colleague arriving
+tomorrow, or an address you have already seen enough of.
+
+`country` works on the block list only. As a way *in* it is far too coarse.
 
 ## Configuration
 
