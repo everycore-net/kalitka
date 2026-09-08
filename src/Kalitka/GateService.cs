@@ -188,6 +188,68 @@ public sealed class GateService
         return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(value)));
     }
 
+    // ---- Hand-off: getting a host-scoped cookie onto the host ---------------
+
+    /// <summary>
+    /// True when sessions belong to a single host. The alternative, one cookie
+    /// on the parent domain, is simpler but shares the session with every
+    /// neighbour under that domain.
+    /// </summary>
+    public bool HostScopedCookies =>
+        !string.Equals(_options.CookieScope, "ParentDomain", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A cookie set while the visitor is on the gate cannot be read by the
+    /// target host — that is the whole reason parent-domain cookies get used.
+    /// Instead the visitor carries a short-lived, single-use token to the target
+    /// in the URL; the auth check there redeems it and sets the cookie on that
+    /// host. Signed, bound to the host, and valid for about a minute.
+    /// </summary>
+    public string BuildHandoff(string target)
+    {
+        var expiry = DateTimeOffset.UtcNow.AddSeconds(_options.HandoffSeconds).ToUnixTimeSeconds();
+        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
+        var body = $"{expiry}:{target}:{nonce}";
+        return $"{body}:{Signature(body)}";
+    }
+
+    public string HandoffUrl(string target) =>
+        $"https://{target}/?{HandoffParameter}={Uri.EscapeDataString(BuildHandoff(target))}";
+
+    public const string HandoffParameter = "__kalitka";
+
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _usedHandoffs = new();
+
+    /// <summary>
+    /// Redeems a hand-off token. Single use: the token travels in a URL, which
+    /// lands in history, logs and referrers, so a second attempt must fail.
+    /// </summary>
+    public bool TryRedeemHandoff(string? token, string host)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+
+        var parts = token.Split(':');
+        if (parts.Length != 4) return false;
+        if (!long.TryParse(parts[0], out var expiry)) return false;
+        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expiry) return false;
+        if (!string.Equals(parts[1], host, StringComparison.OrdinalIgnoreCase)) return false;
+
+        var expected = Signature($"{parts[0]}:{parts[1]}:{parts[2]}");
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(parts[3])))
+            return false;
+
+        // Remember the nonce until the token would have expired anyway.
+        if (!_usedHandoffs.TryAdd(parts[2], DateTimeOffset.UtcNow.AddSeconds(_options.HandoffSeconds)))
+            return false;
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var kv in _usedHandoffs)
+            if (kv.Value < now) _usedHandoffs.TryRemove(kv.Key, out _);
+
+        return true;
+    }
+
     // ---- OAuth state: carries the target, signed, no storage ----------------
 
     public string BuildState(string target)

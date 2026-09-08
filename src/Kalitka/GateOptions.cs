@@ -45,10 +45,31 @@ public sealed class GateOptions
     public string CookieName { get; set; } = "kalitka";
 
     /// <summary>
-    /// Cookie domain. Use the parent domain (<c>.example.com</c>) so one
-    /// approval covers every protected host under it.
+    /// <c>Host</c> (default) — the session cookie belongs to the guarded host
+    /// alone. A visitor is handed a short-lived, single-use token in the URL,
+    /// and the cookie is set on the host itself when that token is redeemed.
+    /// Nothing is shared between hosts, so a weaker neighbour cannot receive or
+    /// replay the session of a stronger one. Requires the proxy to pass the
+    /// <c>Set-Cookie</c> header back from the auth request — see the Traefik
+    /// example.
+    ///
+    /// <c>ParentDomain</c> — one cookie on the parent domain covers every
+    /// guarded host. Fewer moving parts and one approval for everything, at the
+    /// price of that sharing. Choose it knowingly.
+    /// </summary>
+    public string CookieScope { get; set; } = "Host";
+
+    /// <summary>
+    /// Cookie domain, used only when <see cref="CookieScope"/> is
+    /// <c>ParentDomain</c> — e.g. <c>.example.com</c>.
     /// </summary>
     public string CookieDomain { get; set; } = "";
+
+    /// <summary>
+    /// Lifetime of the hand-off token in the URL. Seconds, not minutes: it only
+    /// has to survive one redirect.
+    /// </summary>
+    public int HandoffSeconds { get; set; } = 60;
 
     /// <summary>How long an approval lasts. Changeable at runtime via the bot.</summary>
     public int SessionMinutes { get; set; } = 720;

@@ -133,8 +133,18 @@ that is currently armed, not merely one under your domain — otherwise a forged
 `Host` header could steer visitors to a name you never guarded.
 
 **Sessions are a signed cookie, not server state.** Nothing to persist, and
-rotating `HmacSecret` logs everyone out at once. The cookie is set on the parent
-domain, so one approval covers every guarded host.
+rotating `HmacSecret` logs everyone out at once.
+
+By default the cookie belongs to **one host** (`CookieScope=Host`): an approved
+visitor carries a one-shot token to the target, and the auth check there turns
+it into a host-only cookie. A weaker neighbour under the same domain never
+receives it. This needs the proxy to pass `Set-Cookie` back from the auth
+request — see the Traefik example; without that line visitors loop back to the
+gate forever.
+
+`CookieScope=ParentDomain` puts a single cookie on the parent domain instead:
+one approval covers every guarded host, at the price of sharing the session with
+every host under that domain. A deliberate trade, not a default.
 
 **The waiting page polls.** A human has to press a button somewhere, and no
 callback can reach that browser. Behaviour-based protection (CrowdSec,

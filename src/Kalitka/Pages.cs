@@ -60,7 +60,7 @@ public static class Pages
         + "<script>"
         + $"var id={JsonSerializer.Serialize(id)},target={JsonSerializer.Serialize(target)};"
         + "function poll(){fetch('/wait/status?id='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{"
-        + "if(d.state=='approved'){document.getElementById('m').textContent='Approved, continuing…';location.href='https://'+target;}"
+        + "if(d.state=='approved'){document.getElementById('m').textContent='Approved, continuing…';location.href=d.url||('https://'+target);}"
         + "else if(d.state=='denied'){document.getElementById('m').textContent='Refused.';}"
         + "else if(d.state=='gone'){document.getElementById('m').textContent='Expired. Reload to ask again.';}"
         + "else{setTimeout(poll,3000);}});}"
