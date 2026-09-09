@@ -61,7 +61,7 @@ app.MapGet("/health", () => Results.Text("ok"));
 // The forwardAuth endpoint. Your reverse proxy asks this before every request
 // to a guarded host: 200 means let it through, 302 sends the visitor here.
 // ---------------------------------------------------------------------------
-app.MapMethods("/auth", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService gate, ILogger<Program> log) =>
+var authCheck = (HttpContext ctx, GateService gate, ILogger<Program> log) =>
 {
     if (IsAllowed(ctx, gate, log, out var host)) return Results.Ok();
 
@@ -76,22 +76,30 @@ app.MapMethods("/auth", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService g
 
     return Results.Redirect(
         $"https://{gate.GateHost}/request?target={Uri.EscapeDataString(host)}", false);
-});
+};
 
-// ---------------------------------------------------------------------------
-// The same verdict, mapped for a proxy whose auth check acts on the status
-// code and does the redirect itself — nginx `auth_request`, which turns a 401
-// into a redirect via `error_page`. Allow → 200, otherwise → 401, never a
-// redirect (a 3xx would confuse those proxies). The Location header carries
-// where the gate is, for a proxy that can use it.
-// ---------------------------------------------------------------------------
-app.MapMethods("/authz", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService gate, ILogger<Program> log) =>
+// The same verdict, mapped for a proxy whose auth check acts on the status code
+// and does the redirect itself — nginx `auth_request`, which turns a 401 into a
+// redirect via `error_page`. Allow → 200, otherwise → 401, never a redirect (a
+// 3xx would confuse those proxies). The Location header carries where the gate
+// is, for a proxy that can use it.
+var authzCheck = (HttpContext ctx, GateService gate, ILogger<Program> log) =>
 {
     if (IsAllowed(ctx, gate, log, out var host)) return Results.Ok();
 
     ctx.Response.Headers.Location = $"https://{gate.GateHost}/request?target={Uri.EscapeDataString(host)}";
     return Results.Unauthorized();
-});
+};
+
+// Both exact and catch-all: Traefik/Caddy call `/auth` verbatim, while Envoy
+// `ext_authz` prepends its `path_prefix` to the *original* request path, so the
+// check arrives as `/auth/<whatever>`. The verdict never depends on the path, so
+// the trailing segments are simply ignored — and the prefix keeps these checks
+// clear of kalitka's own routes (/request, /wait, ...).
+app.MapMethods("/auth", new[] { "GET", "HEAD" }, authCheck);
+app.MapMethods("/auth/{*rest}", new[] { "GET", "HEAD" }, authCheck);
+app.MapMethods("/authz", new[] { "GET", "HEAD" }, authzCheck);
+app.MapMethods("/authz/{*rest}", new[] { "GET", "HEAD" }, authzCheck);
 
 // ---------------------------------------------------------------------------
 // What the visitor sees
