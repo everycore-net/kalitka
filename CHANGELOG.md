@@ -7,6 +7,23 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **nginx `auth_request` support** via a new status-only `/authz` endpoint: it
+  answers `200` or `401` (never a redirect), and nginx does the redirect to the
+  gate itself with `error_page`. Traefik, Caddy and Envoy `ext_authz` keep using
+  `/auth` (which returns the `302`). Example config in
+  [`deploy/nginx/kalitka.conf`](deploy/nginx/kalitka.conf); a
+  [Reverse proxies](README.md#reverse-proxies) section explains which endpoint
+  each proxy uses. Both endpoints share one verdict.
+
+### Changed
+
+- Internal refactor: `GateService` split into `ApprovalEngine` (the decision
+  core, free of HTTP and Telegram), `INotifier`/`TelegramNotifier` (the Telegram
+  face), and a thin `GateService` facade. No behaviour change — it makes room for
+  more proxies and other notifiers without reopening the core.
+
 ## [0.2.1] - 2026-09-09
 
 ### Added

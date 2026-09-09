@@ -63,18 +63,7 @@ app.MapGet("/health", () => Results.Text("ok"));
 // ---------------------------------------------------------------------------
 app.MapMethods("/auth", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService gate, ILogger<Program> log) =>
 {
-    var host = ClientHost(ctx, gate);
-
-    // Not armed for this host? Straight through — even though the middleware is
-    // attached. This is what lets you roll the middleware out first and arm
-    // hosts one at a time.
-    if (!gate.IsEnforced(host)) return Results.Ok();
-
-    var ip = ResolveIp(ctx, gate);
-
-    if (gate.IsBypassed(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "bypass-network"); return Results.Ok(); }
-    if (gate.IsAllowedIp(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "allow-list"); return Results.Ok(); }
-    if (gate.IsCookieValid(ctx.Request.Cookies[gate.CookieName], host)) return Results.Ok();
+    if (IsAllowed(ctx, gate, log, out var host)) return Results.Ok();
 
     // A redirect is only meaningful to a top-level navigation. A WebSocket
     // handshake, an XHR/fetch or a sub-resource cannot follow a 302 to the
@@ -87,6 +76,21 @@ app.MapMethods("/auth", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService g
 
     return Results.Redirect(
         $"https://{gate.GateHost}/request?target={Uri.EscapeDataString(host)}", false);
+});
+
+// ---------------------------------------------------------------------------
+// The same verdict, mapped for a proxy whose auth check acts on the status
+// code and does the redirect itself — nginx `auth_request`, which turns a 401
+// into a redirect via `error_page`. Allow → 200, otherwise → 401, never a
+// redirect (a 3xx would confuse those proxies). The Location header carries
+// where the gate is, for a proxy that can use it.
+// ---------------------------------------------------------------------------
+app.MapMethods("/authz", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService gate, ILogger<Program> log) =>
+{
+    if (IsAllowed(ctx, gate, log, out var host)) return Results.Ok();
+
+    ctx.Response.Headers.Location = $"https://{gate.GateHost}/request?target={Uri.EscapeDataString(host)}";
+    return Results.Unauthorized();
 });
 
 // ---------------------------------------------------------------------------
@@ -307,6 +311,32 @@ static string ClientHost(HttpContext ctx, GateService gate)
         return forwarded.Split(',')[0].Trim();
 
     return ctx.Request.Host.Host;
+}
+
+/// <summary>
+/// The verdict every HTTP frontend shares: may this request through, or must it
+/// ring the gate? Unarmed hosts, the LAN bypass, the allow list and a valid
+/// session all pass; everything else is a challenge. How a challenge is
+/// expressed — a 302 for Traefik/Caddy/Envoy, a 401 for nginx auth_request — is
+/// the frontend's business, not this method's. <paramref name="host"/> is the
+/// guarded name, needed to build the gate URL.
+/// </summary>
+static bool IsAllowed(HttpContext ctx, GateService gate, ILogger log, out string host)
+{
+    host = ClientHost(ctx, gate);
+
+    // Not armed for this host? Straight through — even though the middleware is
+    // attached. This is what lets you roll the middleware out first and arm
+    // hosts one at a time.
+    if (!gate.IsEnforced(host)) return true;
+
+    var ip = ResolveIp(ctx, gate);
+
+    if (gate.IsBypassed(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "bypass-network"); return true; }
+    if (gate.IsAllowedIp(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "allow-list"); return true; }
+    if (gate.IsCookieValid(ctx.Request.Cookies[gate.CookieName], host)) return true;
+
+    return false;
 }
 
 /// <summary>
