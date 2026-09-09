@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-09
+
 ### Added
 
 - **Test suite** (25 tests) covering the security-critical paths: forged and
