@@ -5,7 +5,8 @@ using Microsoft.Extensions.Options;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<GateOptions>(builder.Configuration.GetSection("Kalitka"));
-builder.Services.AddHttpClient<TelegramClient>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddHttpClient<ITelegramClient, TelegramClient>();
 builder.Services.AddHttpClient<GeoLookup>();
 builder.Services.AddHttpClient<GoogleAuth>();
 builder.Services.AddSingleton<AccessLists>();
@@ -323,3 +324,6 @@ static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
     || ctx.Request.Headers["X-Kalitka-Internal"].ToString() != gate.InternalSecret
         ? Results.StatusCode(403)
         : null;
+
+// Exposed so integration tests can host the real pipeline via WebApplicationFactory.
+public partial class Program;

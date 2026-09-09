@@ -32,7 +32,8 @@ public sealed class GateService
         public string State = "waiting";   // waiting | approved | denied
     }
 
-    private readonly TelegramClient _telegram;
+    private readonly ITelegramClient _telegram;
+    private readonly TimeProvider _clock;
     private readonly GeoLookup _geo;
     private readonly AccessLists _lists;
     private readonly GateOptions _options;
@@ -53,14 +54,15 @@ public sealed class GateService
     private int _sessionMinutes;
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
 
-    public GateService(TelegramClient telegram, GeoLookup geo, AccessLists lists,
-        IOptions<GateOptions> options, ILogger<GateService> log)
+    public GateService(ITelegramClient telegram, GeoLookup geo, AccessLists lists,
+        IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null)
     {
         _telegram = telegram;
         _geo = geo;
         _lists = lists;
         _options = options.Value;
         _log = log;
+        _clock = clock ?? TimeProvider.System;
 
         _key = Encoding.UTF8.GetBytes(_options.HmacSecret);
         _sessionMinutes = _options.SessionMinutes;
@@ -161,7 +163,7 @@ public sealed class GateService
     /// </summary>
     public string BuildGlobalCookie() => Sign($"{Expiry()}:*");
 
-    private long Expiry() => DateTimeOffset.UtcNow.AddMinutes(_sessionMinutes).ToUnixTimeSeconds();
+    private long Expiry() => _clock.GetUtcNow().AddMinutes(_sessionMinutes).ToUnixTimeSeconds();
 
     private string Sign(string body) => $"{body}:{Signature(body)}";
 
@@ -172,7 +174,7 @@ public sealed class GateService
         var parts = cookie.Split(':');
         if (parts.Length != 3) return false;
         if (!long.TryParse(parts[0], out var expiry)) return false;
-        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expiry) return false;
+        if (_clock.GetUtcNow().ToUnixTimeSeconds() > expiry) return false;
 
         if (parts[1] != "*" && !string.Equals(parts[1], host, StringComparison.OrdinalIgnoreCase))
             return false;
@@ -192,7 +194,7 @@ public sealed class GateService
 
     public string BuildState(string target)
     {
-        var body = $"{DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeSeconds()}|{target}";
+        var body = $"{_clock.GetUtcNow().AddMinutes(10).ToUnixTimeSeconds()}|{target}";
         return $"{Convert.ToBase64String(Encoding.UTF8.GetBytes(body))}.{Signature(body)}";
     }
 
@@ -215,7 +217,7 @@ public sealed class GateService
 
         var fields = body.Split('|', 2);
         if (fields.Length != 2 || !long.TryParse(fields[0], out var expiry)) return false;
-        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expiry) return false;
+        if (_clock.GetUtcNow().ToUnixTimeSeconds() > expiry) return false;
 
         target = fields[1];
         return true;
@@ -261,7 +263,7 @@ public sealed class GateService
     {
         if (_options.MaxRequestsPerIp <= 0 || string.IsNullOrEmpty(ip)) return false;
 
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.GetUtcNow();
         var window = now.AddMinutes(-_options.RateWindowMinutes);
 
         var times = _recentByIp.GetOrAdd(ip, _ => new List<DateTimeOffset>());
@@ -286,7 +288,7 @@ public sealed class GateService
 
     private int PendingCount()
     {
-        var cutoff = DateTimeOffset.Now.AddMinutes(-_options.PendingMinutes);
+        var cutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
         return _pending.Count(kv => kv.Value.State == "waiting" && kv.Value.Raised >= cutoff);
     }
 
@@ -298,7 +300,7 @@ public sealed class GateService
     /// While muted, every new caller goes silently onto the block list by IP.
     /// For the night someone decides to hammer the door.
     /// </summary>
-    public bool IsMuted => DateTimeOffset.Now < _mutedUntil;
+    public bool IsMuted => _clock.GetUtcNow() < _mutedUntil;
     public DateTimeOffset MutedUntil => _mutedUntil;
 
     public bool IsAdmin(long telegramUserId) => _options.AdminIds.Contains(telegramUserId);
@@ -360,7 +362,7 @@ public sealed class GateService
         {
             Id = id, Target = target, Input = input, Ip = ip,
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
-            Raised = DateTimeOffset.Now, State = "waiting"
+            Raised = _clock.GetUtcNow(), State = "waiting"
         };
         _pending[id] = request;
 
@@ -389,12 +391,12 @@ public sealed class GateService
 
     private void DropExpired()
     {
-        var cutoff = DateTimeOffset.Now.AddMinutes(-_options.PendingMinutes);
+        var cutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
         foreach (var kv in _pending)
             if (kv.Value.Raised < cutoff) _pending.TryRemove(kv.Key, out _);
     }
 
-    private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm");
+    private string Now() => _clock.GetUtcNow().ToString("yyyy-MM-dd HH:mm");
     private static string H(string s) => WebUtility.HtmlEncode(s);
 
     private string Describe(PendingRequest r)
@@ -480,7 +482,7 @@ public sealed class GateService
             return;
         }
 
-        if (request.Raised < DateTimeOffset.Now.AddMinutes(-_options.PendingMinutes))
+        if (request.Raised < _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes))
         {
             _pending.TryRemove(request.Id, out _);
             await _telegram.AnswerCallback(callbackId, "expired", ct);
@@ -633,7 +635,7 @@ public sealed class GateService
         }
 
         var minutes = int.TryParse(argument.Trim(), out var m) && m > 0 ? m : 60;
-        _mutedUntil = DateTimeOffset.Now.AddMinutes(minutes);
+        _mutedUntil = _clock.GetUtcNow().AddMinutes(minutes);
 
         return $"Muted for {minutes} min (until {_mutedUntil:HH:mm}). "
              + "Everyone who rings is silently added to the block list by IP.";

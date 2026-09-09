@@ -5,6 +5,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Test suite** (20 tests) covering the security-critical paths: forged and
+  proxied `X-Forwarded-For`, cookie tampering / expiry / secret rotation, the
+  `/auth` decision for armed, unarmed and bypass cases, wrong webhook secret,
+  non-admin callback, and callback replay against resolved and expired requests.
+  Time is injected via `TimeProvider`, so the time-based tests are deterministic.
+
+### Changed
+
+- `TelegramClient` now sits behind `ITelegramClient`, and `GateService` takes a
+  `TimeProvider` — both to make the above testable, no behaviour change.
+
+### Fixed
+
+- `appsettings.json` carried JSON "comment" keys under `Logging:LogLevel` whose
+  values were parsed as log levels and threw on first use. Removed; the tests
+  caught it.
+
+### Dependencies
+
+- Adopted the safe GitHub Actions bumps (checkout, setup-dotnet, login,
+  metadata, build-push). Major bumps of the .NET base images are held back and
+  ignored by Dependabot — that is a runtime baseline change, done deliberately.
+
 ## [0.2.0] - 2026-09-09
 
 First public release. The product is already whole — Telegram approval, allow

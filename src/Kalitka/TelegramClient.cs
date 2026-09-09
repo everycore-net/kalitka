@@ -22,7 +22,7 @@ namespace Kalitka;
 /// Note also that the token sits in the URL path, so the default HttpClient
 /// logger would write it to the log in clear text — see appsettings.json.
 /// </summary>
-public sealed class TelegramClient
+public sealed class TelegramClient : ITelegramClient
 {
     private static readonly JsonSerializerOptions Json = new()
     {

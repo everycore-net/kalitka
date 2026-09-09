@@ -53,6 +53,18 @@ login behind it, and it is not meant to.
 - A Telegram bot ([@BotFather](https://t.me/botfather)) and your Telegram user id.
 - Docker, or .NET 9 if you would rather run it directly.
 
+## Tests
+
+```bash
+dotnet test
+```
+
+The suite is small and pointed at the security-critical behaviour: forged and
+proxied `X-Forwarded-For`, cookie tampering / expiry / secret rotation, the
+`/auth` decision for armed, unarmed and bypass cases, a wrong Telegram webhook
+secret, a non-admin callback, and callback replay against a resolved or expired
+request. Time is driven by a fake clock, so nothing sleeps and nothing is flaky.
+
 ## Getting started
 
 ```bash
