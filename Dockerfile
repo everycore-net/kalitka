@@ -1,7 +1,7 @@
 # Build and runtime in one file; the result is a small image that runs as a
 # non-root user. Kalitka sits in the HTTP request path and needs nothing from
 # the host: no Docker socket, no SSH key, no volumes beyond its own state.
-FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
 WORKDIR /src
 COPY src/Kalitka/Kalitka.csproj ./Kalitka/
 RUN dotnet restore Kalitka/Kalitka.csproj
