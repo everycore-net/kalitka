@@ -48,8 +48,9 @@ login behind it, and it is not meant to.
 
 ## Requirements
 
-- A reverse proxy that speaks forwardAuth (Traefik, nginx `auth_request`,
-  Caddy `forward_auth`).
+- A reverse proxy with an external-auth hook: Traefik `forwardAuth`, Caddy
+  `forward_auth`, Envoy `ext_authz`, or nginx `auth_request`. See
+  [Reverse proxies](#reverse-proxies) for which endpoint each one uses.
 - A Telegram bot ([@BotFather](https://t.me/botfather)) and your Telegram user id.
 - Docker, or .NET 9 if you would rather run it directly.
 
@@ -90,6 +91,34 @@ Attach the middleware in your proxy — see
 curl -X POST -H "X-Kalitka-Internal: <secret>" \
      "http://kalitka:8080/internal/toggle?host=app.example.com&on=1"
 ```
+
+## Reverse proxies
+
+Kalitka answers the proxy's auth check at one of two endpoints. They reach the
+same verdict — unarmed hosts, the LAN bypass, the allow list and a valid session
+pass; everything else has to ring — and differ only in how a challenge is
+expressed, because the proxies differ in what they do with the answer.
+
+| Proxy | Endpoint | A challenge is | Redirect to the gate is done by |
+|---|---|---|---|
+| Traefik `forwardAuth` | `/auth` | `302` (or `401` for a sub-resource) | kalitka; the proxy returns it |
+| Caddy `forward_auth` | `/auth` | same | same |
+| Envoy `ext_authz` (HTTP) | `/auth` | same | same |
+| nginx `auth_request` | `/authz` | `401`, always | nginx, via `error_page` |
+
+`/auth` redirects with a `302`, which the first three hand back to the visitor.
+It also answers a sub-resource (a WebSocket, an XHR, an asset — anything that is
+not a top-level navigation) with `401` instead of a `302`, so a single-page app
+behind the gate fails cleanly rather than hanging on a blank page.
+
+`/authz` only ever answers `200` or `401` — never a redirect — because
+`auth_request` acts on the status code alone and a `3xx` would become a `500`.
+nginx turns the `401` into the redirect itself. The gate URL is also returned in
+the `Location` header, for a proxy that can use it.
+
+Examples: [`deploy/traefik/kalitka.yml`](deploy/traefik/kalitka.yml) and
+[`deploy/nginx/kalitka.conf`](deploy/nginx/kalitka.conf). Either way, point
+`TrustedProxies` at the address your proxy connects from — see below.
 
 ## Bot commands
 
