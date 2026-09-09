@@ -65,6 +65,23 @@ public class AuthEndpointTests : IClassFixture<GateFactory>
         Assert.Equal(HttpStatusCode.Found, res.StatusCode);
     }
 
+    [Fact]
+    public async Task Auth_check_ignores_a_prepended_path_prefix()
+    {
+        // Envoy ext_authz prepends its path_prefix to the original request path,
+        // so the check arrives as /auth/<something>. The verdict is the same —
+        // an armed navigation without a cookie is still sent to the gate.
+        var req = new HttpRequestMessage(HttpMethod.Get, "/auth/some/original/path");
+        req.Headers.Add("X-Forwarded-Host", "app.example.com");
+        req.Headers.Add("X-Test-Peer", "10.0.0.5");
+        req.Headers.Add("X-Forwarded-For", "203.0.113.9");
+        req.Headers.Add("Sec-Fetch-Mode", "navigate");
+
+        var res = await Client().SendAsync(req);
+        Assert.Equal(HttpStatusCode.Found, res.StatusCode);
+        Assert.Contains("gate.example.com/request", res.Headers.Location!.ToString());
+    }
+
     [Theory]
     [InlineData("websocket")]   // a SignalR/WebSocket handshake
     [InlineData("cors")]        // an XHR/fetch

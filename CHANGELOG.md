@@ -7,15 +7,20 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-10
+
 ### Added
 
-- **nginx `auth_request` support** via a new status-only `/authz` endpoint: it
-  answers `200` or `401` (never a redirect), and nginx does the redirect to the
-  gate itself with `error_page`. Traefik, Caddy and Envoy `ext_authz` keep using
-  `/auth` (which returns the `302`). Example config in
-  [`deploy/nginx/kalitka.conf`](deploy/nginx/kalitka.conf); a
+- **More reverse proxies.** A new status-only `/authz` endpoint for nginx
+  `auth_request` — it answers `200` or `401` (never a redirect), and nginx does
+  the redirect to the gate itself with `error_page`. Example configs for nginx
+  and Envoy `ext_authz` join the existing Traefik one. Traefik, Caddy and Envoy
+  use `/auth` (the `302`); nginx uses `/authz`. Both endpoints share one verdict,
+  and both accept a trailing path prefix so Envoy's `path_prefix` works. A new
   [Reverse proxies](README.md#reverse-proxies) section explains which endpoint
-  each proxy uses. Both endpoints share one verdict.
+  each proxy uses. Examples:
+  [`deploy/nginx/kalitka.conf`](deploy/nginx/kalitka.conf),
+  [`deploy/envoy/kalitka.yaml`](deploy/envoy/kalitka.yaml).
 
 ### Changed
 

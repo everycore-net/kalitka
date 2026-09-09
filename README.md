@@ -116,9 +116,14 @@ behind the gate fails cleanly rather than hanging on a blank page.
 nginx turns the `401` into the redirect itself. The gate URL is also returned in
 the `Location` header, for a proxy that can use it.
 
-Examples: [`deploy/traefik/kalitka.yml`](deploy/traefik/kalitka.yml) and
-[`deploy/nginx/kalitka.conf`](deploy/nginx/kalitka.conf). Either way, point
+Examples: [`deploy/traefik/kalitka.yml`](deploy/traefik/kalitka.yml),
+[`deploy/nginx/kalitka.conf`](deploy/nginx/kalitka.conf) and
+[`deploy/envoy/kalitka.yaml`](deploy/envoy/kalitka.yaml). Either way, point
 `TrustedProxies` at the address your proxy connects from — see below.
+
+Envoy `ext_authz` prepends its `path_prefix` to the original path, so the check
+reaches kalitka as `/auth/<original>`; the verdict ignores the path, and both
+`/auth` and `/authz` accept a trailing prefix for exactly this.
 
 ## Bot commands
 

@@ -1,0 +1,64 @@
+# Envoy: gate a route with kalitka via the ext_authz HTTP filter.
+#
+# Envoy sends an authorization sub-request to kalitka before the real request.
+# On a non-2xx answer it returns that response to the client, so kalitka's /auth
+# (a 302 to the gate) redirects the visitor — the same as Traefik and Caddy.
+#
+# Two Envoy specifics, both handled below:
+#
+#  * path_prefix. Envoy prepends it to the ORIGINAL request path, so the check
+#    arrives at kalitka as `/auth/<original path>`. kalitka ignores the trailing
+#    path for its verdict; the prefix keeps these checks clear of its own routes.
+#  * headers. kalitka decides on the client address and the target host, so they
+#    must reach it. Forward the client's cookie and X-Forwarded-* to the auth
+#    request, make sure your edge sets X-Forwarded-Host to the original host, and
+#    set kalitka's Kalitka__TrustedProxies to Envoy's address — otherwise the
+#    client-IP logic means nothing (see the README).
+#
+# This is the filter-and-cluster fragment; slot the filter into your HTTP
+# connection manager's http_filters (before the router) and add the cluster.
+
+http_filters:
+  - name: envoy.filters.http.ext_authz
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+      transport_api_version: V3
+      # Fail closed: if kalitka is unreachable, do not let the request through.
+      failure_mode_allow: false
+      http_service:
+        server_uri:
+          uri: http://kalitka:8080
+          cluster: kalitka
+          timeout: 2s
+        path_prefix: /auth
+        authorization_request:
+          allowed_headers:
+            patterns:
+              - exact: cookie
+              - exact: x-forwarded-host
+              - exact: x-forwarded-for
+        authorization_response:
+          # Let the gate URL from kalitka's response reach the client. Location
+          # is allowed automatically once this list is set, but being explicit
+          # documents the intent.
+          allowed_client_headers:
+            patterns:
+              - exact: location
+  # The router must come last.
+  - name: envoy.filters.http.router
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+clusters:
+  - name: kalitka
+    connect_timeout: 1s
+    type: STRICT_DNS
+    load_assignment:
+      cluster_name: kalitka
+      endpoints:
+        - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: kalitka
+                    port_value: 8080
