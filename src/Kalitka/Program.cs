@@ -76,6 +76,15 @@ app.MapMethods("/auth", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService g
     if (gate.IsAllowedIp(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "allow-list"); return Results.Ok(); }
     if (gate.IsCookieValid(ctx.Request.Cookies[gate.CookieName], host)) return Results.Ok();
 
+    // A redirect is only meaningful to a top-level navigation. A WebSocket
+    // handshake, an XHR/fetch or a sub-resource cannot follow a 302 to the
+    // gate's HTML page: the handshake fails, the fetch reads HTML as its data,
+    // and a single-page app behind the gate hangs on a blank screen. Answer
+    // those with 401 instead, so the app fails cleanly and its own login flow
+    // (or a full reload) can take over.
+    if (!IsTopLevelNavigation(ctx.Request))
+        return Results.Unauthorized();
+
     return Results.Redirect(
         $"https://{gate.GateHost}/request?target={Uri.EscapeDataString(host)}", false);
 });
@@ -298,6 +307,27 @@ static string ClientHost(HttpContext ctx, GateService gate)
         return forwarded.Split(',')[0].Trim();
 
     return ctx.Request.Host.Host;
+}
+
+/// <summary>
+/// Whether this request is a top-level navigation — the only kind that can act
+/// on a 302 to the gate. The reverse proxy forwards the original request's
+/// headers here, so the browser's Fetch Metadata tells us: only
+/// <c>Sec-Fetch-Mode: navigate</c> is a document navigation; a WebSocket
+/// handshake, an XHR/fetch or a sub-resource is anything else. Older clients
+/// send no Fetch Metadata, so fall back to <c>Accept</c>: a document navigation
+/// asks for text/html, a fetch or asset does not. (Note: <c>Upgrade</c> and
+/// <c>Connection</c> are hop-by-hop and do not survive the proxy hop, so a
+/// WebSocket cannot be recognised by those — Sec-Fetch/Accept is what remains.)
+/// </summary>
+static bool IsTopLevelNavigation(HttpRequest req)
+{
+    var mode = req.Headers["Sec-Fetch-Mode"].ToString();
+    if (!string.IsNullOrEmpty(mode))
+        return string.Equals(mode, "navigate", StringComparison.OrdinalIgnoreCase);
+
+    return req.Headers["Accept"].ToString()
+        .Contains("text/html", StringComparison.OrdinalIgnoreCase);
 }
 
 static void SetSessionCookie(HttpContext ctx, GateService gate, string value)

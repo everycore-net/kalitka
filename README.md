@@ -167,9 +167,14 @@ fail2ban) may read that as crawling and ban the visitor — at the *entrypoint*,
 which then affects every host, not just the guarded ones. Exempt the `/wait`
 path there, keyed on host and path.
 
-**Single-page apps and a redirect gate.** A cached SPA shell can hit the gate's
-redirect with a background request and end up showing a blank page. Kalitka
-suits things you open fresh far better than a PWA you keep installed.
+**Single-page apps behind the gate.** Only a top-level navigation is redirected
+to the gate; a WebSocket, an XHR/fetch or any sub-resource that arrives without
+a session gets a `401` instead, because it cannot follow a redirect (the
+handshake fails, the fetch reads HTML as its data — and the app hangs blank).
+The request kind is read from `Sec-Fetch-Mode`, with `Accept` as a fallback for
+older clients. So a cached SPA shell whose background call finds no session sees
+a clean `401` rather than a blank page. It still cannot reach the app until you
+approve — a `401` is not a way in — but it fails honestly instead of hanging.
 
 **Country blocking is coarse.** It is offered for the block list only, and not
 at all for the allow list — "everyone from this country walks in" is never right.

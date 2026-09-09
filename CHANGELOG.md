@@ -9,11 +9,12 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Test suite** (20 tests) covering the security-critical paths: forged and
+- **Test suite** (25 tests) covering the security-critical paths: forged and
   proxied `X-Forwarded-For`, cookie tampering / expiry / secret rotation, the
-  `/auth` decision for armed, unarmed and bypass cases, wrong webhook secret,
-  non-admin callback, and callback replay against resolved and expired requests.
-  Time is injected via `TimeProvider`, so the time-based tests are deterministic.
+  `/auth` decision for armed, unarmed and bypass cases, the 401-vs-redirect
+  split for sub-resources, wrong webhook secret, non-admin callback, and
+  callback replay against resolved and expired requests. Time is injected via
+  `TimeProvider`, so the time-based tests are deterministic.
 
 ### Changed
 
@@ -22,6 +23,14 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Sub-resources without a session now get `401`, not a redirect.** A `302` to
+  the gate's HTML page is only meaningful to a top-level navigation. A WebSocket
+  handshake cannot follow it, an XHR/fetch reads the HTML as its payload, and a
+  single-page app behind the gate hung on a blank screen. The request kind is
+  read from the browser's Fetch Metadata (`Sec-Fetch-Mode`; `Accept` as a
+  fallback for older clients): only a real navigation is redirected, everything
+  else fails cleanly with `401`. This is the "Single-page apps and a redirect
+  gate" caveat, turned from a caveat into correct behaviour.
 - `appsettings.json` carried JSON "comment" keys under `Logging:LogLevel` whose
   values were parsed as log levels and threw on first use. Removed; the tests
   caught it.

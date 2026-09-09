@@ -14,12 +14,19 @@ public class AuthEndpointTests : IClassFixture<GateFactory>
             AllowAutoRedirect = false
         });
 
-    private static HttpRequestMessage Auth(string host, string? peer = null, string? xff = null)
+    // secFetch defaults to "navigate" so the common case is a document
+    // navigation — the only request kind a redirect to the gate can act on.
+    // The sub-resource cases pass "websocket"/"cors"/"no-cors" explicitly.
+    private static HttpRequestMessage Auth(
+        string host, string? peer = null, string? xff = null,
+        string? secFetch = "navigate", string? accept = null)
     {
         var req = new HttpRequestMessage(HttpMethod.Get, "/auth");
         req.Headers.Add("X-Forwarded-Host", host);
         if (peer is not null) req.Headers.Add("X-Test-Peer", peer);
         if (xff is not null) req.Headers.Add("X-Forwarded-For", xff);
+        if (secFetch is not null) req.Headers.Add("Sec-Fetch-Mode", secFetch);
+        if (accept is not null) req.Headers.Add("Accept", accept);
         return req;
     }
 
@@ -56,5 +63,41 @@ public class AuthEndpointTests : IClassFixture<GateFactory>
         var res = await Client().SendAsync(
             Auth("app.example.com", peer: "10.0.0.5", xff: "192.168.1.10, 203.0.113.9"));
         Assert.Equal(HttpStatusCode.Found, res.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("websocket")]   // a SignalR/WebSocket handshake
+    [InlineData("cors")]        // an XHR/fetch
+    [InlineData("no-cors")]     // a sub-resource (script, style, image)
+    public async Task Sub_resource_without_cookie_gets_401_not_a_redirect(string mode)
+    {
+        // A redirect to the gate's HTML is useless to these: the handshake
+        // cannot follow it, the fetch would read HTML as its payload, and a
+        // single-page app hangs on a blank screen. 401 lets it fail cleanly.
+        var res = await Client().SendAsync(
+            Auth("app.example.com", peer: "10.0.0.5", xff: "203.0.113.9", secFetch: mode));
+        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Old_client_without_fetch_metadata_is_a_navigation_when_it_asks_for_html()
+    {
+        // No Sec-Fetch-* (e.g. an older browser): a document navigation still
+        // advertises text/html in Accept, so it is redirected to the gate.
+        var res = await Client().SendAsync(
+            Auth("app.example.com", peer: "10.0.0.5", xff: "203.0.113.9",
+                 secFetch: null, accept: "text/html,application/xhtml+xml"));
+        Assert.Equal(HttpStatusCode.Found, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Old_client_fetch_without_html_accept_gets_401()
+    {
+        // No Sec-Fetch-* and no text/html in Accept: an XHR from an older
+        // browser. Nothing to redirect, so it is refused, not sent to the gate.
+        var res = await Client().SendAsync(
+            Auth("app.example.com", peer: "10.0.0.5", xff: "203.0.113.9",
+                 secFetch: null, accept: "application/json"));
+        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
     }
 }
