@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # NuGet packages the app depends on.
+  - package-ecosystem: nuget
+    directory: /src/Kalitka
+    schedule:
+      interval: weekly
+
+  # The actions used in the workflows above.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # The base images in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

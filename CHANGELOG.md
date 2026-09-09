@@ -5,7 +5,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-09-09
+
+First public release. The product is already whole — Telegram approval, allow
+and block lists, optional Google sign-in, per-host arming, mute, session
+control — so it ships now rather than waiting for thirty more features.
+
+Not yet here: an automated test suite (tracked in the issues) and per-host
+isolation of the Google session (see Known limitations).
 
 ### Added
 

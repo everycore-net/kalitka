@@ -7,6 +7,7 @@
     <RootNamespace>Kalitka</RootNamespace>
     <AssemblyName>Kalitka</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
 </Project>
