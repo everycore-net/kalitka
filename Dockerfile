@@ -8,7 +8,7 @@ RUN dotnet restore Kalitka/Kalitka.csproj
 COPY src/Kalitka/ ./Kalitka/
 RUN dotnet publish Kalitka/Kalitka.csproj -c Release -o /app
 
-FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine
 WORKDIR /app
 COPY --from=build /app .
 
