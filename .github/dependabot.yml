@@ -12,8 +12,13 @@ updates:
     schedule:
       interval: weekly
 
-  # The base images in the Dockerfile.
+  # The base images in the Dockerfile. Major bumps are ignored: the .NET base
+  # image major is the project's runtime baseline, moved deliberately (and with
+  # a matching TargetFramework), not as routine maintenance.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "mcr.microsoft.com/dotnet/*"
+        update-types: ["version-update:semver-major"]
