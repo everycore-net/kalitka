@@ -18,19 +18,9 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
-      - run: dotnet restore src/Kalitka/Kalitka.csproj
+      - run: dotnet build src/Kalitka/Kalitka.csproj -c Release
 
-      - run: dotnet build src/Kalitka/Kalitka.csproj -c Release --no-restore
-
-      # A test suite is tracked separately. When test projects exist this picks
-      # them up; until then it is a no-op rather than a failure.
-      - name: Test
-        run: |
-          if ls tests/**/*.csproj >/dev/null 2>&1; then
-            dotnet test -c Release
-          else
-            echo "No test projects yet — skipping."
-          fi
+      - run: dotnet test tests/Kalitka.Tests/Kalitka.Tests.csproj -c Release
 
   image:
     # Prove the Dockerfile still builds on every change. No push here; that only
