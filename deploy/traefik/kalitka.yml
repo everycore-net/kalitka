@@ -1,16 +1,10 @@
 # Traefik dynamic configuration: the middleware that asks kalitka before every
 # request, and how to attach it.
 #
-# Three things matter here:
+# Two things matter here:
 #
 #  * trustForwardHeader is false. Kalitka decides on the client address, so it
 #    must come from Traefik, not from whatever the client claims.
-#
-#  * authResponseHeaders passes Set-Cookie back. With the default
-#    CookieScope=Host the session cookie belongs to the guarded host, so it can
-#    only be set on a response coming from that host — which is this one.
-#    Without it a visitor is approved, receives no cookie, and loops back to the
-#    gate forever.
 #
 #  * The middleware can be attached to every router right away. A host that is
 #    not armed passes straight through, so you can roll this out first and
@@ -22,8 +16,6 @@ http:
       forwardAuth:
         address: "http://kalitka:8080/auth"
         trustForwardHeader: false
-        authResponseHeaders:
-          - "Set-Cookie"
 
   # Example of attaching it to a router defined in this file. With the Docker
   # provider you would instead add a label to the container:

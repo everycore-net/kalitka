@@ -16,11 +16,6 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RateWindowMinutes`) and a ceiling on requests waiting for an answer
   (`MaxPending`). Over the limit the door stays silent — the same answer a
   blocked caller gets, so there is nothing to learn from it.
-- **Host-scoped sessions.** `CookieScope=Host` is now the default: an approved
-  visitor carries a short-lived, single-use token to the target, and the auth
-  check there turns it into a cookie for that host alone. Neighbours under the
-  same parent domain never receive it. `CookieScope=ParentDomain` keeps the old
-  one-cookie-for-everything behaviour as an explicit choice.
 - **Audit log.** One structured line per decision: request id, host, client
   address, identity, admin and reason. Secrets, tokens and cookie values are
   never logged.
@@ -48,24 +43,14 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   containing that address would wave everyone through while the configuration
   looked entirely correct.
 
+### Known limitations
+
+- A Google sign-in grants a session for every guarded host under the cookie
+  domain. Manual approvals are already per-host. Per-host isolation of the
+  Google session is tracked as a feature (one-time hand-off token) and is not in
+  this release.
+
 ### Upgrading
-
-`CookieScope=Host` needs the proxy to pass `Set-Cookie` back from the auth
-request. For Traefik:
-
-```yaml
-http:
-  middlewares:
-    kalitka:
-      forwardAuth:
-        address: "http://kalitka:8080/auth"
-        trustForwardHeader: false
-        authResponseHeaders:
-          - "Set-Cookie"
-```
-
-Without it a visitor is approved, receives no cookie and loops back to the gate.
-Set `CookieScope=ParentDomain` if you would rather keep the previous behaviour.
 
 Set `TrustedProxies` to the range your reverse proxy connects from. For Docker:
 

@@ -45,31 +45,16 @@ public sealed class GateOptions
     public string CookieName { get; set; } = "kalitka";
 
     /// <summary>
-    /// <c>Host</c> (default) — the session cookie belongs to the guarded host
-    /// alone. A visitor is handed a short-lived, single-use token in the URL,
-    /// and the cookie is set on the host itself when that token is redeemed.
-    /// Nothing is shared between hosts, so a weaker neighbour cannot receive or
-    /// replay the session of a stronger one. Requires the proxy to pass the
-    /// <c>Set-Cookie</c> header back from the auth request — see the Traefik
-    /// example.
+    /// Cookie domain, e.g. <c>.example.com</c>. The cookie is set on the parent
+    /// domain so the browser carries it to every guarded host under it.
     ///
-    /// <c>ParentDomain</c> — one cookie on the parent domain covers every
-    /// guarded host. Fewer moving parts and one approval for everything, at the
-    /// price of that sharing. Choose it knowingly.
-    /// </summary>
-    public string CookieScope { get; set; } = "Host";
-
-    /// <summary>
-    /// Cookie domain, used only when <see cref="CookieScope"/> is
-    /// <c>ParentDomain</c> — e.g. <c>.example.com</c>.
+    /// Note on scope: a manual approval is still bound to the one host it was
+    /// granted for (the host is signed into the cookie), so it does not open a
+    /// sibling. A Google sign-in, however, grants a session for <b>every</b>
+    /// guarded host under this domain. Per-host isolation of the Google session
+    /// is a tracked feature, not part of this release — see the README.
     /// </summary>
     public string CookieDomain { get; set; } = "";
-
-    /// <summary>
-    /// Lifetime of the hand-off token in the URL. Seconds, not minutes: it only
-    /// has to survive one redirect.
-    /// </summary>
-    public int HandoffSeconds { get; set; } = 60;
 
     /// <summary>How long an approval lasts. Changeable at runtime via the bot.</summary>
     public int SessionMinutes { get; set; } = 720;

@@ -132,19 +132,22 @@ need it.
 that is currently armed, not merely one under your domain — otherwise a forged
 `Host` header could steer visitors to a name you never guarded.
 
+**A Google session covers sibling hosts.** Repeated because it is the one sharp
+edge in this release: see "Know the scope of an approval" above.
+
 **Sessions are a signed cookie, not server state.** Nothing to persist, and
-rotating `HmacSecret` logs everyone out at once.
+rotating `HmacSecret` logs everyone out at once. The cookie is set on the parent
+domain (`CookieDomain`, e.g. `.example.com`) so the browser carries it to every
+guarded host.
 
-By default the cookie belongs to **one host** (`CookieScope=Host`): an approved
-visitor carries a one-shot token to the target, and the auth check there turns
-it into a host-only cookie. A weaker neighbour under the same domain never
-receives it. This needs the proxy to pass `Set-Cookie` back from the auth
-request — see the Traefik example; without that line visitors loop back to the
-gate forever.
-
-`CookieScope=ParentDomain` puts a single cookie on the parent domain instead:
-one approval covers every guarded host, at the price of sharing the session with
-every host under that domain. A deliberate trade, not a default.
+**Know the scope of an approval.** A *manual* approval is bound to the one host
+it was granted for — the host is signed into the cookie, so it does not open a
+sibling. A *Google sign-in*, however, grants a session for **every** guarded
+host under the cookie domain: approve once, in for all of them. If your guarded
+hosts differ in sensitivity, weigh that before you enable Google. Per-host
+isolation of the Google session is a
+[tracked feature](https://github.com/everycore-net/kalitka/issues/1), deliberately
+not in this first release.
 
 **The waiting page polls.** A human has to press a button somewhere, and no
 callback can reach that browser. Behaviour-based protection (CrowdSec,

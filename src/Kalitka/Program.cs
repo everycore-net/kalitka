@@ -75,22 +75,6 @@ app.MapMethods("/auth", new[] { "GET", "HEAD" }, (HttpContext ctx, GateService g
     if (gate.IsAllowedIp(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "allow-list"); return Results.Ok(); }
     if (gate.IsCookieValid(ctx.Request.Cookies[gate.CookieName], host)) return Results.Ok();
 
-    // The visitor arrives carrying a hand-off token. Redeem it, set the cookie
-    // on *this* host, and send them to the same URL without the token so it
-    // does not linger in history, logs or referrers.
-    var handoff = ctx.Request.Query[GateService.HandoffParameter].ToString();
-    if (!string.IsNullOrEmpty(handoff))
-    {
-        if (gate.TryRedeemHandoff(handoff, host))
-        {
-            SetSessionCookie(ctx, gate, gate.BuildCookie(host), hostOnly: true);
-            Audit.Decision(log, "allowed", host, ip, reason: "handoff");
-            return Results.Redirect(CleanUrl(ctx, host), false);
-        }
-
-        Audit.Decision(log, "denied", host, ip, reason: "handoff-invalid");
-    }
-
     return Results.Redirect(
         $"https://{gate.GateHost}/request?target={Uri.EscapeDataString(host)}", false);
 });
@@ -112,7 +96,11 @@ app.MapPost("/request", async (HttpContext ctx, GateService gate, GoogleAuth goo
 
     var (state, id) = await gate.Request(target, input, ip, ctx.RequestAborted);
 
-    if (state == "allowed") return Results.Redirect(Continue(ctx, gate, target), false);
+    if (state == "allowed")
+    {
+        SetSessionCookie(ctx, gate, gate.BuildCookie(target));
+        return Results.Redirect($"https://{target}", false);
+    }
 
     return state switch
     {
@@ -134,7 +122,8 @@ app.MapGet("/wait/status", (HttpContext ctx, GateService gate) =>
     if (state == "approved")
     {
         var target = gate.TargetOf(id) ?? "";
-        return Results.Json(new { state = "approved", url = Continue(ctx, gate, target) });
+        SetSessionCookie(ctx, gate, gate.BuildCookie(target));
+        return Results.Json(new { state = "approved", target });
     }
 
     return Results.Json(new { state = state == "denied" ? "denied" : "waiting" });
@@ -169,16 +158,11 @@ app.MapGet("/oauth2/callback", async (HttpContext ctx, GateService gate, GoogleA
 
     Audit.Decision(app.Logger, "approved", target, ResolveIp(ctx, gate), identity: email, reason: "google");
 
-    // With parent-domain cookies a proven identity earns a session everywhere at
-    // once. With host-scoped cookies it earns one for the host that was asked
-    // for — the Google session makes the next host a single click anyway.
-    if (!gate.HostScopedCookies)
-    {
-        SetSessionCookie(ctx, gate, gate.BuildGlobalCookie());
-        return Results.Redirect($"https://{target}", false);
-    }
-
-    return Results.Redirect(gate.HandoffUrl(target), false);
+    // A proven identity earns a session for every guarded host under the cookie
+    // domain, not just this one. Per-host isolation of this is a tracked feature
+    // (one-time hand-off token), deliberately not in this release.
+    SetSessionCookie(ctx, gate, gate.BuildGlobalCookie());
+    return Results.Redirect($"https://{target}", false);
 });
 
 // ---------------------------------------------------------------------------
@@ -315,37 +299,7 @@ static string ClientHost(HttpContext ctx, GateService gate)
     return ctx.Request.Host.Host;
 }
 
-/// <summary>
-/// Where to send an approved visitor. With host-scoped cookies they carry a
-/// one-shot token to the target, which the auth check there redeems into a
-/// cookie for that host alone. With parent-domain cookies the cookie is set
-/// here and covers everything.
-/// </summary>
-static string Continue(HttpContext ctx, GateService gate, string target)
-{
-    if (gate.HostScopedCookies) return gate.HandoffUrl(target);
-
-    SetSessionCookie(ctx, gate, gate.BuildCookie(target));
-    return $"https://{target}";
-}
-
-/// <summary>The same URL the visitor asked for, minus the hand-off token.</summary>
-static string CleanUrl(HttpContext ctx, string host)
-{
-    var query = ctx.Request.Query
-        .Where(kv => kv.Key != GateService.HandoffParameter)
-        .Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value.ToString())}")
-        .ToArray();
-
-    var path = ctx.Request.Headers["X-Forwarded-Uri"].ToString();
-    if (string.IsNullOrEmpty(path)) path = "/";
-    var cut = path.IndexOf('?');
-    if (cut >= 0) path = path[..cut];
-
-    return $"https://{host}{path}" + (query.Length > 0 ? "?" + string.Join("&", query) : "");
-}
-
-static void SetSessionCookie(HttpContext ctx, GateService gate, string value, bool hostOnly = false)
+static void SetSessionCookie(HttpContext ctx, GateService gate, string value)
 {
     var cookie = new CookieOptions
     {
@@ -356,9 +310,10 @@ static void SetSessionCookie(HttpContext ctx, GateService gate, string value, bo
         Path = "/"
     };
 
-    // No Domain attribute makes it a host-only cookie: neighbours under the
-    // same parent domain never receive it.
-    if (!hostOnly && !string.IsNullOrWhiteSpace(gate.CookieDomain)) cookie.Domain = gate.CookieDomain;
+    // Set on the parent domain so the browser carries it to every guarded host.
+    // A manual approval is still bound to one host inside the cookie; a Google
+    // session is not — see the tracked issue on per-host isolation.
+    if (!string.IsNullOrWhiteSpace(gate.CookieDomain)) cookie.Domain = gate.CookieDomain;
 
     ctx.Response.Cookies.Append(gate.CookieName, value, cookie);
 }
