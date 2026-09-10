@@ -7,6 +7,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **License: MIT → AGPL-3.0-or-later.** From the next release onward kalitka is
+  licensed under the GNU Affero GPL v3 (see [LICENSE](LICENSE)). This closes the
+  "run a modified copy as a service without giving anything back" gap and is the
+  basis for an optional separate **commercial license**. Contributions are now made
+  under a Contributor License Agreement ([CLA.md](CLA.md), [CONTRIBUTING.md](CONTRIBUTING.md)),
+  which is what keeps dual-licensing possible. **Releases up to and including 0.11.0
+  remain available under the MIT License** — the change is not retroactive.
+
 ## [0.11.0] - 2026-09-10
 
 ### Added
