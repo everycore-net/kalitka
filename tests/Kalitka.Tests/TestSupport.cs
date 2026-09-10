@@ -82,6 +82,12 @@ public sealed class GateFactory : WebApplicationFactory<Program>
         builder.UseSetting("Kalitka:ListsPath", Path.Combine(_stateDir, "lists.json"));
         builder.UseSetting("Kalitka:EnforcedPath", Path.Combine(_stateDir, "enforced.json"));
         builder.UseSetting("Kalitka:SettingsPath", Path.Combine(_stateDir, "settings.json"));
+        // Enough for the web control plane to be "enabled": Google configured and
+        // an admin allowlist present. No network is hit unless a real OIDC code is
+        // exchanged, which the tests never do — they mint the admin cookie directly.
+        builder.UseSetting("Kalitka:GoogleClientId", "test-client");
+        builder.UseSetting("Kalitka:GoogleClientSecret", "test-secret");
+        builder.UseSetting("Kalitka:AdminEmails:0", "admin@example.com");
 
         builder.ConfigureTestServices(services =>
         {

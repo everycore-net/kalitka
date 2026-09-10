@@ -22,6 +22,12 @@ public enum CallbackOutcome { Expired, AlreadyHandled, Ignored, Decided }
 /// a decision was actually taken, the request and a one-line description of it.</summary>
 public sealed record CallbackResult(CallbackOutcome Outcome, PendingRequest? Request = null, string? Text = null);
 
+/// <summary>A read-only view of a request, for a frontend that lists them (the
+/// web control plane). A snapshot copy, so callers cannot mutate engine state.</summary>
+public sealed record PendingView(
+    string Id, string Target, string Input, string Ip,
+    string Country, string CountryCode, string City, DateTimeOffset Raised, string State);
+
 /// <summary>
 /// The decision core, with no idea how it is asked or answered. It owns the
 /// pending requests, the policies (allow/block/bypass/rate-limit/mute), the
@@ -347,6 +353,24 @@ public sealed class ApprovalEngine
     public string? StateOf(string id) => _pending.TryGetValue(id, out var r) ? r.State : null;
     public string? TargetOf(string id) => _pending.TryGetValue(id, out var r) ? r.Target : null;
 
+    /// <summary>
+    /// A snapshot of the requests currently in memory, newest first — for the web
+    /// control plane to list. Includes resolved ones until they age out, so it
+    /// backs both the pending view and a short-lived history; durable history is
+    /// the audit log (a later, store-backed item).
+    /// </summary>
+    public IReadOnlyList<PendingView> PendingSnapshot() =>
+        _pending.Values
+            .OrderByDescending(r => r.Raised)
+            .Select(r => new PendingView(
+                r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State))
+            .ToList();
+
+    public PendingView? RequestView(string id) =>
+        _pending.TryGetValue(id, out var r)
+            ? new PendingView(r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State)
+            : null;
+
     private void DropExpired()
     {
         var cutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
@@ -369,7 +393,7 @@ public sealed class ApprovalEngine
     /// approval nobody is waiting for any more is not an approval — hence the
     /// lifetime check as well.
     /// </summary>
-    public CallbackResult Decide(string id, string verb, long adminId)
+    public CallbackResult Decide(string id, string verb, string actor)
     {
         if (!_pending.TryGetValue(id, out var request))
             return new CallbackResult(CallbackOutcome.Expired);
@@ -381,7 +405,7 @@ public sealed class ApprovalEngine
         {
             _pending.TryRemove(request.Id, out _);
             Audit.Decision(_log, "ignored", request.Target, request.Ip,
-                requestId: request.Id, identity: request.Input, adminId: adminId, reason: "callback-too-late");
+                requestId: request.Id, identity: request.Input, actor: actor, reason: "callback-too-late");
             return new CallbackResult(CallbackOutcome.Expired);
         }
 
@@ -436,7 +460,7 @@ public sealed class ApprovalEngine
 
         Audit.Decision(_log, request.State == "approved" ? "approved" : "denied",
             request.Target, request.Ip, requestId: request.Id, identity: request.Input,
-            adminId: adminId, reason: verb);
+            actor: actor, reason: verb);
 
         return new CallbackResult(CallbackOutcome.Decided, request, outcome);
     }

@@ -109,7 +109,7 @@ public sealed class TelegramNotifier : INotifier
             return;
         }
 
-        var result = _engine.Decide(argument, verb, fromId);
+        var result = _engine.Decide(argument, verb, $"telegram:{fromId}");
 
         switch (result.Outcome)
         {

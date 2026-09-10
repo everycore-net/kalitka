@@ -17,12 +17,14 @@ public static class Audit
     public const string Category = "Kalitka.Audit";
 
     public static void Decision(ILogger log, string decision, string host, string clientIp,
-        string? requestId = null, string? identity = null, long? adminId = null, string? reason = null)
+        string? requestId = null, string? identity = null, string? actor = null, string? reason = null)
     {
         // Structured properties, not string concatenation: this is meant to be
-        // read by a machine first and a human second.
+        // read by a machine first and a human second. The actor is typed by
+        // channel — telegram:123456789, google:<sub> — so approvers stay
+        // distinguishable as more channels appear.
         log.LogInformation(
-            "audit decision={Decision} host={Host} clientIp={ClientIp} requestId={RequestId} identity={Identity} admin={AdminId} reason={Reason}",
-            decision, host, clientIp, requestId ?? "-", identity ?? "-", adminId?.ToString() ?? "-", reason ?? "-");
+            "audit decision={Decision} host={Host} clientIp={ClientIp} requestId={RequestId} identity={Identity} actor={Actor} reason={Reason}",
+            decision, host, clientIp, requestId ?? "-", identity ?? "-", actor ?? "-", reason ?? "-");
     }
 }

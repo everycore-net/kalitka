@@ -55,10 +55,18 @@ services:
       Kalitka__SettingsPath: /data/settings.json
 
       # Optional: Google sign-in as the second way in.
+      # Authorised redirect URIs at Google: https://<KALITKA_HOST>/oauth2/callback
+      # and, for the web control plane, https://<KALITKA_HOST>/admin/oauth2/callback
       Kalitka__GoogleClientId: ${KALITKA_GOOGLE_CLIENT_ID:-}
       Kalitka__GoogleClientSecret: ${KALITKA_GOOGLE_CLIENT_SECRET:-}
       # Kalitka__GoogleDomains__0: example.com
       # Kalitka__GoogleEmails__0: someone@gmail.com
+
+      # Optional: web control plane at /admin. Who may OPERATE kalitka (distinct
+      # from who may enter hosts). AdminEmails is exact-match and primary;
+      # AdminDomains is a broader, explicit mode. Neither set = web login off.
+      # Kalitka__AdminEmails__0: ${KALITKA_ADMIN_EMAIL:-}
+      # Kalitka__AdminDomains__0: example.com
 
       # Optional: let another service arm/disarm hosts over /internal/*.
       Kalitka__InternalSecret: ${KALITKA_INTERNAL_SECRET:-}

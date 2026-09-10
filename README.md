@@ -125,6 +125,40 @@ Envoy `ext_authz` prepends its `path_prefix` to the original path, so the check
 reaches kalitka as `/auth/<original>`; the verdict ignores the path, and both
 `/auth` and `/authz` accept a trailing prefix for exactly this.
 
+## Web control plane
+
+Besides Telegram, kalitka has a small authenticated web console at `/admin` on
+its own host (`https://gate.example.com/admin`) — a second channel over the same
+engine. Telegram stays; the console is additive.
+
+```
+/admin/dashboard     overview + waiting count
+/admin/requests      requests waiting for a decision
+/admin/requests/{id} one request — approve / deny / remember / block
+/admin/history       recently resolved
+```
+
+**Who may operate it** is a separate allowlist from who may *enter* guarded hosts:
+
+- `AdminEmails` — the primary mechanism, exact match (`sergej@example.com`).
+- `AdminDomains` — a deliberately broader, **explicitly-enabled** mode. A whole
+  domain is "anyone the org gave an account", a large blast radius for a console
+  that can approve access — so it is not an equivalent default. With both set the
+  check is OR; with neither set the web login is **disabled** (fail-closed), and
+  Telegram approval still works.
+
+Login is Google OIDC (only a verified e-mail on the allowlist gets in; the stable
+`sub` keys the session). Add the console's redirect URI to your Google client:
+
+```
+https://gate.example.com/admin/oauth2/callback
+```
+
+The admin session is a separate signed cookie (its own derived key, `SameSite=Strict`,
+scoped to `/admin`, short absolute lifetime) — web access to a guarded app grants
+nothing here. State-changing actions are POSTs with a CSRF token. Login is OIDC,
+so there is no password to brute-force.
+
 ## Bot commands
 
 | Command | What it does |

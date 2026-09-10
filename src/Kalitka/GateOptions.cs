@@ -161,6 +161,24 @@ public sealed class GateOptions
     /// <summary>Who may enter via Google: whole domains and/or single addresses.</summary>
     public string[] GoogleDomains { get; set; } = Array.Empty<string>();
     public string[] GoogleEmails { get; set; } = Array.Empty<string>();
+
+    // ---- Web control plane (admin) -----------------------------------------
+
+    /// <summary>
+    /// Who may operate kalitka through the web control plane (<c>/admin</c>) —
+    /// distinct from <see cref="GoogleEmails"/> (who <i>enters</i> guarded hosts).
+    /// <see cref="AdminEmails"/> is the primary mechanism (exact match).
+    /// <see cref="AdminDomains"/> is a deliberately broader, explicitly-enabled
+    /// mode: a whole domain is "anyone the org gave an account", a large blast
+    /// radius for a plane that can approve access. With both set the check is OR.
+    /// With neither set the web control plane's login is disabled (fail closed);
+    /// Telegram approval still works independently.
+    /// </summary>
+    public string[] AdminEmails { get; set; } = Array.Empty<string>();
+    public string[] AdminDomains { get; set; } = Array.Empty<string>();
+
+    /// <summary>Absolute lifetime of an admin session. Shorter than a visitor one.</summary>
+    public int AdminSessionMinutes { get; set; } = 480;
 }
 
 /// <summary>How wide a Google-proven identity's session reaches. See
