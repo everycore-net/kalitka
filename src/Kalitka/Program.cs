@@ -344,28 +344,30 @@ app.MapPost("/action", async (HttpContext ctx, OneTimeTokenService tokens, IRepl
 // engine. Google OIDC + an explicit admin allowlist + a separate admin session
 // (admin:v1 key). Telegram approval stays independently available.
 // ---------------------------------------------------------------------------
-app.MapGet("/admin", () => Results.Redirect("/admin/dashboard", false));
+var adminGroup = app.MapGroup("/admin");
 
-app.MapGet("/admin/login", (HttpContext ctx, AdminAuth admin) =>
+adminGroup.MapGet("", () => Results.Redirect("/admin/dashboard", false));
+
+adminGroup.MapGet("/login", (HttpContext ctx, AdminAuth auth) =>
 {
-    if (admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]) is not null)
+    if (auth.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]) is not null)
         return Results.Redirect("/admin/dashboard", false);
     var error = ctx.Request.Query["error"].ToString();
-    return Results.Content(AdminPages.Login(admin.Enabled, string.IsNullOrEmpty(error) ? null : error),
+    return Results.Content(AdminPages.Login(auth.Enabled, string.IsNullOrEmpty(error) ? null : error),
         "text/html; charset=utf-8");
 });
 
-app.MapGet("/admin/login/google", (HttpContext ctx, AdminAuth admin) =>
+adminGroup.MapGet("/login/google", (HttpContext ctx, AdminAuth auth) =>
 {
-    if (!admin.Enabled) return Results.NotFound();
-    return Results.Redirect(admin.LoginUrl(ctx.Request.Query["return"].ToString()), false);
+    if (!auth.Enabled) return Results.NotFound();
+    return Results.Redirect(auth.LoginUrl(ctx.Request.Query["return"].ToString()), false);
 });
 
-app.MapGet("/admin/oauth2/callback", async (HttpContext ctx, AdminAuth admin, GateService gate, ILogger<Program> log) =>
+adminGroup.MapGet("/oauth2/callback", async (HttpContext ctx, AdminAuth auth, GateService gate, ILogger<Program> log) =>
 {
-    if (!admin.Enabled) return Results.NotFound();
+    if (!auth.Enabled) return Results.NotFound();
 
-    var result = await admin.CompleteLogin(
+    var result = await auth.CompleteLogin(
         ctx.Request.Query["code"].ToString(), ctx.Request.Query["state"].ToString(), ctx.RequestAborted);
 
     if (!result.Ok || result.Identity is null)
@@ -374,63 +376,65 @@ app.MapGet("/admin/oauth2/callback", async (HttpContext ctx, AdminAuth admin, Ga
         return Results.Redirect("/admin/login?error=" + Uri.EscapeDataString("Sign-in was not accepted."), false);
     }
 
-    SetAdminCookie(ctx, admin.IssueCookie(result.Identity));
+    SetAdminCookie(ctx, auth.IssueCookie(result.Identity));
     Audit.Decision(log, "admin-login", "-", ResolveIp(ctx, gate),
         identity: result.Identity.Email, actor: result.Identity.Actor, reason: "google");
     return Results.Redirect(result.ReturnPath, false);
 });
 
-app.MapPost("/admin/logout", (HttpContext ctx) =>
+adminGroup.MapPost("/logout", (HttpContext ctx) =>
 {
     ctx.Response.Cookies.Delete(AdminAuth.CookieName, new CookieOptions { Path = "/admin", Secure = true });
     return Results.Redirect("/admin/login", false);
 });
 
-app.MapGet("/admin/dashboard", (HttpContext ctx, AdminAuth admin, GateService gate) =>
+// One guard for everything below: a valid admin session, re-checked against the
+// allowlist on every request (removing someone from AdminEmails revokes their
+// session now, not at expiry). A protected endpoint added to this group cannot
+// forget the check. The verified identity is put on HttpContext.Items.
+var guarded = adminGroup.MapGroup("");
+guarded.AddEndpointFilter(async (ctx, next) =>
 {
-    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
-    if (who is null) return Results.Redirect("/admin/login?return=/admin/dashboard", false);
+    var http = ctx.HttpContext;
+    var who = http.RequestServices.GetRequiredService<AdminAuth>()
+        .ReadCookie(http.Request.Cookies[AdminAuth.CookieName]);
+    if (who is null)
+        return Results.Redirect("/admin/login?return=" + Uri.EscapeDataString(http.Request.Path), false);
+    http.Items["admin"] = who;
+    return await next(ctx);
+});
+
+guarded.MapGet("/dashboard", (HttpContext ctx, GateService gate) =>
+{
     var pending = gate.PendingSnapshot();
     return Results.Content(
-        AdminPages.Dashboard(who, pending.Count(r => r.State == "waiting"), gate.EnforcedHosts().Count),
+        AdminPages.Dashboard(Admin(ctx), pending.Count(r => r.State == "waiting"), gate.EnforcedHosts().Count),
         "text/html; charset=utf-8");
 });
 
-app.MapGet("/admin/requests", (HttpContext ctx, AdminAuth admin, GateService gate) =>
-{
-    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
-    if (who is null) return Results.Redirect("/admin/login?return=/admin/requests", false);
-    return Results.Content(AdminPages.Requests(who, gate.PendingSnapshot()), "text/html; charset=utf-8");
-});
+guarded.MapGet("/requests", (HttpContext ctx, GateService gate) =>
+    Results.Content(AdminPages.Requests(Admin(ctx), gate.PendingSnapshot()), "text/html; charset=utf-8"));
 
-app.MapGet("/admin/requests/{id}", (HttpContext ctx, string id, AdminAuth admin, GateService gate) =>
+guarded.MapGet("/requests/{id}", (HttpContext ctx, string id, AdminAuth auth, GateService gate) =>
 {
-    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
-    if (who is null) return Results.Redirect("/admin/login?return=/admin/requests", false);
+    var who = Admin(ctx);
     var view = gate.RequestView(id);
     return view is null
         ? Results.Content(AdminPages.Requests(who, gate.PendingSnapshot()), "text/html; charset=utf-8")
-        : Results.Content(AdminPages.Detail(who, view, admin.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+        : Results.Content(AdminPages.Detail(who, view, auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
 });
 
-app.MapPost("/admin/requests/decide", async (HttpContext ctx, AdminAuth admin, GateService gate) =>
+guarded.MapPost("/requests/decide", async (HttpContext ctx, AdminAuth auth, GateService gate) =>
 {
-    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
-    if (who is null) return Results.Redirect("/admin/login?return=/admin/requests", false);
-
+    var who = Admin(ctx);
     var form = await ctx.Request.ReadFormAsync();
-    if (!admin.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
-
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
     gate.Decide(form["id"].ToString(), form["verb"].ToString(), who.Actor);
     return Results.Redirect("/admin/requests", false);
 });
 
-app.MapGet("/admin/history", (HttpContext ctx, AdminAuth admin, GateService gate) =>
-{
-    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
-    if (who is null) return Results.Redirect("/admin/login?return=/admin/history", false);
-    return Results.Content(AdminPages.History(who, gate.PendingSnapshot()), "text/html; charset=utf-8");
-});
+guarded.MapGet("/history", (HttpContext ctx, GateService gate) =>
+    Results.Content(AdminPages.History(Admin(ctx), gate.PendingSnapshot()), "text/html; charset=utf-8"));
 
 // An empty response makes some browsers download the reply as a 0-byte file
 // instead of showing anything. Always answer with something typed.
@@ -553,6 +557,9 @@ static void SetAdminCookie(HttpContext ctx, string value)
         Path = "/admin",
     });
 }
+
+// The admin identity the guard filter verified and stashed for the handler.
+static AdminIdentity Admin(HttpContext ctx) => (AdminIdentity)ctx.Items["admin"]!;
 
 static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
     string.IsNullOrEmpty(gate.InternalSecret)

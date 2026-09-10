@@ -5,8 +5,12 @@ namespace Kalitka;
 /// <summary>The verified operator behind an admin session.</summary>
 public sealed record AdminIdentity(string Sub, string Email)
 {
-    /// <summary>Typed audit actor, e.g. <c>google:sergej@example.com</c>.</summary>
-    public string Actor => $"google:{Email}";
+    /// <summary>
+    /// Typed audit actor keyed on Google's stable <c>sub</c> (e.g.
+    /// <c>google:11476...</c>), not the e-mail — the e-mail is display/audit
+    /// identity and can change; the sub does not.
+    /// </summary>
+    public string Actor => $"google:{Sub}";
 }
 
 /// <summary>
@@ -136,6 +140,11 @@ public sealed class AdminAuth
         var parts = payload.Split('|', 3);
         if (parts.Length != 3 || !long.TryParse(parts[0], out var exp)) return null;
         if (_clock.GetUtcNow().ToUnixTimeSeconds() > exp) return null;
+
+        // Re-check the allowlist on every read, not just at login: removing someone
+        // from AdminEmails/AdminDomains revokes their session now, not whenever the
+        // cookie happens to expire.
+        if (!IsPermitted(parts[2])) return null;
 
         return new AdminIdentity(parts[1], parts[2]);
     }

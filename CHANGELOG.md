@@ -7,6 +7,22 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-10
+
+### Security
+
+- **Admin sessions are re-checked against the allowlist on every request.**
+  Removing someone from `AdminEmails`/`AdminDomains` now revokes their session
+  immediately, instead of leaving a valid cookie until it expires.
+- **One central guard for the `/admin` protected routes** (a route-group filter)
+  rather than each endpoint checking for itself — a new admin endpoint cannot be
+  added without the auth check.
+
+### Changed
+
+- The audit actor for an admin is now the stable Google `sub` (`google:<sub>`),
+  not the e-mail; the e-mail remains the display/audit identity (logged at login).
+
 ## [0.6.0] - 2026-09-10
 
 ### Added
