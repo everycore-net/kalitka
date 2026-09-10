@@ -7,6 +7,28 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-10
+
+### Changed
+
+- **Google sign-in is now per-host by default (`SessionScope=Application`).**
+  It used to grant a session for *every* guarded host under the cookie domain;
+  now it grants only the host it signed in for, exactly like a manual approval. A
+  sibling host asks again — a single click, since Google remembers the account.
+  **Breaking** if you relied on one sign-in opening all siblings: set
+  `SessionScope=Domain` to restore that. Manual approvals are unchanged (always
+  per-host).
+
+### Added
+
+- `SessionScope` option — `Application` (default) or `Domain`.
+
+### Internal
+
+- Extracted `SessionService` (the signed session and OAuth-state tokens) out of
+  `ApprovalEngine`, with direct crypto tests, so the security-critical token code
+  is small and testable on its own. No behaviour change.
+
 ## [0.3.0] - 2026-09-10
 
 ### Added

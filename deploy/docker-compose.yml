@@ -22,6 +22,10 @@ services:
       Kalitka__CookieDomain: ${KALITKA_COOKIE_DOMAIN}
       # How long an approval lasts. Also changeable at runtime with /session.
       Kalitka__SessionMinutes: "720"
+      # What a Google sign-in grants: Application (default, one host per sign-in)
+      # or Domain (one sign-in opens every guarded host under the cookie domain).
+      # Manual approvals are always per-host.
+      # Kalitka__SessionScope: Application
 
       # Which proxies may speak for a client. Forwarded headers are honoured
       # ONLY for requests arriving from one of these, and the client address is

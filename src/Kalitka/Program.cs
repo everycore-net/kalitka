@@ -180,10 +180,10 @@ app.MapGet("/oauth2/callback", async (HttpContext ctx, GateService gate, GoogleA
 
     Audit.Decision(app.Logger, "approved", target, ResolveIp(ctx, gate), identity: email, reason: "google");
 
-    // A proven identity earns a session for every guarded host under the cookie
-    // domain, not just this one. Per-host isolation of this is a tracked feature
-    // (one-time hand-off token), deliberately not in this release.
-    SetSessionCookie(ctx, gate, gate.BuildGlobalCookie());
+    // A proven identity earns a session scoped by SessionScope: the one host it
+    // signed in for (Application, the default), or every guarded host under the
+    // cookie domain (Domain). Manual approvals are always per-host.
+    SetSessionCookie(ctx, gate, gate.BuildIdentitySession(target));
     return Results.Redirect($"https://{target}", false);
 });
 
