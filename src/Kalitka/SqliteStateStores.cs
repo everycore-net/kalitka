@@ -219,6 +219,9 @@ public sealed class SqliteReplayStore : IReplayStore
         cmd.ExecuteNonQuery();
     }
 
+    private const string InsertSql =
+        "INSERT INTO replay(jti,expires) VALUES($j,$e) ON CONFLICT(jti) DO NOTHING;";
+
     public async Task<bool> TryConsumeAsync(string jti, DateTimeOffset expiresAt, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(jti)) return false;
@@ -232,10 +235,24 @@ public sealed class SqliteReplayStore : IReplayStore
         }
 
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "INSERT INTO replay(jti,expires) VALUES($j,$e) ON CONFLICT(jti) DO NOTHING;";
+        cmd.CommandText = InsertSql;
         cmd.Parameters.AddWithValue("$j", jti);
         cmd.Parameters.AddWithValue("$e", expiresAt.ToUnixTimeSeconds());
         return await cmd.ExecuteNonQueryAsync(ct) == 1;   // 1 = first use, 0 = replay
+    }
+
+    // The consume as it runs inside a caller's transaction (see IAtomicWork), so a
+    // grant's single use commits with the session it starts. No pruning here — that
+    // is housekeeping for the standalone path, not part of a redeem's transaction.
+    internal static bool ConsumeCore(SqliteConnection conn, SqliteTransaction? tx, string jti, DateTimeOffset expiresAt)
+    {
+        if (string.IsNullOrEmpty(jti)) return false;
+        using var cmd = conn.CreateCommand();
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = InsertSql;
+        cmd.Parameters.AddWithValue("$j", jti);
+        cmd.Parameters.AddWithValue("$e", expiresAt.ToUnixTimeSeconds());
+        return cmd.ExecuteNonQuery() == 1;
     }
 }
 
@@ -262,17 +279,29 @@ public sealed class SqliteSessionStore : ISessionStore
         cmd.ExecuteNonQuery();
     }
 
+    private const string InsertSql = """
+        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata)
+        VALUES($sid,$grant,$req,$subject,$resource,$agent,$started,$ended,$outcome,$meta)
+        ON CONFLICT(session_id) DO UPDATE SET
+          grant_id=$grant,request_id=$req,subject=$subject,resource=$resource,agent_id=$agent,
+          started=$started,ended=$ended,outcome=$outcome,metadata=$meta;
+        """;
+
+    private const string CloseSql =
+        "UPDATE sessions SET ended=$at, outcome=$o WHERE session_id=$id AND ended IS NULL;";
+
     public void Start(SessionRecord s)
     {
         using var conn = SqliteState.Open(_cs);
+        StartCore(conn, null, s);
+    }
+
+    // Start as it runs inside a caller's transaction (see IAtomicWork).
+    internal static void StartCore(SqliteConnection conn, SqliteTransaction? tx, SessionRecord s)
+    {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata)
-            VALUES($sid,$grant,$req,$subject,$resource,$agent,$started,$ended,$outcome,$meta)
-            ON CONFLICT(session_id) DO UPDATE SET
-              grant_id=$grant,request_id=$req,subject=$subject,resource=$resource,agent_id=$agent,
-              started=$started,ended=$ended,outcome=$outcome,metadata=$meta;
-            """;
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = InsertSql;
         cmd.Parameters.AddWithValue("$sid", s.SessionId);
         cmd.Parameters.AddWithValue("$grant", s.GrantId);
         cmd.Parameters.AddWithValue("$req", s.RequestId);
@@ -289,8 +318,18 @@ public sealed class SqliteSessionStore : ISessionStore
     public bool End(string sessionId, string outcome, DateTimeOffset at)
     {
         using var conn = SqliteState.Open(_cs);
+        return EndCore(conn, null, sessionId, outcome, at);
+    }
+
+    // Close-if-open as it runs inside a caller's transaction (see IAtomicWork): a
+    // guarded UPDATE, so a repeat close matches no row and returns false — harmless,
+    // not a second successful transition.
+    internal static bool EndCore(SqliteConnection conn, SqliteTransaction? tx,
+        string sessionId, string outcome, DateTimeOffset at)
+    {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE sessions SET ended=$at, outcome=$o WHERE session_id=$id AND ended IS NULL;";
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = CloseSql;
         cmd.Parameters.AddWithValue("$at", at.ToUnixTimeMilliseconds());
         cmd.Parameters.AddWithValue("$o", outcome);
         cmd.Parameters.AddWithValue("$id", sessionId);
