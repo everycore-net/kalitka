@@ -47,4 +47,19 @@ public sealed class InMemoryRequestStore : IRequestStore
         request = r;
         return true;
     }
+
+    public bool TrySetGrant(string id, string candidate, out string grant)
+    {
+        grant = "";
+        if (!_requests.TryGetValue(id, out var r)) return false;
+
+        // Same shape as TryResolve: the check-and-write is one step so racing
+        // status polls settle on a single grant.
+        lock (r)
+        {
+            if (r.Grant.Length == 0) { r.Grant = candidate; grant = candidate; return true; }
+            grant = r.Grant;
+            return false;
+        }
+    }
 }

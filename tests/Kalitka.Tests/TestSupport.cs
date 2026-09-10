@@ -55,7 +55,7 @@ public sealed class TestPeerStartupFilter : IStartupFilter
     };
 }
 
-public sealed class GateFactory : WebApplicationFactory<Program>
+public class GateFactory : WebApplicationFactory<Program>
 {
     public FakeTelegram Telegram { get; } = new();
     public FakeTimeProvider Clock { get; } = new(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));

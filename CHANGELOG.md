@@ -7,6 +7,46 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-10
+
+### Added
+
+- **Durable, shared live state (SQLite) — the single-node multi-instance step.**
+  A new `StateDbPath` keeps the live state that used to be in-memory-only —
+  pending requests, consumed one-time tokens (replay), and sessions — in one
+  SQLite file. Set it and that state survives a restart, and the atomic
+  transitions the engine and grant flow depend on hold across **every process
+  pointed at the same file**, not just within one. Empty keeps all three in
+  memory (today's behaviour: single instance, lost on restart).
+  - `SqliteRequestStore` / `SqliteReplayStore` / `SqliteSessionStore`, each
+    behind its existing seam (`IRequestStore` / `IReplayStore` / `ISessionStore`).
+    The load-bearing operations are single conditional statements — resolve-once
+    and grant-once are a guarded `UPDATE`, redeem-once is
+    `INSERT … ON CONFLICT DO NOTHING`, close-once is a guarded `UPDATE` — so the
+    database enforces the same "exactly one caller wins" the in-memory lock did.
+  - The DI factories pick SQLite when `StateDbPath` is set and the in-memory
+    stores otherwise, mirroring how `AuditDbPath` already selected the audit store.
+
+### Changed
+
+- **`IRequestStore.TrySetGrant` — the grant is issued atomically in the store.**
+  `EnsureGrant` used to read a request and mutate it in place, which only works
+  when `Get` returns the shared object. With a durable backend `Get` returns a
+  copy, so the issue-once step moved into the store (a guarded `UPDATE`), the same
+  shape as `TryResolve`. Two status polls landing on two instances can no longer
+  mint two redeemable grants for one approval.
+
+### Notes
+
+- **What SQLite here does and does not buy.** It is the single-*node* step:
+  durable across restarts and safe for several processes sharing one file. True
+  multi-*node* is the same seam with a Postgres backend — the transitions are
+  already conditional SQL, so that is a mechanical swap. Still per-instance, and
+  deliberately out of scope here: the enforced-hosts / settings / lists JSON and
+  the in-memory rate-limit and mute windows.
+- The 0.8.1 state-then-append audit caveat is unchanged: a durable state store
+  makes the *state* survive, but state and its audit event are still two steps.
+
 ## [0.9.0] - 2026-09-10
 
 ### Added

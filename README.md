@@ -139,9 +139,21 @@ engine. Telegram stays; the console is additive.
 ```
 
 History is a durable **audit log** of resource-centric events (`access.requested`,
-`access.approved`, `access.denied`, `admin.login`, …) with a fixed envelope, so
-SSH/DB events fit later without a schema change. Set `AuditDbPath` (e.g.
-`/data/audit.db`) to keep it across restarts via SQLite; empty keeps it in memory.
+`access.approved`, `access.denied`, `admin.login`, `grant.redeemed`,
+`session.started`, …) with a fixed envelope, so SSH/DB events fit later without a
+schema change. Set `AuditDbPath` (e.g. `/data/audit.db`) to keep it across restarts
+via SQLite; empty keeps it in memory.
+
+**Durable live state.** Beyond the audit trail, the live state — pending requests,
+consumed one-time tokens, and sessions — can be kept in SQLite too: set
+`StateDbPath` (e.g. `/data/state.db`). Then that state survives a restart, and its
+atomic transitions (resolve a request once, redeem a grant once, close a session
+once) hold across every process pointed at the same file — the single-node durable
+step. Empty keeps it in memory (single instance, lost on restart). True
+multi-*node* is the same seam with a Postgres backend; the transitions are already
+expressed as conditional SQL, so that is a mechanical swap, not a redesign. What is
+*not* yet shared: the enforced-hosts / settings / lists JSON and the in-memory
+rate-limit and mute windows — per-instance for now.
 
 **Who may operate it** is a separate allowlist from who may *enter* guarded hosts:
 

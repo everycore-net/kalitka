@@ -15,16 +15,35 @@ builder.Services.AddSingleton<TokenSigner>(sp =>
     new TokenSigner(sp.GetRequiredService<IOptions<GateOptions>>().Value.HmacSecret));
 builder.Services.AddTransient<AdminAuth>();
 builder.Services.AddSingleton<OneTimeTokenService>();
-builder.Services.AddSingleton<IReplayStore, InMemoryReplayStore>();
 builder.Services.AddSingleton<IAuditStore>(sp =>
 {
     var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.AuditDbPath;
     return string.IsNullOrWhiteSpace(path) ? new InMemoryAuditStore() : new SqliteAuditStore(path);
 });
+// The live-state stores share one StateDbPath file when set; empty keeps all
+// three in memory (single instance, lost on restart). The atomic transitions the
+// engine and grant flow rely on hold either way — in memory via a lock, in SQLite
+// via a conditional UPDATE / a primary-key insert.
+builder.Services.AddSingleton<IRequestStore>(sp =>
+{
+    var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.StateDbPath;
+    return string.IsNullOrWhiteSpace(path) ? new InMemoryRequestStore() : new SqliteRequestStore(path);
+});
+builder.Services.AddSingleton<IReplayStore>(sp =>
+{
+    var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.StateDbPath;
+    return string.IsNullOrWhiteSpace(path)
+        ? new InMemoryReplayStore(sp.GetRequiredService<TimeProvider>())
+        : new SqliteReplayStore(path, sp.GetRequiredService<TimeProvider>());
+});
+builder.Services.AddSingleton<ISessionStore>(sp =>
+{
+    var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.StateDbPath;
+    return string.IsNullOrWhiteSpace(path) ? new InMemorySessionStore() : new SqliteSessionStore(path);
+});
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 // A second approval channel beside Telegram. GateService picks up every INotifier.
 builder.Services.AddSingleton<INotifier, EmailNotifier>();
-builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
 builder.Services.AddSingleton<GrantService>();
 
 var app = builder.Build();

@@ -56,6 +56,12 @@ services:
       # Durable audit log (SQLite) on the data volume, so /admin/history survives
       # restarts. Empty keeps audit in memory (fine for a home instance).
       Kalitka__AuditDbPath: /data/audit.db
+      # Durable live state (SQLite): pending requests, consumed one-time tokens,
+      # and sessions. On the data volume it survives restarts, and its atomic
+      # transitions (resolve-once, redeem-once, close-once) hold across processes
+      # sharing the file. Empty keeps this state in memory (single instance, lost
+      # on restart).
+      Kalitka__StateDbPath: /data/state.db
 
       # Optional: Google sign-in as the second way in.
       # Authorised redirect URIs at Google: https://<KALITKA_HOST>/oauth2/callback
