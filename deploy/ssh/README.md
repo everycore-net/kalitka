@@ -10,9 +10,17 @@ ssh prod-01
    → sshd authenticates you (key/password) as usual
    → PAM runs kalitka-approve.sh, which raises an access request in kalitka
    → you approve on Telegram / the web console / an e-mail link
-   → the script exits 0 and the session continues
-   → the request and its approval are in /admin/history
+   → the script redeems a one-time grant → a session starts → it exits 0
+   → on logout PAM runs kalitka-session-end.sh, which closes the session
+   → the request, its approval and the whole session are in /admin/history
 ```
+
+An approval is not the same as an entry. kalitka issues a short-lived,
+single-use *grant* when the request is approved; the approve hook redeems it
+exactly once to start a session, and the close hook ends that session. So the
+audit log distinguishes `access.approved` (a human said yes) from
+`grant.redeemed` / `session.started` / `session.ended` (this login actually
+happened) — a second approved login needs a second grant.
 
 ## What it is not (yet)
 
@@ -23,12 +31,14 @@ next is a decision to make *after* this slice works end to end.
 ## Install (on the SSH host)
 
 1. `curl` must be present. sshd must use PAM (`UsePAM yes`, the default).
-2. Copy the script and make it root-owned and executable:
+2. Copy both scripts and make them root-owned and executable:
    ```
-   install -m 0755 -o root -g root kalitka-approve.sh /usr/local/bin/kalitka-approve.sh
+   install -m 0755 -o root -g root kalitka-approve.sh     /usr/local/bin/kalitka-approve.sh
+   install -m 0755 -o root -g root kalitka-session-end.sh /usr/local/bin/kalitka-session-end.sh
    ```
 3. Create `/etc/kalitka-approve.conf`, **owned root:root, `chmod 600`** (it is
-   sourced by a root PAM hook — treat it as executable input):
+   sourced by a root PAM hook — treat it as executable input). Both scripts
+   share it:
    ```
    install -m 0600 -o root -g root /dev/null /etc/kalitka-approve.conf
    # then edit:
@@ -38,10 +48,15 @@ next is a decision to make *after* this slice works end to end.
    Use `AgentSecret`, **not** the administrative `InternalSecret` — that is the
    point of the split: this host never holds a credential that can reach
    `/internal/*`.
-4. Add one line to `/etc/pam.d/sshd`, **after** the auth/account stack:
+4. Add two lines to `/etc/pam.d/sshd`. The approve hook gates entry (after the
+   auth/account stack); the session hook closes the session on logout:
    ```
    account required pam_exec.so quiet /usr/local/bin/kalitka-approve.sh
+   session  optional pam_exec.so quiet /usr/local/bin/kalitka-session-end.sh
    ```
+   The session line is `optional`: a logout cannot be vetoed, so a failure to
+   report the close must never wedge it. The approve hook hands the session id
+   to the close hook through `/run/kalitka/session-<user>`.
 
 ## ⚠️ Keep a way in
 
@@ -60,5 +75,14 @@ Test the bypass before you rely on it.
 - kalitka raises a request for the resource `ssh:<host>`, notifies every
   configured channel, and records `access.requested` / `access.approved` /
   `access.denied` against that resource in the audit log.
+- On approval, `GET /agent/status` carries a one-time `grant`. The script
+  `POST`s it to `/agent/redeem` (with the agent id) which consumes it once and
+  returns a `session_id`; a replayed grant is refused with `409`. The close
+  hook then `POST`s that id to `/agent/session/end`. This adds
+  `grant.created` / `grant.redeemed` / `session.started` / `session.ended` to
+  the audit log — the single-use grant is what keeps an approval from becoming a
+  reusable key.
 - The allow and block lists work here too (by client IP or user), so a
-  remembered source skips the wait and a blocked one is refused silently.
+  remembered source skips the wait and a blocked one is refused silently. An
+  allow-list skip grants entry directly and starts no session — there is nothing
+  to redeem.

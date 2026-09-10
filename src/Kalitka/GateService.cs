@@ -100,6 +100,9 @@ public sealed class GateService
 
     public string? StateOf(string id) => _engine.StateOf(id);
     public string? TargetOf(string id) => _engine.TargetOf(id);
+    public string? ResourceOf(string id) => _engine.ResourceOf(id);
+    public string? SubjectOf(string id) => _engine.SubjectOf(id);
+    public (string grant, bool created) EnsureGrant(string id, string candidate) => _engine.EnsureGrant(id, candidate);
 
     public IReadOnlyList<PendingView> PendingSnapshot() => _engine.PendingSnapshot();
     public PendingView? RequestView(string id) => _engine.RequestView(id);

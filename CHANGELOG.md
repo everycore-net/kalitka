@@ -7,6 +7,49 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-10
+
+### Added
+
+- **An approval is no longer an entry — SSH access is a one-time grant with a
+  session.** When an `ssh:` request is approved, kalitka issues a short-lived,
+  single-use *grant*. The PAM agent redeems it exactly once to start a session
+  and reports when the session ends, so the audit log finally distinguishes "a
+  human said yes" from "this login actually happened". A second approved login
+  needs a second grant; a replayed grant is refused.
+- **`grant.*` / `session.*` audit events.** `grant.created` (on approval),
+  `grant.redeemed` and `session.started` (on redemption), `session.ended` (on
+  logout) — each resource-scoped to the SSH host and carrying `grant_id` /
+  `session_id`, so a session can be followed end to end. This retires the 0.8.1
+  caveat that `session.*` were reserved and a PAM `exit 0` was all the log knew.
+- **`ISessionStore` / `InMemorySessionStore`.** Records a live session
+  (`session_id`, `grant_id`, `request_id`, subject, resource, `agent_id`,
+  started/ended, outcome); atomic close so a session ends exactly once. The seam
+  is where a durable, multi-instance session backend plugs in next.
+- **Agent endpoints for the lifecycle.** `GET /agent/status` now returns the
+  one-time `grant` alongside the state; `POST /agent/redeem` consumes it once and
+  returns a `session_id` (`409` on replay); `POST /agent/session/end` closes it.
+- **Session-close PAM hook** ([`deploy/ssh/kalitka-session-end.sh`](deploy/ssh/kalitka-session-end.sh)).
+  Wired into PAM's `session` stack (`optional`, so a logout is never wedged), it
+  reports the session end. The approve hook redeems the grant on entry and hands
+  the session id to the close hook through `/run/kalitka/session-<user>`.
+
+### Changed
+
+- The single-use guarantee reuses the `IReplayStore` seam introduced for
+  one-time e-mail tokens: redeeming a grant is the one atomic "consume the jti"
+  step that turns a signed token into a capability.
+
+### Notes
+
+- Correlating exactly one session id per PAM close across concurrent logins by
+  the same user is best-effort in this slice (one file per user under `/run`);
+  robust per-session correlation is deeper-SSH work. An allow-list skip grants
+  entry directly and starts no session — there is nothing to redeem.
+- The state-then-append audit caveat from 0.8.1 still stands: durable,
+  multi-instance stores (request/replay/session) are the next step, and only
+  then is "compliance-grade immutable audit" a claim worth making.
+
 ## [0.8.1] - 2026-09-10
 
 ### Security

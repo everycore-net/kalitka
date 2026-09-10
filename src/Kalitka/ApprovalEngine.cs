@@ -14,6 +14,7 @@ public sealed class PendingRequest
     public string Country = "", CountryCode = "", City = "";
     public DateTimeOffset Raised;
     public string State = "waiting";   // waiting | approved | denied
+    public string Grant = "";          // the one-time grant token, issued once on approval
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.</summary>
@@ -408,6 +409,24 @@ public sealed class ApprovalEngine
 
     public string? StateOf(string id) => _store.Get(id)?.State;
     public string? TargetOf(string id) => _store.Get(id)?.Target;
+    public string? ResourceOf(string id) => _store.Get(id)?.Resource;
+    public string? SubjectOf(string id) => _store.Get(id)?.Input;
+
+    /// <summary>
+    /// Issue the request's one-time grant exactly once (on first approval read),
+    /// so repeated status polls return the same grant, not a new redeemable one.
+    /// Returns the effective grant and whether this call created it.
+    /// </summary>
+    public (string grant, bool created) EnsureGrant(string id, string candidate)
+    {
+        var r = _store.Get(id);
+        if (r is null) return ("", false);
+        lock (r)
+        {
+            if (r.Grant.Length == 0) { r.Grant = candidate; return (candidate, true); }
+            return (r.Grant, false);
+        }
+    }
 
     /// <summary>
     /// A snapshot of the requests currently in memory, newest first — for the web
