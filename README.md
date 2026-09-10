@@ -206,6 +206,16 @@ tomorrow, or an address you have already seen enough of.
 
 `country` works on the block list only. As a way *in* it is far too coarse.
 
+## SSH (experimental)
+
+kalitka can gate an SSH login on a human's approval — a first step beyond HTTP. A
+small PAM hook on the host (`deploy/ssh/kalitka-approve.sh`) raises a request for
+`ssh:<host>` after authentication and blocks until you approve through any
+channel; then the session continues, and it is in `/admin/history` against the
+`ssh:` resource. Proof of concept: no certificates, credential brokering or
+proxy — it is a *second* factor, never the only one, and it is fail-closed, so
+keep a break-glass path. See [`deploy/ssh/`](deploy/ssh/).
+
 ## Configuration
 
 Everything is environment variables prefixed `Kalitka__`. The full list with

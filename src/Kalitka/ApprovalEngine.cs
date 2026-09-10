@@ -10,6 +10,7 @@ namespace Kalitka;
 public sealed class PendingRequest
 {
     public string Id = "", Target = "", Input = "", Ip = "";
+    public string Resource = "";       // web:<host> | ssh:<host> | ...
     public string Country = "", CountryCode = "", City = "";
     public DateTimeOffset Raised;
     public string State = "waiting";   // waiting | approved | denied
@@ -281,9 +282,8 @@ public sealed class ApprovalEngine
     // ---- A visitor rings ----------------------------------------------------
 
     /// <summary>
-    /// Judges a request. Returns the state and, when it is waiting for a human,
-    /// the pending request itself so the caller can hand it to the notifiers.
-    /// The engine does not notify — that is a notifier's job.
+    /// A visitor rings at a guarded HTTP host. The target must be armed; the
+    /// resource is <c>web:&lt;host&gt;</c>.
     /// </summary>
     public async Task<(string state, string id, PendingRequest? request)> Request(
         string target, string input, string ip, CancellationToken ct)
@@ -297,26 +297,52 @@ public sealed class ApprovalEngine
             return ("invalid", "", null);
         }
 
+        return await Raise("web:" + target, target, input, ip, ct);
+    }
+
+    /// <summary>
+    /// A non-HTTP frontend (an SSH agent, later DB/RDP) asks for a decision on an
+    /// arbitrary resource, e.g. <c>ssh:prod-01</c>. No armed-host check — the
+    /// resource is the target — but the same allow/block/mute/rate protections,
+    /// and callers must be trusted (the /agent endpoints require the internal
+    /// secret). It does not broker any credentials: it only says yes or no.
+    /// </summary>
+    public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
+        string resource, string subject, string ip, CancellationToken ct)
+    {
+        subject = (subject ?? "").Trim();
+        if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
+        return await Raise(resource, resource, subject, ip, ct);
+    }
+
+    /// <summary>
+    /// The shared core: judge and, if it needs a human, create the pending request.
+    /// The engine does not notify — that is a notifier's job. <paramref name="target"/>
+    /// is what the operator sees; <paramref name="resource"/> is the audit identity.
+    /// </summary>
+    private async Task<(string state, string id, PendingRequest? request)> Raise(
+        string resource, string target, string subject, string ip, CancellationToken ct)
+    {
         var place = await _geo.Locate(ip, ct);
 
         // Allow list: straight through, no question asked.
-        if (_lists.IsAllowed(ip, input))
+        if (_lists.IsAllowed(ip, subject))
         {
-            Audit.Decision(_log, "allowed", target, ip, identity: input, reason: "allow-list");
+            Audit.Decision(_log, "allowed", target, ip, identity: subject, reason: "allow-list");
             return ("allowed", "", null);
         }
 
         // Block list: silent rejection, and above all no notification.
-        if (_lists.IsBlocked(ip, input, place.CountryCode))
+        if (_lists.IsBlocked(ip, subject, place.CountryCode))
         {
-            Audit.Decision(_log, "denied", target, ip, identity: input, reason: "block-list");
+            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "block-list");
             return ("blocked", "", null);
         }
 
         if (IsMuted)
         {
             _lists.Add("block", "ip", ip, Now());
-            Audit.Decision(_log, "denied", target, ip, identity: input, reason: "muted");
+            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "muted");
             return ("blocked", "", null);
         }
 
@@ -324,7 +350,7 @@ public sealed class ApprovalEngine
         // one: telling them they were throttled only tells them when to retry.
         if (IsRateLimited(ip))
         {
-            Audit.Decision(_log, "denied", target, ip, identity: input, reason: "rate-limited");
+            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "rate-limited");
             return ("blocked", "", null);
         }
 
@@ -332,22 +358,23 @@ public sealed class ApprovalEngine
 
         if (_options.MaxPending > 0 && PendingCount() >= _options.MaxPending)
         {
-            Audit.Decision(_log, "denied", target, ip, identity: input, reason: "pending-limit");
+            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "pending-limit");
             return ("blocked", "", null);
         }
 
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
         var request = new PendingRequest
         {
-            Id = id, Target = target, Input = input, Ip = ip,
+            Id = id, Target = target, Resource = resource, Input = subject, Ip = ip,
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
             Raised = _clock.GetUtcNow(), State = "waiting"
         };
         _store.Add(request);
 
-        Audit.Decision(_log, "asked", target, ip, requestId: id, identity: input);
+        Audit.Decision(_log, "asked", target, ip, requestId: id, identity: subject);
         await _audit.Append(Event(AuditEvents.AccessRequested,
-            actor: "-", subject: input, resource: "web:" + target, requestId: id, channel: "gate"), ct);
+            actor: "-", subject: subject, resource: resource, requestId: id,
+            channel: resource.StartsWith("web:", StringComparison.Ordinal) ? "gate" : "agent"), ct);
 
         return ("waiting", id, request);
     }
@@ -458,7 +485,7 @@ public sealed class ApprovalEngine
             actor: actor, reason: verb);
         await _audit.Append(Event(
             toState == "approved" ? AuditEvents.AccessApproved : AuditEvents.AccessDenied,
-            actor: actor, subject: request.Input, resource: "web:" + request.Target,
+            actor: actor, subject: request.Input, resource: request.Resource,
             requestId: request.Id, channel: ChannelOf(actor), metadata: verb), CancellationToken.None);
 
         return new CallbackResult(CallbackOutcome.Decided, request, outcome);

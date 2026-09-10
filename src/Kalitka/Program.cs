@@ -220,6 +220,40 @@ app.MapPost("/internal/toggle", (HttpContext ctx, GateService gate) =>
 });
 
 // ---------------------------------------------------------------------------
+// Non-HTTP agents (SSH, later DB/RDP), internal-secret guarded. An agent on
+// another host — e.g. an sshd PAM hook — raises an access request for a resource
+// like ssh:<host> and polls its state. Kalitka only decides yes/no; it brokers
+// no credentials and proxies nothing. The human approves through any channel.
+// ---------------------------------------------------------------------------
+app.MapPost("/agent/request", async (HttpContext ctx, GateService gate) =>
+{
+    var denied = InternalGuard(ctx, gate);
+    if (denied is not null) return denied;
+
+    var form = await ctx.Request.ReadFormAsync();
+    var host = form["host"].ToString().Trim();
+    var user = form["user"].ToString().Trim();
+    var ip = form["ip"].ToString().Trim();
+    if (string.IsNullOrEmpty(ip)) ip = ResolveIp(ctx, gate);
+
+    // The host names a resource; keep it a sane label (it lands in audit/notify).
+    if (host.Length is 0 or > 100 || host.Any(c => !(char.IsLetterOrDigit(c) || c is '.' or '-' or '_')))
+        return Results.BadRequest();
+
+    var (state, id) = await gate.RaiseAction("ssh:" + host, user, ip, ctx.RequestAborted);
+    return Results.Json(new { id, state });
+});
+
+app.MapGet("/agent/status", (HttpContext ctx, GateService gate) =>
+{
+    var denied = InternalGuard(ctx, gate);
+    if (denied is not null) return denied;
+
+    var state = gate.StateOf(ctx.Request.Query["id"].ToString()) ?? "gone";
+    return Results.Json(new { state });
+});
+
+// ---------------------------------------------------------------------------
 // Telegram webhook: secret path plus secret header
 // ---------------------------------------------------------------------------
 app.MapPost(options.WebhookPath, async (HttpContext ctx, GateService gate, ILogger<Program> log) =>

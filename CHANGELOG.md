@@ -7,6 +7,26 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-10
+
+### Added
+
+- **SSH approval gate (experimental) — the first PAM axis.** A small `pam_exec`
+  hook ([`deploy/ssh/`](deploy/ssh/)) raises an access request for `ssh:<host>`
+  after sshd authenticates, then blocks until a human approves through any
+  channel; on approval the session continues. A thin vertical slice — no
+  certificates, credential brokering or proxy — that proves the mechanic end to
+  end and records it in the audit log against the `ssh:` resource. It is a second
+  factor, never the only one, and fail-closed (keep a break-glass path).
+- Internal `/agent/request` and `/agent/status` endpoints (guarded by
+  `X-Kalitka-Internal`) and a resource-centric `RaiseAction`, so a non-HTTP
+  frontend reuses the same judging, channels and audit as a visitor request.
+
+### Changed
+
+- A pending request now carries a `Resource` (`web:<host>`, `ssh:<host>`), and
+  the audit records that — the event envelope is genuinely resource-centric.
+
 ## [0.7.0] - 2026-09-10
 
 ### Added
