@@ -74,10 +74,23 @@ public class AdminAuthTests
         Assert.NotNull(who);
         Assert.Equal("sub-123", who!.Sub);
         Assert.Equal("admin@example.com", who.Email);
-        Assert.Equal("google:admin@example.com", who.Actor);
+        Assert.Equal("google:sub-123", who.Actor);   // stable sub, not the e-mail
 
         clock.Advance(TimeSpan.FromMinutes(481));   // past the 480-min absolute life
         Assert.Null(a.ReadCookie(cookie));
+    }
+
+    [Fact]
+    public void Session_is_revoked_when_removed_from_the_allowlist()
+    {
+        var clock = ClockAt();
+        var cookie = Auth(clock, emails: new[] { "admin@example.com" })
+            .IssueCookie(new AdminIdentity("sub", "admin@example.com"));
+
+        // Same signing key (same secret), so the signature still verifies — but the
+        // allowlist no longer lists this address, so the session is refused now.
+        var revoked = Auth(clock, emails: new[] { "someone-else@example.com" });
+        Assert.Null(revoked.ReadCookie(cookie));
     }
 
     [Fact]
