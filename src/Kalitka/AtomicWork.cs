@@ -10,9 +10,27 @@ namespace Kalitka;
 /// </summary>
 public interface IWorkScope
 {
+    // Storage primitives, not business operations: there is deliberately no
+    // ApproveRequest / RedeemGrant / CloseSession here. Sequencing stays in
+    // ApprovalEngine / GrantService, so a future Postgres provider carries no
+    // domain logic — only these atomic reads and writes.
+
     /// <summary>Resolve-once, exactly as <see cref="IRequestStore.TryResolve"/>, but
     /// on this unit of work's transaction.</summary>
     bool TryResolve(string id, string toState, DateTimeOffset notOlderThan, out PendingRequest? request);
+
+    /// <summary>Consume a jti once, exactly as <see cref="IReplayStore.TryConsumeAsync"/>,
+    /// on this transaction. True only for the first caller.</summary>
+    bool TryConsumeReplay(string jti, DateTimeOffset expiresAt);
+
+    /// <summary>Record a started session, exactly as <see cref="ISessionStore.Start"/>,
+    /// on this transaction.</summary>
+    void StartSession(SessionRecord session);
+
+    /// <summary>Close a session if still open, exactly as <see cref="ISessionStore.End"/>,
+    /// on this transaction. A repeat close is a harmless no-op returning false, not a
+    /// second successful transition.</summary>
+    bool EndSession(string sessionId, string outcome, DateTimeOffset at);
 
     /// <summary>Append an audit event on this unit of work's transaction, so it
     /// commits with the state change above — or not at all.</summary>
@@ -64,6 +82,15 @@ public sealed class SqliteAtomicWork : IAtomicWork
 
         public bool TryResolve(string id, string toState, DateTimeOffset notOlderThan, out PendingRequest? request)
             => SqliteRequestStore.ResolveCore(_conn, _tx, id, toState, notOlderThan, out request);
+
+        public bool TryConsumeReplay(string jti, DateTimeOffset expiresAt)
+            => SqliteReplayStore.ConsumeCore(_conn, _tx, jti, expiresAt);
+
+        public void StartSession(SessionRecord session)
+            => SqliteSessionStore.StartCore(_conn, _tx, session);
+
+        public bool EndSession(string sessionId, string outcome, DateTimeOffset at)
+            => SqliteSessionStore.EndCore(_conn, _tx, sessionId, outcome, at);
 
         public void AppendAudit(AuditEvent e) => SqliteAuditStore.AppendCore(_conn, _tx, e);
     }

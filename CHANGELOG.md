@@ -7,23 +7,41 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-10
+
 ### Added
 
-- **Transactional state + audit (0.11, first slice).** When `StateDbPath` and
-  `AuditDbPath` point at the **same** SQLite file, a decision and its audit event
-  now commit in **one transaction** — the first step toward audit integrity, not
-  just durable state. If the audit append fails, the state change rolls back with
-  it: no access without its history. This slice covers the `resolve request +
-  access.approved/denied` pair in `Decide`; the `redeem + session.started` and
-  `close + session.ended` pairs follow in later 0.11 slices.
-  - New `IAtomicWork` / `IWorkScope` unit-of-work seam (B-lite): the durable stores
-    expose transaction-bound cores (`SqliteRequestStore.ResolveCore`,
-    `SqliteAuditStore.AppendCore`) and `SqliteAtomicWork` runs a pair in one
-    transaction. Registered only when state and audit share one SQLite file.
-  - No new dependency, and the migration story is unchanged: in-memory and
-    separate-file setups keep the sequential best-effort append (in-memory loses
-    state and audit together on a crash, so it has no gap to close; separate files
-    cannot span a transaction).
+- **Transactional state + audit — audit integrity, not just durable state.** After
+  0.10.0 state and audit were both durable but still two steps: a state transition
+  could commit while its audit append failed, leaving access without its history.
+  Now, when `StateDbPath` and `AuditDbPath` point at the **same** SQLite file, each
+  state change and its audit event commit in **one transaction** — a failure of any
+  part rolls back the whole. The pairs made atomic:
+  - `resolve request + access.approved/denied` (in `ApprovalEngine.Decide`);
+  - `consume grant + start session + grant.redeemed + session.started` — all four
+    in one commit, so there is never a consumed grant without its session and both
+    events (in `GrantService.Redeem`);
+  - `close session + session.ended` (in `GrantService.EndSession`); a repeat close
+    matches no open row and is a harmless no-op, not a second transition.
+- **`IAtomicWork` / `IWorkScope` unit-of-work seam (B-lite).** The scope exposes
+  only storage primitives (`TryResolve`, `TryConsumeReplay`, `StartSession`,
+  `EndSession`, `AppendAudit`) — no business operations — so sequencing stays in
+  the engine / grant service and a future provider carries no domain logic. The
+  durable stores gained transaction-bound cores (`ResolveCore`, `ConsumeCore`,
+  `StartCore`/`EndCore`, `AppendCore`); `SqliteAtomicWork` runs a set in one local
+  transaction. Registered only when state and audit share one SQLite file.
+
+### Notes
+
+- **No new dependency, migration story unchanged.** SQLite does transactions, so
+  this needs no Postgres and no config beyond pointing both paths at one file.
+  In-memory and separate-file setups keep the sequential best-effort append —
+  honest, because in-memory loses state and audit together on a crash (no gap) and
+  separate files cannot span a transaction. True multi-*node* (Postgres) is the
+  next step (0.12) and inherits this transaction design.
+- Tested to the failure paths, not just the happy one: an append failure inside a
+  redeem rolls back the consume, the session and both events; an append failure on
+  close leaves the session open.
 
 ## [0.10.0] - 2026-09-10
 
