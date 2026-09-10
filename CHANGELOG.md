@@ -7,6 +7,28 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-10
+
+### Added
+
+- **E-mail approval channel.** With SMTP configured, a new request also mails the
+  operators (`AdminEmails`) an approve and a deny link — a second channel beside
+  Telegram, over the same engine. Empty `SmtpHost` disables it.
+- **One-time capabilities.** The links are signed, single-use, short-lived tokens
+  (`OneTimeMinutes`, default 15). A token points at a request and an action, not
+  the decision's parameters; the action is resolved on the server at redemption.
+  Opening a link (`GET /action`) only shows a confirmation page and consumes
+  nothing — safe against mail-scanner pre-fetch; the `POST` consumes the token
+  (`IReplayStore`) once and resolves the request. New settings: `Smtp*`,
+  `OneTimeMinutes`.
+
+### Internal
+
+- `TokenSigner` gains the `one-time:v1` key; `OneTimeTokenService`, `IReplayStore`
+  (`InMemoryReplayStore`), `IEmailSender` (`SmtpEmailSender`) and `EmailNotifier`
+  (a second `INotifier`) are the pieces. `GateService` now announces to every
+  registered `INotifier`, not Telegram alone.
+
 ## [0.5.1] - 2026-09-10
 
 ### Fixed

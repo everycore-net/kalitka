@@ -14,6 +14,11 @@ builder.Services.AddSingleton<GateService>();
 builder.Services.AddSingleton<TokenSigner>(sp =>
     new TokenSigner(sp.GetRequiredService<IOptions<GateOptions>>().Value.HmacSecret));
 builder.Services.AddTransient<AdminAuth>();
+builder.Services.AddSingleton<OneTimeTokenService>();
+builder.Services.AddSingleton<IReplayStore, InMemoryReplayStore>();
+builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+// A second approval channel beside Telegram. GateService picks up every INotifier.
+builder.Services.AddSingleton<INotifier, EmailNotifier>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -282,6 +287,56 @@ app.MapPost(options.WebhookPath, async (HttpContext ctx, GateService gate, ILogg
     }
 
     return Results.Ok();
+});
+
+// ---------------------------------------------------------------------------
+// One-time approval links (the e-mail channel). The GET shows a confirmation
+// page and consumes nothing — a mail scanner pre-fetching the link is harmless.
+// Only the POST consumes the one-time token and resolves the request.
+// ---------------------------------------------------------------------------
+app.MapGet("/action", (HttpContext ctx, OneTimeTokenService tokens, GateService gate) =>
+{
+    var token = ctx.Request.Query["t"].ToString();
+    var cap = tokens.Read(token);
+    var verb = cap is null ? null : OneTimeTokenService.VerbFor(cap.Purpose, cap.Action);
+    if (cap is null || verb is null)
+        return Results.Content(Pages.Message("Link invalid", "This link is not valid or has expired."),
+            "text/html; charset=utf-8");
+
+    var view = gate.RequestView(cap.RequestId);
+    if (view is null || view.State != "waiting")
+        return Results.Content(Pages.Message("Nothing to do",
+            "That request is no longer waiting — it may already have been decided or expired."),
+            "text/html; charset=utf-8");
+
+    return Results.Content(
+        Pages.ActionConfirm(verb == "ok" ? "Approve" : "Deny", cap.Resource, view.Input, token),
+        "text/html; charset=utf-8");
+});
+
+app.MapPost("/action", async (HttpContext ctx, OneTimeTokenService tokens, IReplayStore replay, GateService gate) =>
+{
+    var form = await ctx.Request.ReadFormAsync();
+    var cap = tokens.Read(form["t"].ToString());
+    var verb = cap is null ? null : OneTimeTokenService.VerbFor(cap.Purpose, cap.Action);
+    if (cap is null || verb is null)
+        return Results.Content(Pages.Message("Link invalid", "This link is not valid or has expired."),
+            "text/html; charset=utf-8");
+
+    // Consume first (single-use), then resolve. A spent link cannot act again,
+    // and the resolve-once guarantee handles a request already decided elsewhere.
+    if (!await replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ctx.RequestAborted))
+        return Results.Content(Pages.Message("Already used", "This link has already been used."),
+            "text/html; charset=utf-8");
+
+    var result = gate.Decide(cap.RequestId, verb, "email:link");
+    var message = result.Outcome switch
+    {
+        CallbackOutcome.Decided        => verb == "ok" ? "Approved. The visitor may continue." : "Denied.",
+        CallbackOutcome.AlreadyHandled => "That request was already decided.",
+        _                              => "That request is no longer waiting — it may have expired."
+    };
+    return Results.Content(Pages.Message("Done", message), "text/html; charset=utf-8");
 });
 
 // ---------------------------------------------------------------------------

@@ -68,6 +68,14 @@ services:
       # Kalitka__AdminEmails__0: ${KALITKA_ADMIN_EMAIL:-}
       # Kalitka__AdminDomains__0: example.com
 
+      # Optional: e-mail approval channel. When SmtpHost is set, a new request
+      # also mails AdminEmails an approve/deny one-time link. Empty = channel off.
+      # Kalitka__SmtpHost: ${KALITKA_SMTP_HOST:-}
+      # Kalitka__SmtpPort: "587"
+      # Kalitka__SmtpUser: ${KALITKA_SMTP_USER:-}
+      # Kalitka__SmtpPassword: ${KALITKA_SMTP_PASSWORD:-}
+      # Kalitka__SmtpFrom: ${KALITKA_SMTP_FROM:-}
+
       # Optional: let another service arm/disarm hosts over /internal/*.
       Kalitka__InternalSecret: ${KALITKA_INTERNAL_SECRET:-}
     volumes:
