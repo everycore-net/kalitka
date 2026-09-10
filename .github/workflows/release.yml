@@ -1,18 +1,18 @@
 name: Release
 
-# Fires when a version tag is pushed. Builds the image and publishes it to the
-# GitHub Container Registry under both the exact version and the moving major.minor.
+# Fires when a version tag is pushed. Builds and publishes the image, and creates
+# a GitHub Release whose notes are that version's section from CHANGELOG.md — so
+# the Releases page never lags behind the tags again.
 on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: read
-  packages: write
-
 jobs:
   image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
 
@@ -37,3 +37,37 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write            # required to create the Release
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pull this tag's section out of CHANGELOG.md — the lines between
+      # "## [<version>]" and the next "## [". Literal (index-based) matching, so a
+      # version like 0.10.0 is not confused with 0.1.0.
+      - name: Extract release notes from CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            BEGIN { start = "## [" ver "]" }
+            index($0, start) == 1 { grab = 1; next }
+            grab && index($0, "## [") == 1 { exit }
+            grab { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "See CHANGELOG.md for details of $version." > notes.md
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "kalitka $version" \
+            --notes-file notes.md \
+            --verify-tag
