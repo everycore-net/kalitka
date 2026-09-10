@@ -155,6 +155,13 @@ expressed as conditional SQL, so that is a mechanical swap, not a redesign. What
 *not* yet shared: the enforced-hosts / settings / lists JSON and the in-memory
 rate-limit and mute windows — per-instance for now.
 
+**Atomic state + audit.** Point `StateDbPath` and `AuditDbPath` at the *same*
+SQLite file and a decision and its audit event commit in one transaction: if the
+audit write fails, the state change rolls back with it — no access recorded without
+its history. Different files (or in-memory) keep the earlier behaviour, where the
+audit append is a best-effort second step. (Being rolled out per state/audit pair;
+`resolve → access.approved` is the first.)
+
 **Who may operate it** is a separate allowlist from who may *enter* guarded hosts:
 
 - `AdminEmails` — the primary mechanism, exact match (`sergej@example.com`).

@@ -7,6 +7,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Transactional state + audit (0.11, first slice).** When `StateDbPath` and
+  `AuditDbPath` point at the **same** SQLite file, a decision and its audit event
+  now commit in **one transaction** — the first step toward audit integrity, not
+  just durable state. If the audit append fails, the state change rolls back with
+  it: no access without its history. This slice covers the `resolve request +
+  access.approved/denied` pair in `Decide`; the `redeem + session.started` and
+  `close + session.ended` pairs follow in later 0.11 slices.
+  - New `IAtomicWork` / `IWorkScope` unit-of-work seam (B-lite): the durable stores
+    expose transaction-bound cores (`SqliteRequestStore.ResolveCore`,
+    `SqliteAuditStore.AppendCore`) and `SqliteAtomicWork` runs a pair in one
+    transaction. Registered only when state and audit share one SQLite file.
+  - No new dependency, and the migration story is unchanged: in-memory and
+    separate-file setups keep the sequential best-effort append (in-memory loses
+    state and audit together on a crash, so it has no gap to close; separate files
+    cannot span a transaction).
+
 ## [0.10.0] - 2026-09-10
 
 ### Added

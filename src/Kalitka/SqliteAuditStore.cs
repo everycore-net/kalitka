@@ -40,14 +40,13 @@ public sealed class SqliteAuditStore : IAuditStore
         return conn;
     }
 
-    public async Task Append(AuditEvent e, CancellationToken ct)
+    private const string InsertSql = """
+        INSERT INTO audit(id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata)
+        VALUES($id,$ts,$et,$actor,$subject,$resource,$req,$grant,$channel,$meta);
+        """;
+
+    private static void Bind(SqliteCommand cmd, AuditEvent e)
     {
-        await using var conn = Open();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO audit(id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata)
-            VALUES($id,$ts,$et,$actor,$subject,$resource,$req,$grant,$channel,$meta);
-            """;
         cmd.Parameters.AddWithValue("$id", e.Id);
         cmd.Parameters.AddWithValue("$ts", e.Timestamp.ToUnixTimeSeconds());
         cmd.Parameters.AddWithValue("$et", e.EventType);
@@ -58,7 +57,27 @@ public sealed class SqliteAuditStore : IAuditStore
         cmd.Parameters.AddWithValue("$grant", e.GrantId);
         cmd.Parameters.AddWithValue("$channel", e.Channel);
         cmd.Parameters.AddWithValue("$meta", e.Metadata);
+    }
+
+    public async Task Append(AuditEvent e, CancellationToken ct)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = InsertSql;
+        Bind(cmd, e);
         await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // The append as it runs inside a caller's transaction, so a state change and
+    // its audit event commit together (see IAtomicWork). Same INSERT, same table —
+    // the atomicity is that both statements share one transaction, nothing more.
+    internal static void AppendCore(SqliteConnection conn, SqliteTransaction tx, AuditEvent e)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = InsertSql;
+        Bind(cmd, e);
+        cmd.ExecuteNonQuery();
     }
 
     public async Task<IReadOnlyList<AuditEvent>> Query(AuditQuery q, CancellationToken ct)
