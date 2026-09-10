@@ -27,11 +27,17 @@ next is a decision to make *after* this slice works end to end.
    ```
    install -m 0755 -o root -g root kalitka-approve.sh /usr/local/bin/kalitka-approve.sh
    ```
-3. Create `/etc/kalitka-approve.conf` (`chmod 600`):
+3. Create `/etc/kalitka-approve.conf`, **owned root:root, `chmod 600`** (it is
+   sourced by a root PAM hook — treat it as executable input):
    ```
+   install -m 0600 -o root -g root /dev/null /etc/kalitka-approve.conf
+   # then edit:
    KALITKA_URL=https://gate.example.com
-   KALITKA_INTERNAL_SECRET=...        # equals kalitka's Kalitka__InternalSecret
+   KALITKA_AGENT_SECRET=...           # equals kalitka's Kalitka__AgentSecret
    ```
+   Use `AgentSecret`, **not** the administrative `InternalSecret` — that is the
+   point of the split: this host never holds a credential that can reach
+   `/internal/*`.
 4. Add one line to `/etc/pam.d/sshd`, **after** the auth/account stack:
    ```
    account required pam_exec.so quiet /usr/local/bin/kalitka-approve.sh
@@ -48,7 +54,9 @@ Test the bypass before you rely on it.
 ## How it maps to kalitka
 
 - The script calls `POST /agent/request` (host, user, client IP) and polls
-  `GET /agent/status?id=…`, both guarded by `X-Kalitka-Internal`.
+  `GET /agent/status?id=…`, both guarded by `X-Kalitka-Agent` (the agent secret,
+  separate from the administrative internal secret). If `AgentResources` is set on
+  kalitka, an agent may only raise the resources it lists (e.g. `ssh:prod-01`).
 - kalitka raises a request for the resource `ssh:<host>`, notifies every
   configured channel, and records `access.requested` / `access.approved` /
   `access.denied` against that resource in the audit log.

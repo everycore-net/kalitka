@@ -206,6 +206,12 @@ tomorrow, or an address you have already seen enough of.
 
 `country` works on the block list only. As a way *in* it is far too coarse.
 
+List entries are **scoped to a resource** (`web:*`, `web:<host>`, `ssh:<host>`, …):
+a decision for one resource never leaks to another — remembering a name for an
+SSH host does not admit a web visitor of that name, and vice versa. Buttons on a
+request carry that request's resource; the `/allow` and `/block` commands default
+to `web:*`.
+
 ## SSH (experimental)
 
 kalitka can gate an SSH login on a human's approval — a first step beyond HTTP. A

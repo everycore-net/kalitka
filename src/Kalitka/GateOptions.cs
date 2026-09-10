@@ -144,9 +144,26 @@ public sealed class GateOptions
 
     /// <summary>
     /// Secret for the <c>/internal/*</c> endpoints used to arm or disarm hosts
-    /// from another service on the same network. Empty disables them.
+    /// from another service on the same network. Empty disables them. This is
+    /// administrative — keep it off the SSH hosts (they use <see cref="AgentSecret"/>).
     /// </summary>
     public string InternalSecret { get; set; } = "";
+
+    /// <summary>
+    /// Secret the SSH/PAM agents present on <c>/agent/*</c> — <b>separate</b> from
+    /// <see cref="InternalSecret"/>, so compromising one SSH host does not also
+    /// hand over the administrative endpoints (e.g. disarming a web host). Empty
+    /// disables <c>/agent/*</c>.
+    /// </summary>
+    public string AgentSecret { get; set; } = "";
+
+    /// <summary>
+    /// Groundwork for per-agent resource binding: if set, an agent may only raise
+    /// requests for these resources (exact or scheme wildcard, e.g. <c>ssh:prod-01</c>
+    /// or <c>ssh:*</c>). Empty means any — fine for a PoC, but then a shared secret
+    /// can claim any resource; a per-agent credential registry comes later.
+    /// </summary>
+    public string[] AgentResources { get; set; } = Array.Empty<string>();
 
     // ---- Optional extras ----------------------------------------------------
 

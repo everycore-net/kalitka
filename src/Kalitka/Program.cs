@@ -227,7 +227,7 @@ app.MapPost("/internal/toggle", (HttpContext ctx, GateService gate) =>
 // ---------------------------------------------------------------------------
 app.MapPost("/agent/request", async (HttpContext ctx, GateService gate) =>
 {
-    var denied = InternalGuard(ctx, gate);
+    var denied = AgentGuard(ctx, gate);
     if (denied is not null) return denied;
 
     var form = await ctx.Request.ReadFormAsync();
@@ -240,13 +240,17 @@ app.MapPost("/agent/request", async (HttpContext ctx, GateService gate) =>
     if (host.Length is 0 or > 100 || host.Any(c => !(char.IsLetterOrDigit(c) || c is '.' or '-' or '_')))
         return Results.BadRequest();
 
-    var (state, id) = await gate.RaiseAction("ssh:" + host, user, ip, ctx.RequestAborted);
+    // Resource binding: the agent may only raise what policy allows it to.
+    var resource = "ssh:" + host;
+    if (!gate.AgentMayRaise(resource)) return Results.StatusCode(403);
+
+    var (state, id) = await gate.RaiseAction(resource, user, ip, ctx.RequestAborted);
     return Results.Json(new { id, state });
 });
 
 app.MapGet("/agent/status", (HttpContext ctx, GateService gate) =>
 {
-    var denied = InternalGuard(ctx, gate);
+    var denied = AgentGuard(ctx, gate);
     if (denied is not null) return denied;
 
     var state = gate.StateOf(ctx.Request.Query["id"].ToString()) ?? "gone";
@@ -554,7 +558,7 @@ static bool IsAllowed(HttpContext ctx, GateService gate, ILogger log, out string
     var ip = ResolveIp(ctx, gate);
 
     if (gate.IsBypassed(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "bypass-network"); return true; }
-    if (gate.IsAllowedIp(ip)) { Audit.Decision(log, "allowed", host, ip, reason: "allow-list"); return true; }
+    if (gate.IsAllowedIp(host, ip)) { Audit.Decision(log, "allowed", host, ip, reason: "allow-list"); return true; }
     if (gate.IsCookieValid(ctx.Request.Cookies[gate.CookieName], host)) return true;
 
     return false;
@@ -625,6 +629,14 @@ static AuditEvent AdminEvent(string type, string actor, string email) =>
 static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
     string.IsNullOrEmpty(gate.InternalSecret)
     || ctx.Request.Headers["X-Kalitka-Internal"].ToString() != gate.InternalSecret
+        ? Results.StatusCode(403)
+        : null;
+
+// Separate secret and header from InternalGuard: an SSH host holds only this one,
+// so its compromise cannot reach the administrative /internal/* endpoints.
+static IResult? AgentGuard(HttpContext ctx, GateService gate) =>
+    string.IsNullOrEmpty(gate.AgentSecret)
+    || ctx.Request.Headers["X-Kalitka-Agent"].ToString() != gate.AgentSecret
         ? Results.StatusCode(403)
         : null;
 

@@ -79,8 +79,13 @@ services:
       # Kalitka__SmtpPassword: ${KALITKA_SMTP_PASSWORD:-}
       # Kalitka__SmtpFrom: ${KALITKA_SMTP_FROM:-}
 
-      # Optional: let another service arm/disarm hosts over /internal/*.
+      # Optional: administrative automation over /internal/* (arm/disarm hosts).
       Kalitka__InternalSecret: ${KALITKA_INTERNAL_SECRET:-}
+      # Optional: SSH/PAM agents over /agent/* — a SEPARATE secret from the
+      # administrative one, so a compromised SSH host cannot reach /internal/*.
+      Kalitka__AgentSecret: ${KALITKA_AGENT_SECRET:-}
+      # Optional groundwork: restrict which resources an agent may raise.
+      # Kalitka__AgentResources__0: ssh:prod-01
     volumes:
       - kalitka-data:/data
     networks:

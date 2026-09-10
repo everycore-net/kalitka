@@ -4,9 +4,18 @@ using Microsoft.Extensions.Options;
 namespace Kalitka;
 
 /// <summary>
-/// Two persistent lists: <c>block</c> (never bother me again) and
-/// <c>allow</c> (let this one straight through). An entry matches on the
-/// client IP, on what the visitor typed, or — block list only — on country.
+/// Two persistent lists: <c>block</c> (never bother me again) and <c>allow</c>
+/// (let this one straight through). Every entry is **scoped to a resource**, so a
+/// decision made for one thing cannot leak to another — remembering the name
+/// <c>root</c> for an SSH host must not wave a web visitor named <c>root</c> in,
+/// and vice versa. An entry matches when its resource covers the request's and
+/// its value matches the client IP, the subject, or — block list only — country.
+///
+/// Resource scope is <c>web:*</c>, <c>web:host</c>, <c>ssh:*</c>, <c>ssh:host</c>,
+/// … A trailing <c>:*</c> covers every host in that scheme, but never crosses
+/// schemes. Legacy entries without a resource are read as <c>web:*</c> — the old
+/// web behaviour is preserved, but old allow-lists do not silently become PAM
+/// policy.
 ///
 /// Country is deliberately not allowed on the allow list: "everyone from this
 /// country walks in" is too coarse to ever be right.
@@ -17,7 +26,9 @@ public sealed class AccessLists
     {
         /// <summary>block | allow</summary>
         public string List { get; set; } = "block";
-        /// <summary>ip | input | country</summary>
+        /// <summary>web:* | web:host | ssh:* | ssh:host | …</summary>
+        public string Resource { get; set; } = "web:*";
+        /// <summary>ip | subject | country</summary>
         public string Type { get; set; } = "";
         public string Value { get; set; } = "";
         public string Added { get; set; } = "";
@@ -39,8 +50,18 @@ public sealed class AccessLists
     {
         try
         {
-            if (File.Exists(_path))
-                _entries = JsonSerializer.Deserialize<List<Entry>>(File.ReadAllText(_path)) ?? new();
+            if (!File.Exists(_path)) return;
+            _entries = JsonSerializer.Deserialize<List<Entry>>(File.ReadAllText(_path)) ?? new();
+
+            // Migrate pre-0.8.1 entries: no resource means the web behaviour they
+            // were created for, not a domain-wide policy; "input" is now "subject".
+            var migrated = false;
+            foreach (var e in _entries)
+            {
+                if (string.IsNullOrEmpty(e.Resource)) { e.Resource = "web:*"; migrated = true; }
+                if (e.Type == "input") { e.Type = "subject"; migrated = true; }
+            }
+            if (migrated) Save();
         }
         catch (Exception e)
         {
@@ -67,16 +88,30 @@ public sealed class AccessLists
 
     private static string Normalise(string? s) => (s ?? "").Trim().ToLowerInvariant();
 
-    private bool Matches(string list, string ip, string input, string country)
+    /// <summary>Does an entry's scope cover this request's resource? Exact match,
+    /// or a scheme wildcard (<c>web:*</c> covers <c>web:*</c> hosts) — never across
+    /// schemes.</summary>
+    private static bool Covers(string entryResource, string requestResource)
+    {
+        if (string.Equals(entryResource, requestResource, StringComparison.OrdinalIgnoreCase)) return true;
+        if (entryResource.EndsWith(":*", StringComparison.Ordinal))
+        {
+            var scheme = entryResource[..^1];               // "web:"
+            return requestResource.StartsWith(scheme, StringComparison.OrdinalIgnoreCase);
+        }
+        return false;
+    }
+
+    private bool Matches(string list, string resource, string ip, string subject, string country)
     {
         foreach (var e in _entries)
         {
-            if (e.List != list) continue;
+            if (e.List != list || !Covers(e.Resource, resource)) continue;
             var value = Normalise(e.Value);
             var hit = e.Type switch
             {
                 "ip"      => Normalise(ip) == value,
-                "input"   => Normalise(input) == value,
+                "subject" => Normalise(subject) == value,
                 "country" => Normalise(country) == value,
                 _         => false
             };
@@ -85,26 +120,28 @@ public sealed class AccessLists
         return false;
     }
 
-    public bool IsBlocked(string ip, string input, string country)
+    public bool IsBlocked(string resource, string ip, string subject, string country)
     {
-        lock (_lock) return Matches("block", ip, input, country);
+        lock (_lock) return Matches("block", resource, ip, subject, country);
     }
 
-    public bool IsAllowed(string ip, string input)
+    public bool IsAllowed(string resource, string ip, string subject)
     {
-        lock (_lock) return Matches("allow", ip, input, "");
+        lock (_lock) return Matches("allow", resource, ip, subject, "");
     }
 
-    public void Add(string list, string type, string value, string added)
+    public void Add(string list, string resource, string type, string value, string added)
     {
-        if (string.IsNullOrWhiteSpace(value)) return;
+        if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(resource)) return;
         lock (_lock)
         {
             var exists = _entries.Any(e =>
-                e.List == list && e.Type == type && Normalise(e.Value) == Normalise(value));
+                e.List == list && e.Type == type &&
+                string.Equals(e.Resource, resource, StringComparison.OrdinalIgnoreCase) &&
+                Normalise(e.Value) == Normalise(value));
             if (exists) return;
 
-            _entries.Add(new Entry { List = list, Type = type, Value = value, Added = added });
+            _entries.Add(new Entry { List = list, Resource = resource, Type = type, Value = value, Added = added });
             Save();
         }
     }
