@@ -13,7 +13,7 @@ namespace Kalitka.Tests;
 /// </summary>
 public class AgentEndpointTests : IClassFixture<GateFactory>
 {
-    private const string Secret = "internal-secret";
+    private const string Secret = "agent-secret";
     private readonly GateFactory _f;
     public AgentEndpointTests(GateFactory f) => _f = f;
 
@@ -29,7 +29,7 @@ public class AgentEndpointTests : IClassFixture<GateFactory>
                 ["host"] = host, ["user"] = user, ["ip"] = ip
             })
         };
-        req.Headers.Add("X-Kalitka-Internal", Secret);
+        req.Headers.Add("X-Kalitka-Agent", Secret);
         var json = await (await Client().SendAsync(req)).Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -39,17 +39,31 @@ public class AgentEndpointTests : IClassFixture<GateFactory>
     private async Task<string> Status(string id)
     {
         var req = new HttpRequestMessage(HttpMethod.Get, $"/agent/status?id={id}");
-        req.Headers.Add("X-Kalitka-Internal", Secret);
+        req.Headers.Add("X-Kalitka-Agent", Secret);
         var json = await (await Client().SendAsync(req)).Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(json);
         return doc.RootElement.GetProperty("state").GetString() ?? "";
     }
 
     [Fact]
-    public async Task Without_the_internal_secret_it_is_refused()
+    public async Task Without_the_agent_secret_it_is_refused()
     {
         var res = await Client().PostAsync("/agent/request",
             new FormUrlEncodedContent(new Dictionary<string, string> { ["host"] = "prod-01", ["user"] = "x" }));
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_administrative_internal_secret_is_not_accepted_on_agent()
+    {
+        // The split is the point: a host holding the agent secret cannot reach
+        // /internal/*, and the internal secret cannot drive /agent/*.
+        var req = new HttpRequestMessage(HttpMethod.Post, "/agent/request")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["host"] = "prod-01", ["user"] = "x" })
+        };
+        req.Headers.Add("X-Kalitka-Internal", "internal-secret");
+        var res = await Client().SendAsync(req);
         Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
     }
 

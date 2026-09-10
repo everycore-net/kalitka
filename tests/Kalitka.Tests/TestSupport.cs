@@ -88,7 +88,8 @@ public sealed class GateFactory : WebApplicationFactory<Program>
         builder.UseSetting("Kalitka:GoogleClientId", "test-client");
         builder.UseSetting("Kalitka:GoogleClientSecret", "test-secret");
         builder.UseSetting("Kalitka:AdminEmails:0", "admin@example.com");
-        builder.UseSetting("Kalitka:InternalSecret", "internal-secret");   // /internal and /agent
+        builder.UseSetting("Kalitka:InternalSecret", "internal-secret");   // /internal/*
+        builder.UseSetting("Kalitka:AgentSecret", "agent-secret");         // /agent/*
 
         builder.ConfigureTestServices(services =>
         {

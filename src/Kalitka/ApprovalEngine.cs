@@ -95,6 +95,22 @@ public sealed class ApprovalEngine
     public IReadOnlyList<IPNetwork> TrustedProxies => _trustedProxies;
 
     public string InternalSecret => _options.InternalSecret;
+    public string AgentSecret => _options.AgentSecret;
+
+    /// <summary>May an agent (holding the agent secret) raise this resource? True
+    /// when no resource binding is configured, else exact or scheme-wildcard.</summary>
+    public bool AgentMayRaise(string resource)
+    {
+        if (_options.AgentResources.Length == 0) return true;
+        foreach (var r in _options.AgentResources)
+        {
+            if (string.Equals(r, resource, StringComparison.OrdinalIgnoreCase)) return true;
+            if (r.EndsWith(":*", StringComparison.Ordinal) &&
+                resource.StartsWith(r[..^1], StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
     public string CookieName => _options.CookieName;
     public string CookieDomain => _options.CookieDomain;
     public int SessionMinutes => _sessionMinutes;
@@ -258,7 +274,7 @@ public sealed class ApprovalEngine
     private int PendingCount() =>
         _store.CountWaiting(_clock.GetUtcNow().AddMinutes(-_options.PendingMinutes));
 
-    public bool IsAllowedIp(string ip) => _lists.IsAllowed(ip, "");
+    public bool IsAllowedIp(string host, string ip) => _lists.IsAllowed("web:" + host, ip, "");
 
     // ---- Mute ---------------------------------------------------------------
 
@@ -325,15 +341,15 @@ public sealed class ApprovalEngine
     {
         var place = await _geo.Locate(ip, ct);
 
-        // Allow list: straight through, no question asked.
-        if (_lists.IsAllowed(ip, subject))
+        // Allow list: straight through, no question asked. Scoped to the resource.
+        if (_lists.IsAllowed(resource, ip, subject))
         {
             Audit.Decision(_log, "allowed", target, ip, identity: subject, reason: "allow-list");
             return ("allowed", "", null);
         }
 
         // Block list: silent rejection, and above all no notification.
-        if (_lists.IsBlocked(ip, subject, place.CountryCode))
+        if (_lists.IsBlocked(resource, ip, subject, place.CountryCode))
         {
             Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "block-list");
             return ("blocked", "", null);
@@ -341,7 +357,7 @@ public sealed class ApprovalEngine
 
         if (IsMuted)
         {
-            _lists.Add("block", "ip", ip, Now());
+            _lists.Add("block", resource, "ip", ip, Now());
             Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "muted");
             return ("blocked", "", null);
         }
@@ -461,11 +477,11 @@ public sealed class ApprovalEngine
         var stamp = Now();
         switch (verb)
         {
-            case "aip": _lists.Add("allow", "ip", request.Ip, stamp); break;
-            case "ain": _lists.Add("allow", "input", request.Input, stamp); break;
-            case "bip": _lists.Add("block", "ip", request.Ip, stamp); break;
-            case "bin": _lists.Add("block", "input", request.Input, stamp); break;
-            case "bco": _lists.Add("block", "country", request.CountryCode, stamp); break;
+            case "aip": _lists.Add("allow", request.Resource, "ip", request.Ip, stamp); break;
+            case "ain": _lists.Add("allow", request.Resource, "subject", request.Input, stamp); break;
+            case "bip": _lists.Add("block", request.Resource, "ip", request.Ip, stamp); break;
+            case "bin": _lists.Add("block", request.Resource, "subject", request.Input, stamp); break;
+            case "bco": _lists.Add("block", request.Resource, "country", request.CountryCode, stamp); break;
         }
 
         var outcome = verb switch
@@ -483,6 +499,9 @@ public sealed class ApprovalEngine
         Audit.Decision(_log, toState == "approved" ? "approved" : "denied",
             request.Target, request.Ip, requestId: request.Id, identity: request.Input,
             actor: actor, reason: verb);
+        // Note: the state transition above already happened; if this append fails
+        // (disk/IO) the decision stands without its durable event. Acceptable for
+        // now — a transactional/outbox store is what immutable-audit would need.
         await _audit.Append(Event(
             toState == "approved" ? AuditEvents.AccessApproved : AuditEvents.AccessDenied,
             actor: actor, subject: request.Input, resource: request.Resource,
@@ -497,7 +516,10 @@ public sealed class ApprovalEngine
 
     public bool RemoveListEntry(string list, int index) => _lists.RemoveAt(list, index);
 
-    public void AddListEntry(string list, string type, string value) => _lists.Add(list, type, value, Now());
+    // Manual /allow /block default to web:* — the historical meaning of these
+    // commands. Resource-specific entries come from the buttons on a request,
+    // which carry that request's resource.
+    public void AddListEntry(string list, string type, string value) => _lists.Add(list, "web:*", type, value, Now());
 
     public void SetSessionMinutes(int minutes)
     {

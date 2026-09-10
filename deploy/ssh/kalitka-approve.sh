@@ -10,14 +10,20 @@
 # into an exit code. Because pam_exec runs after authentication, it is a SECOND
 # factor, never the only one.
 #
-# Config in /etc/kalitka-approve.conf (chmod 600):
+# Config in /etc/kalitka-approve.conf — this file is sourced by root into a PAM
+# hook, so it is executable input: make it root:root and chmod 600.
 #   KALITKA_URL=https://gate.example.com
-#   KALITKA_INTERNAL_SECRET=...          # must equal kalitka's Kalitka__InternalSecret
+#   KALITKA_AGENT_SECRET=...             # must equal kalitka's Kalitka__AgentSecret
+#                                        # (NOT the administrative Kalitka__InternalSecret)
 set -eu
 
 [ -r /etc/kalitka-approve.conf ] && . /etc/kalitka-approve.conf
 : "${KALITKA_URL:?set KALITKA_URL}"
-: "${KALITKA_INTERNAL_SECRET:?set KALITKA_INTERNAL_SECRET}"
+: "${KALITKA_AGENT_SECRET:?set KALITKA_AGENT_SECRET}"
+
+# Hard caps so a hung TCP/TLS request cannot hold the SSH login open: this bounds
+# each curl, not just the number of poll iterations.
+CURL="curl -fsS --connect-timeout 5 --max-time 10"
 
 host="$(hostname -s 2>/dev/null || hostname)"
 user="${PAM_USER:-unknown}"
@@ -26,8 +32,8 @@ rhost="${PAM_RHOST:-}"
 # jq-free JSON field read: {"id":"AB","state":"waiting"} -> value by key.
 field() { sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'; }
 
-resp=$(curl -fsS -X POST "$KALITKA_URL/agent/request" \
-  -H "X-Kalitka-Internal: $KALITKA_INTERNAL_SECRET" \
+resp=$($CURL -X POST "$KALITKA_URL/agent/request" \
+  -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
   --data-urlencode "host=$host" \
   --data-urlencode "user=$user" \
   --data-urlencode "ip=$rhost" 2>/dev/null) \
@@ -48,7 +54,7 @@ i=0
 while [ "$i" -lt 100 ]; do
   sleep 3
   i=$((i + 1))
-  s=$(curl -fsS -H "X-Kalitka-Internal: $KALITKA_INTERNAL_SECRET" \
+  s=$($CURL -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
       "$KALITKA_URL/agent/status?id=$id" 2>/dev/null | field state) || continue
   case "$s" in
     approved) echo "kalitka: approved." >&2; exit 0 ;;

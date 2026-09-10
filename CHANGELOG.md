@@ -7,6 +7,38 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-10
+
+### Security
+
+- **Access lists are resource-scoped.** Every allow/block entry now carries a
+  resource (`web:*`, `web:<host>`, `ssh:*`, `ssh:<host>`), and a decision made for
+  one resource no longer leaks to another — remembering the name `root` for an SSH
+  host cannot wave in a web visitor named `root`, and a web allow-list never
+  becomes an SSH auto-approval. `input` is now `subject` (types: ip | subject |
+  country). **Legacy entries without a resource are read as `web:*`**, preserving
+  web behaviour without turning old lists into PAM policy. Buttons on a request
+  scope to that request's resource; manual `/allow` `/block` default to `web:*`.
+- **The agent secret is separate from the internal secret.** `/agent/*` (SSH
+  hosts) is guarded by `AgentSecret` / `X-Kalitka-Agent`; `/internal/*`
+  (administrative) keeps `InternalSecret` / `X-Kalitka-Internal`. A compromised
+  SSH host can no longer reach the administrative endpoints.
+- **Agent resource binding (groundwork).** `AgentResources` optionally restricts
+  which resources an agent may raise (e.g. `ssh:prod-01`), so a shared secret
+  cannot claim `ssh:domain-controller-01`. Empty = any; a per-agent credential
+  registry comes later.
+- **SSH hook hardening.** `/etc/kalitka-approve.conf` must be root:root, and curl
+  has bounded `--connect-timeout`/`--max-time` so a hung request cannot hold an
+  SSH login past the poll window.
+
+### Notes
+
+- The audit records the state transition first, then appends the event, so a
+  disk/IO failure could leave a decision without its durable event. Fine for now;
+  "compliance-grade immutable audit" would need a transactional/outbox store —
+  not claimed yet. And `session.started`/`session.ended` are still reserved:
+  a PAM `exit 0` means "kalitka allowed it", not that the SSH session ran.
+
 ## [0.8.0] - 2026-09-10
 
 ### Added

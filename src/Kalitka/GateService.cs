@@ -61,9 +61,12 @@ public sealed class GateService
     public void SetEnforced(string host, bool on) => _engine.SetEnforced(host, on);
     public IReadOnlyList<string> EnforcedHosts() => _engine.EnforcedHosts();
 
+    public string AgentSecret => _engine.AgentSecret;
+    public bool AgentMayRaise(string resource) => _engine.AgentMayRaise(resource);
+
     public bool IsGuardedHost(string host) => _engine.IsGuardedHost(host);
     public bool IsBypassed(string ip) => _engine.IsBypassed(ip);
-    public bool IsAllowedIp(string ip) => _engine.IsAllowedIp(ip);
+    public bool IsAllowedIp(string host, string ip) => _engine.IsAllowedIp(host, ip);
     public bool IsAdmin(long telegramUserId) => _engine.IsAdmin(telegramUserId);
 
     // ---- A visitor rings: judge, then let the notifiers ask -----------------

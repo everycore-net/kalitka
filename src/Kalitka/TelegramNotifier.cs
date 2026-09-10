@@ -157,7 +157,7 @@ public sealed class TelegramNotifier : INotifier
 
         for (var i = 0; i < entries.Count; i++)
         {
-            text.Append($"{i + 1}. [{H(entries[i].Type)}] <code>{H(entries[i].Value)}</code>\n");
+            text.Append($"{i + 1}. [{H(entries[i].Resource)} · {H(entries[i].Type)}] <code>{H(entries[i].Value)}</code>\n");
             rows.Add(new object[] { new { text = $"remove {i + 1}", callback_data = $"{removePrefix}|{i}" } });
         }
 
@@ -181,10 +181,10 @@ public sealed class TelegramNotifier : INotifier
 
         var type = parts[0].ToLowerInvariant() switch
         {
-            "ip"                => "ip",
-            "name" or "input"   => "input",
-            "country"           => "country",
-            _                   => ""
+            "ip"                 => "ip",
+            "name" or "subject"  => "subject",
+            "country"            => "country",
+            _                    => ""
         };
         if (type.Length == 0) return usage;
 
