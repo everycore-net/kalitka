@@ -7,6 +7,36 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-10
+
+### Added
+
+- **Web control plane at `/admin`.** A second, authenticated channel over the
+  same engine — dashboard, the waiting requests, one-request approve/deny/
+  remember/block, and recent history — server-rendered, no build step. Telegram
+  stays an independent channel; the console is additive.
+  - **Admin login is Google OIDC + an explicit allowlist**, separate from who may
+    enter guarded hosts: `AdminEmails` (exact match, primary) and `AdminDomains`
+    (a broader, explicitly-enabled mode). With neither set the web login is
+    disabled (fail-closed). Only a verified e-mail gets in; the stable Google
+    `sub` keys the session. Register `https://<host>/admin/oauth2/callback` with
+    Google.
+  - The admin session is a separate signed cookie on its own derived key
+    (`admin:v1`, `SameSite=Strict`, `Path=/admin`, short absolute lifetime), so
+    web access to a guarded app grants nothing on `/admin`. State-changing actions
+    are POSTs with a CSRF token.
+
+### Changed
+
+- Audit `actor` is now a typed string (`telegram:<id>`, `google:<email>`) instead
+  of a bare Telegram id, so approvals stay distinguishable per channel.
+
+### Internal
+
+- New `TokenSigner` (HKDF-derived per-purpose keys) backs the admin session and
+  its CSRF/state tokens; the visitor session is unchanged for now (no logout).
+  `ApprovalEngine` gained a read-only `PendingSnapshot()` for the console.
+
 ## [0.4.0] - 2026-09-10
 
 ### Changed

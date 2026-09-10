@@ -11,6 +11,9 @@ builder.Services.AddHttpClient<GeoLookup>();
 builder.Services.AddHttpClient<GoogleAuth>();
 builder.Services.AddSingleton<AccessLists>();
 builder.Services.AddSingleton<GateService>();
+builder.Services.AddSingleton<TokenSigner>(sp =>
+    new TokenSigner(sp.GetRequiredService<IOptions<GateOptions>>().Value.HmacSecret));
+builder.Services.AddTransient<AdminAuth>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -281,6 +284,99 @@ app.MapPost(options.WebhookPath, async (HttpContext ctx, GateService gate, ILogg
     return Results.Ok();
 });
 
+// ---------------------------------------------------------------------------
+// Web control plane (/admin): a second, authenticated channel over the same
+// engine. Google OIDC + an explicit admin allowlist + a separate admin session
+// (admin:v1 key). Telegram approval stays independently available.
+// ---------------------------------------------------------------------------
+app.MapGet("/admin", () => Results.Redirect("/admin/dashboard", false));
+
+app.MapGet("/admin/login", (HttpContext ctx, AdminAuth admin) =>
+{
+    if (admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]) is not null)
+        return Results.Redirect("/admin/dashboard", false);
+    var error = ctx.Request.Query["error"].ToString();
+    return Results.Content(AdminPages.Login(admin.Enabled, string.IsNullOrEmpty(error) ? null : error),
+        "text/html; charset=utf-8");
+});
+
+app.MapGet("/admin/login/google", (HttpContext ctx, AdminAuth admin) =>
+{
+    if (!admin.Enabled) return Results.NotFound();
+    return Results.Redirect(admin.LoginUrl(ctx.Request.Query["return"].ToString()), false);
+});
+
+app.MapGet("/admin/oauth2/callback", async (HttpContext ctx, AdminAuth admin, GateService gate, ILogger<Program> log) =>
+{
+    if (!admin.Enabled) return Results.NotFound();
+
+    var result = await admin.CompleteLogin(
+        ctx.Request.Query["code"].ToString(), ctx.Request.Query["state"].ToString(), ctx.RequestAborted);
+
+    if (!result.Ok || result.Identity is null)
+    {
+        Audit.Decision(log, "admin-login-denied", "-", ResolveIp(ctx, gate), reason: "google");
+        return Results.Redirect("/admin/login?error=" + Uri.EscapeDataString("Sign-in was not accepted."), false);
+    }
+
+    SetAdminCookie(ctx, admin.IssueCookie(result.Identity));
+    Audit.Decision(log, "admin-login", "-", ResolveIp(ctx, gate),
+        identity: result.Identity.Email, actor: result.Identity.Actor, reason: "google");
+    return Results.Redirect(result.ReturnPath, false);
+});
+
+app.MapPost("/admin/logout", (HttpContext ctx) =>
+{
+    ctx.Response.Cookies.Delete(AdminAuth.CookieName, new CookieOptions { Path = "/admin", Secure = true });
+    return Results.Redirect("/admin/login", false);
+});
+
+app.MapGet("/admin/dashboard", (HttpContext ctx, AdminAuth admin, GateService gate) =>
+{
+    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
+    if (who is null) return Results.Redirect("/admin/login?return=/admin/dashboard", false);
+    var pending = gate.PendingSnapshot();
+    return Results.Content(
+        AdminPages.Dashboard(who, pending.Count(r => r.State == "waiting"), gate.EnforcedHosts().Count),
+        "text/html; charset=utf-8");
+});
+
+app.MapGet("/admin/requests", (HttpContext ctx, AdminAuth admin, GateService gate) =>
+{
+    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
+    if (who is null) return Results.Redirect("/admin/login?return=/admin/requests", false);
+    return Results.Content(AdminPages.Requests(who, gate.PendingSnapshot()), "text/html; charset=utf-8");
+});
+
+app.MapGet("/admin/requests/{id}", (HttpContext ctx, string id, AdminAuth admin, GateService gate) =>
+{
+    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
+    if (who is null) return Results.Redirect("/admin/login?return=/admin/requests", false);
+    var view = gate.RequestView(id);
+    return view is null
+        ? Results.Content(AdminPages.Requests(who, gate.PendingSnapshot()), "text/html; charset=utf-8")
+        : Results.Content(AdminPages.Detail(who, view, admin.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+});
+
+app.MapPost("/admin/requests/decide", async (HttpContext ctx, AdminAuth admin, GateService gate) =>
+{
+    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
+    if (who is null) return Results.Redirect("/admin/login?return=/admin/requests", false);
+
+    var form = await ctx.Request.ReadFormAsync();
+    if (!admin.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+
+    gate.Decide(form["id"].ToString(), form["verb"].ToString(), who.Actor);
+    return Results.Redirect("/admin/requests", false);
+});
+
+app.MapGet("/admin/history", (HttpContext ctx, AdminAuth admin, GateService gate) =>
+{
+    var who = admin.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]);
+    if (who is null) return Results.Redirect("/admin/login?return=/admin/history", false);
+    return Results.Content(AdminPages.History(who, gate.PendingSnapshot()), "text/html; charset=utf-8");
+});
+
 // An empty response makes some browsers download the reply as a 0-byte file
 // instead of showing anything. Always answer with something typed.
 app.MapFallback(() => Results.Content(Pages.Message("404", "Nothing here."),
@@ -385,6 +481,22 @@ static void SetSessionCookie(HttpContext ctx, GateService gate, string value)
     if (!string.IsNullOrWhiteSpace(gate.CookieDomain)) cookie.Domain = gate.CookieDomain;
 
     ctx.Response.Cookies.Append(gate.CookieName, value, cookie);
+}
+
+/// <summary>
+/// The admin session cookie is stricter than a visitor session: SameSite=Strict
+/// (the control plane is never reached cross-site), scoped to /admin, and with no
+/// Expires — the absolute lifetime is the signed token's own, not the browser's.
+/// </summary>
+static void SetAdminCookie(HttpContext ctx, string value)
+{
+    ctx.Response.Cookies.Append(AdminAuth.CookieName, value, new CookieOptions
+    {
+        Secure = true,
+        HttpOnly = true,
+        SameSite = SameSiteMode.Strict,
+        Path = "/admin",
+    });
 }
 
 static IResult? InternalGuard(HttpContext ctx, GateService gate) =>

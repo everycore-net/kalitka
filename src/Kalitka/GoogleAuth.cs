@@ -33,14 +33,18 @@ public sealed class GoogleAuth
         !string.IsNullOrEmpty(_options.GoogleClientId) &&
         !string.IsNullOrEmpty(_options.GoogleClientSecret);
 
-    private string RedirectUri => $"https://{_options.GateHost}/oauth2/callback";
+    /// <summary>Where Google sends the visitor back. The admin flow passes its own.</summary>
+    public string RedirectUri => $"https://{_options.GateHost}/oauth2/callback";
+    public string AdminRedirectUri => $"https://{_options.GateHost}/admin/oauth2/callback";
 
-    public string AuthorizationUrl(string state)
+    public string AuthorizationUrl(string state) => AuthorizationUrl(state, RedirectUri);
+
+    public string AuthorizationUrl(string state, string redirectUri)
     {
         var query = new Dictionary<string, string>
         {
             ["client_id"]     = _options.GoogleClientId,
-            ["redirect_uri"]  = RedirectUri,
+            ["redirect_uri"]  = redirectUri,
             ["response_type"] = "code",
             ["scope"]         = "openid email",
             ["state"]         = state,
@@ -54,7 +58,16 @@ public sealed class GoogleAuth
     }
 
     /// <summary>Exchanges the code and returns the verified e-mail, or null.</summary>
-    public async Task<string?> ResolveEmail(string code, CancellationToken ct)
+    public async Task<string?> ResolveEmail(string code, CancellationToken ct) =>
+        (await ResolveIdentity(code, RedirectUri, ct))?.Email;
+
+    /// <summary>
+    /// Exchanges the code and returns the verified e-mail together with Google's
+    /// stable subject id (<c>sub</c>). Null unless Google says the e-mail is
+    /// verified. The admin flow keys identity on <c>sub</c>, so it survives a
+    /// display-e-mail change.
+    /// </summary>
+    public async Task<(string Email, string Sub)?> ResolveIdentity(string code, string redirectUri, CancellationToken ct)
     {
         try
         {
@@ -64,7 +77,7 @@ public sealed class GoogleAuth
                     ["code"]          = code,
                     ["client_id"]     = _options.GoogleClientId,
                     ["client_secret"] = _options.GoogleClientSecret,
-                    ["redirect_uri"]  = RedirectUri,
+                    ["redirect_uri"]  = redirectUri,
                     ["grant_type"]    = "authorization_code",
                 }), ct);
 
@@ -94,12 +107,13 @@ public sealed class GoogleAuth
             var root = userDoc.RootElement;
 
             var email = root.TryGetProperty("email", out var e) ? e.GetString() : null;
+            var sub = root.TryGetProperty("sub", out var s) ? s.GetString() : null;
             var verified = root.TryGetProperty("email_verified", out var v)
                 && (v.ValueKind == JsonValueKind.True
                     || (v.ValueKind == JsonValueKind.String && v.GetString() == "true"));
 
-            if (string.IsNullOrEmpty(email) || !verified) return null;
-            return email;
+            if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(sub) || !verified) return null;
+            return (email, sub);
         }
         catch (Exception ex)
         {
