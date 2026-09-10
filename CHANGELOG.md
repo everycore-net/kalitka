@@ -7,6 +7,22 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-10
+
+### Fixed
+
+- **A request now resolves exactly once, atomically.** With two channels
+  (Telegram and the web plane) an Approve and a Deny could in principle race and
+  both take effect. The transition is now a single guarded step, so only the
+  first wins and the list side-effect happens at most once.
+
+### Internal
+
+- Pending requests live behind a new `IRequestStore` seam (`InMemoryRequestStore`
+  today) whose `TryResolve` carries that atomic guarantee. It is the place a
+  durable/shared backend plugs in later for multi-instance — and the same shape
+  the one-time-token replay store will take.
+
 ## [0.5.0] - 2026-09-10
 
 ### Added

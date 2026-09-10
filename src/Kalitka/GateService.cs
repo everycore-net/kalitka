@@ -26,7 +26,11 @@ public sealed class GateService
     public GateService(ITelegramClient telegram, GeoLookup geo, AccessLists lists,
         IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null)
     {
-        _engine = new ApprovalEngine(geo, lists, options.Value, log, clock ?? TimeProvider.System);
+        // In-memory store today; the IRequestStore seam is where a durable/shared
+        // backend plugs in for multi-instance (see the roadmap). Swapping it is a
+        // one-line change here.
+        _engine = new ApprovalEngine(geo, lists, options.Value, log,
+            clock ?? TimeProvider.System, new InMemoryRequestStore());
         _notifier = new TelegramNotifier(telegram, _engine, options.Value);
     }
 
