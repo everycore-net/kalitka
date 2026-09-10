@@ -48,13 +48,26 @@ public sealed class GateOptions
     /// Cookie domain, e.g. <c>.example.com</c>. The cookie is set on the parent
     /// domain so the browser carries it to every guarded host under it.
     ///
-    /// Note on scope: a manual approval is still bound to the one host it was
-    /// granted for (the host is signed into the cookie), so it does not open a
-    /// sibling. A Google sign-in, however, grants a session for <b>every</b>
-    /// guarded host under this domain. Per-host isolation of the Google session
-    /// is a tracked feature, not part of this release — see the README.
+    /// The cookie is always set on this parent domain so the browser carries it
+    /// to the guarded hosts; what a session actually opens is decided by the
+    /// host signed into it, not by the cookie's domain — see
+    /// <see cref="SessionScope"/>.
     /// </summary>
     public string CookieDomain { get; set; } = "";
+
+    /// <summary>
+    /// What a Google sign-in grants. A <b>manual</b> approval is always bound to
+    /// the one host it was granted for. This decides the Google path:
+    /// <list type="bullet">
+    /// <item><c>Application</c> (default) — a session for the one host the sign-in
+    /// was for. A sibling host asks again (one click, Google remembers the
+    /// account). No host opens another.</item>
+    /// <item><c>Domain</c> — one sign-in grants every guarded host under
+    /// <see cref="CookieDomain"/>. Convenient when the hosts are equally
+    /// sensitive; weigh it when they are not.</item>
+    /// </list>
+    /// </summary>
+    public SessionScope SessionScope { get; set; } = SessionScope.Application;
 
     /// <summary>How long an approval lasts. Changeable at runtime via the bot.</summary>
     public int SessionMinutes { get; set; } = 720;
@@ -148,4 +161,15 @@ public sealed class GateOptions
     /// <summary>Who may enter via Google: whole domains and/or single addresses.</summary>
     public string[] GoogleDomains { get; set; } = Array.Empty<string>();
     public string[] GoogleEmails { get; set; } = Array.Empty<string>();
+}
+
+/// <summary>How wide a Google-proven identity's session reaches. See
+/// <see cref="GateOptions.SessionScope"/>.</summary>
+public enum SessionScope
+{
+    /// <summary>One host per sign-in (default). Siblings ask again.</summary>
+    Application,
+
+    /// <summary>Every guarded host under the cookie domain, from one sign-in.</summary>
+    Domain
 }

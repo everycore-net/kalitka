@@ -8,13 +8,15 @@ namespace Kalitka.Tests;
 
 public class CookieTests
 {
-    private static GateService Gate(string secret, FakeTimeProvider clock, string? statePath = null)
+    private static GateService Gate(string secret, FakeTimeProvider clock, string? statePath = null,
+        SessionScope scope = SessionScope.Application)
     {
         var opts = new GateOptions
         {
             HmacSecret = secret,
             GateHost = "gate.example.com",
             SessionMinutes = 60,
+            SessionScope = scope,
             ListsPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"),
             EnforcedPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"),
             SettingsPath = statePath ?? Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"),
@@ -81,5 +83,27 @@ public class CookieTests
         var global = gate.BuildGlobalCookie();
         Assert.True(gate.IsCookieValid(global, "app.example.com"));
         Assert.True(gate.IsCookieValid(global, "other.example.com"));
+    }
+
+    [Fact]
+    public void Google_identity_session_is_per_host_by_default()
+    {
+        var clock = ClockAt();
+        var gate = Gate("key-aaaaaaaaaaaaaaaaaaaaaaaa", clock);   // SessionScope.Application
+
+        var cookie = gate.BuildIdentitySession("app.example.com");
+        Assert.True(gate.IsCookieValid(cookie, "app.example.com"));
+        Assert.False(gate.IsCookieValid(cookie, "other.example.com"));   // no longer opens a sibling
+    }
+
+    [Fact]
+    public void Google_identity_session_is_domain_wide_when_opted_in()
+    {
+        var clock = ClockAt();
+        var gate = Gate("key-aaaaaaaaaaaaaaaaaaaaaaaa", clock, scope: SessionScope.Domain);
+
+        var cookie = gate.BuildIdentitySession("app.example.com");
+        Assert.True(gate.IsCookieValid(cookie, "app.example.com"));
+        Assert.True(gate.IsCookieValid(cookie, "other.example.com"));
     }
 }

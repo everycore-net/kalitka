@@ -41,6 +41,7 @@ public sealed class GateService
 
     public string BuildCookie(string host) => _engine.BuildCookie(host);
     public string BuildGlobalCookie() => _engine.BuildGlobalCookie();
+    public string BuildIdentitySession(string target) => _engine.BuildIdentitySession(target);
     public bool IsCookieValid(string? cookie, string host) => _engine.IsCookieValid(cookie, host);
 
     public string BuildState(string target) => _engine.BuildState(target);

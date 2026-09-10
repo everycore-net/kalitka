@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -50,7 +49,7 @@ public sealed class ApprovalEngine
     private readonly ConcurrentDictionary<string, PendingRequest> _pending = new();
     private readonly HashSet<string> _enforced = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _enforcedLock = new();
-    private readonly byte[] _key;
+    private readonly SessionService _sessions;
 
     private readonly List<IPNetwork> _trustedProxies;
     private readonly List<IPNetwork> _bypassNetworks;
@@ -71,7 +70,7 @@ public sealed class ApprovalEngine
         _log = log;
         _clock = clock;
 
-        _key = Encoding.UTF8.GetBytes(_options.HmacSecret);
+        _sessions = new SessionService(_options.HmacSecret, clock);
         _sessionMinutes = _options.SessionMinutes;
 
         _trustedProxies = ClientIp.ParseNetworks(_options.TrustedProxies,
@@ -159,76 +158,29 @@ public sealed class ApprovalEngine
         catch (Exception e) { _log.LogWarning("Could not write settings: {Message}", e.Message); }
     }
 
-    // ---- Sessions: signed token, no storage --------------------------------
+    // ---- Sessions: the signed tokens themselves live in SessionService -----
 
     /// <summary>Session valid for one host only — the manual approval path.</summary>
-    public string BuildCookie(string host) => Sign($"{Expiry()}:{host}");
+    public string BuildCookie(string host) => _sessions.BuildHost(host, _sessionMinutes);
+
+    /// <summary>Session valid for every host ("*").</summary>
+    public string BuildGlobalCookie() => _sessions.BuildDomain(_sessionMinutes);
 
     /// <summary>
-    /// Session valid for every host ("*"). Used after a Google sign-in: someone
-    /// who proved who they are should not have to prove it again per host.
+    /// The session to grant after a Google sign-in for <paramref name="target"/>.
+    /// <c>Application</c> scope (default) binds it to that one host, exactly like
+    /// a manual approval; <c>Domain</c> scope opens every guarded sibling. See
+    /// <see cref="GateOptions.SessionScope"/>.
     /// </summary>
-    public string BuildGlobalCookie() => Sign($"{Expiry()}:*");
+    public string BuildIdentitySession(string target) =>
+        _options.SessionScope == SessionScope.Domain
+            ? _sessions.BuildDomain(_sessionMinutes)
+            : _sessions.BuildHost(target, _sessionMinutes);
 
-    private long Expiry() => _clock.GetUtcNow().AddMinutes(_sessionMinutes).ToUnixTimeSeconds();
+    public bool IsCookieValid(string? cookie, string host) => _sessions.IsValid(cookie, host);
 
-    private string Sign(string body) => $"{body}:{Signature(body)}";
-
-    public bool IsCookieValid(string? cookie, string host)
-    {
-        if (string.IsNullOrEmpty(cookie)) return false;
-
-        var parts = cookie.Split(':');
-        if (parts.Length != 3) return false;
-        if (!long.TryParse(parts[0], out var expiry)) return false;
-        if (_clock.GetUtcNow().ToUnixTimeSeconds() > expiry) return false;
-
-        if (parts[1] != "*" && !string.Equals(parts[1], host, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var expected = Signature($"{parts[0]}:{parts[1]}");
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(parts[2]));
-    }
-
-    private string Signature(string value)
-    {
-        using var hmac = new HMACSHA256(_key);
-        return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(value)));
-    }
-
-    // ---- OAuth state: carries the target, signed, no storage ----------------
-
-    public string BuildState(string target)
-    {
-        var body = $"{_clock.GetUtcNow().AddMinutes(10).ToUnixTimeSeconds()}|{target}";
-        return $"{Convert.ToBase64String(Encoding.UTF8.GetBytes(body))}.{Signature(body)}";
-    }
-
-    public bool TryReadState(string state, out string target)
-    {
-        target = "";
-        if (string.IsNullOrEmpty(state)) return false;
-
-        var parts = state.Split('.');
-        if (parts.Length != 2) return false;
-
-        string body;
-        try { body = Encoding.UTF8.GetString(Convert.FromBase64String(parts[0])); }
-        catch { return false; }
-
-        var expected = Signature(body);
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(parts[1])))
-            return false;
-
-        var fields = body.Split('|', 2);
-        if (fields.Length != 2 || !long.TryParse(fields[0], out var expiry)) return false;
-        if (_clock.GetUtcNow().ToUnixTimeSeconds() > expiry) return false;
-
-        target = fields[1];
-        return true;
-    }
+    public string BuildState(string target) => _sessions.BuildState(target);
+    public bool TryReadState(string state, out string target) => _sessions.TryReadState(state, out target);
 
     /// <summary>
     /// A redirect target must be a host kalitka is actually guarding — nothing
