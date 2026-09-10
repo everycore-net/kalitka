@@ -56,6 +56,7 @@ public sealed class ApprovalEngine
 
     private readonly IRequestStore _store;
     private readonly IAuditStore _audit;
+    private readonly IAtomicWork? _atomic;   // present only when state + audit share a transactional backend
     private readonly HashSet<string> _enforced = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _enforcedLock = new();
     private readonly SessionService _sessions;
@@ -71,7 +72,8 @@ public sealed class ApprovalEngine
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
 
     public ApprovalEngine(GeoLookup geo, AccessLists lists, GateOptions options,
-        ILogger log, TimeProvider clock, IRequestStore store, IAuditStore audit)
+        ILogger log, TimeProvider clock, IRequestStore store, IAuditStore audit,
+        IAtomicWork? atomic = null)
     {
         _geo = geo;
         _lists = lists;
@@ -80,6 +82,7 @@ public sealed class ApprovalEngine
         _clock = clock;
         _store = store;
         _audit = audit;
+        _atomic = atomic;
 
         _sessions = new SessionService(_options.HmacSecret, clock);
         _sessionMinutes = _options.SessionMinutes;
@@ -488,8 +491,29 @@ public sealed class ApprovalEngine
         // The one atomic step: only the first caller flips waiting → terminal, so
         // an Approve and a Deny racing the same request cannot both win. The list
         // side-effect below therefore also happens at most once.
-        if (!_store.TryResolve(id, toState, cutoff, out request) || request is null)
-            return new CallbackResult(CallbackOutcome.AlreadyHandled);
+        //
+        // When state and audit share a transactional backend, the durable event is
+        // written *inside* that same transition, so a decision and its history
+        // commit together — the access-integrity guarantee. Otherwise the append is
+        // a best-effort second step (below), and the decision stands even if it
+        // fails. The list side-effects are file-backed, not part of the DB
+        // transaction, so they stay outside it either way.
+        if (_atomic is not null)
+        {
+            var resolved = await _atomic.Do(scope =>
+            {
+                if (!scope.TryResolve(id, toState, cutoff, out var req) || req is null) return (PendingRequest?)null;
+                scope.AppendAudit(DecisionEvent(toState, actor, req, verb));
+                return req;
+            }, CancellationToken.None);
+            if (resolved is null) return new CallbackResult(CallbackOutcome.AlreadyHandled);
+            request = resolved;
+        }
+        else
+        {
+            if (!_store.TryResolve(id, toState, cutoff, out request) || request is null)
+                return new CallbackResult(CallbackOutcome.AlreadyHandled);
+        }
 
         var stamp = Now();
         switch (verb)
@@ -516,16 +540,21 @@ public sealed class ApprovalEngine
         Audit.Decision(_log, toState == "approved" ? "approved" : "denied",
             request.Target, request.Ip, requestId: request.Id, identity: request.Input,
             actor: actor, reason: verb);
-        // Note: the state transition above already happened; if this append fails
-        // (disk/IO) the decision stands without its durable event. Acceptable for
-        // now — a transactional/outbox store is what immutable-audit would need.
-        await _audit.Append(Event(
-            toState == "approved" ? AuditEvents.AccessApproved : AuditEvents.AccessDenied,
-            actor: actor, subject: request.Input, resource: request.Resource,
-            requestId: request.Id, channel: ChannelOf(actor), metadata: verb), CancellationToken.None);
+        // Non-transactional path only: the durable event is a best-effort second
+        // step here, so if it fails (disk/IO) the decision stands without it. The
+        // transactional path already appended the event inside the resolve above.
+        if (_atomic is null)
+            await _audit.Append(DecisionEvent(toState, actor, request, verb), CancellationToken.None);
 
         return new CallbackResult(CallbackOutcome.Decided, request, outcome);
     }
+
+    /// <summary>The audit event for a resolved decision — built the same way whether
+    /// it is appended inside the transaction or as the best-effort second step.</summary>
+    private AuditEvent DecisionEvent(string toState, string actor, PendingRequest request, string verb) =>
+        Event(toState == "approved" ? AuditEvents.AccessApproved : AuditEvents.AccessDenied,
+            actor: actor, subject: request.Input, resource: request.Resource,
+            requestId: request.Id, channel: ChannelOf(actor), metadata: verb);
 
     // ---- Lists: read and mutate (formatting lives in the notifier) ----------
 

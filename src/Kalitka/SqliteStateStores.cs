@@ -71,7 +71,15 @@ public sealed class SqliteRequestStore : IRequestStore
     public PendingRequest? Get(string id)
     {
         using var conn = SqliteState.Open(_cs);
+        return GetCore(conn, null, id);
+    }
+
+    // Bound to a caller's connection/transaction so a unit of work (IAtomicWork)
+    // can read a request inside the same transaction as its state change.
+    internal static PendingRequest? GetCore(SqliteConnection conn, SqliteTransaction? tx, string id)
+    {
         using var cmd = conn.CreateCommand();
+        if (tx is not null) cmd.Transaction = tx;
         cmd.CommandText = $"SELECT {Cols} FROM requests WHERE id=$id;";
         cmd.Parameters.AddWithValue("$id", id);
         using var r = cmd.ExecuteReader();
@@ -118,18 +126,27 @@ public sealed class SqliteRequestStore : IRequestStore
 
     public bool TryResolve(string id, string toState, DateTimeOffset notOlderThan, out PendingRequest? request)
     {
-        request = null;
         using var conn = SqliteState.Open(_cs);
-        using var cmd = conn.CreateCommand();
-        // One conditional UPDATE: only the row still waiting and still fresh moves,
-        // and only one caller's UPDATE can match it (SQLite serialises writers).
-        cmd.CommandText = "UPDATE requests SET state=$to WHERE id=$id AND state='waiting' AND raised>=$fresh;";
-        cmd.Parameters.AddWithValue("$to", toState);
-        cmd.Parameters.AddWithValue("$id", id);
-        cmd.Parameters.AddWithValue("$fresh", notOlderThan.ToUnixTimeMilliseconds());
-        if (cmd.ExecuteNonQuery() != 1) return false;   // gone, already resolved, or too old
+        return ResolveCore(conn, null, id, toState, notOlderThan, out request);
+    }
 
-        request = Get(id);
+    // The resolve as it runs inside a caller's transaction (null tx = its own
+    // connection, the standalone path). Same guarantee either way: one conditional
+    // UPDATE, only the row still waiting and still fresh moves, only one writer wins.
+    internal static bool ResolveCore(SqliteConnection conn, SqliteTransaction? tx,
+        string id, string toState, DateTimeOffset notOlderThan, out PendingRequest? request)
+    {
+        request = null;
+        using (var cmd = conn.CreateCommand())
+        {
+            if (tx is not null) cmd.Transaction = tx;
+            cmd.CommandText = "UPDATE requests SET state=$to WHERE id=$id AND state='waiting' AND raised>=$fresh;";
+            cmd.Parameters.AddWithValue("$to", toState);
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$fresh", notOlderThan.ToUnixTimeMilliseconds());
+            if (cmd.ExecuteNonQuery() != 1) return false;   // gone, already resolved, or too old
+        }
+        request = GetCore(conn, tx, id);
         return request is not null;
     }
 

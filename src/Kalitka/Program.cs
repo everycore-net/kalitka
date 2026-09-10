@@ -41,6 +41,18 @@ builder.Services.AddSingleton<ISessionStore>(sp =>
     var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.StateDbPath;
     return string.IsNullOrWhiteSpace(path) ? new InMemorySessionStore() : new SqliteSessionStore(path);
 });
+// When state and audit are the *same* SQLite file, register the unit of work that
+// lets a decision and its audit event commit in one transaction (audit integrity).
+// Absent it — in-memory, or state and audit on separate files — the engine keeps
+// the sequential best-effort append. Registered conditionally so the engine's
+// optional IAtomicWork stays null in every other case.
+var stateDbPath = builder.Configuration["Kalitka:StateDbPath"];
+var auditDbPath = builder.Configuration["Kalitka:AuditDbPath"];
+if (!string.IsNullOrWhiteSpace(stateDbPath) &&
+    string.Equals(stateDbPath, auditDbPath, StringComparison.Ordinal))
+{
+    builder.Services.AddSingleton<IAtomicWork>(_ => new SqliteAtomicWork(stateDbPath));
+}
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 // A second approval channel beside Telegram. GateService picks up every INotifier.
 builder.Services.AddSingleton<INotifier, EmailNotifier>();
