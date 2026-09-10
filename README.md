@@ -317,4 +317,19 @@ a latch you open for people you recognise. That is the job.
 
 ## License
 
-[MIT](LICENSE).
+kalitka is licensed under the **GNU Affero General Public License v3.0 or later**
+(`AGPL-3.0-or-later`) — see [LICENSE](LICENSE). Copyright (C) 2026 everycore. In
+short: you may run, study, share and modify it, but if you run a **modified**
+kalitka as a network service, the AGPL requires you to offer that service's users
+the source of your modifications.
+
+**Commercial licensing.** If the AGPL does not fit — for example you want to embed
+or offer kalitka without AGPL obligations — a separate commercial license is
+available; contact everycore.
+
+**Contributing.** See [CONTRIBUTING](CONTRIBUTING.md). Contributions are made under
+the [Contributor License Agreement](CLA.md), which is what keeps the commercial
+license possible alongside the open-source one.
+
+Releases up to and including **0.11.0 were published under the MIT License** and
+remain available under those terms; the AGPL applies from the next release onward.
