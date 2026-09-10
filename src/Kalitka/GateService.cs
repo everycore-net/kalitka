@@ -26,13 +26,16 @@ public sealed class GateService
 
     public GateService(ITelegramClient telegram, GeoLookup geo, AccessLists lists,
         IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null,
-        IEnumerable<INotifier>? extraNotifiers = null, IAuditStore? audit = null)
+        IEnumerable<INotifier>? extraNotifiers = null, IAuditStore? audit = null,
+        IRequestStore? requestStore = null)
     {
-        // In-memory stores today; the IRequestStore / IAuditStore seams are where
-        // durable/shared backends plug in (see the roadmap). DI supplies the audit
-        // store so the history view reads what the engine wrote.
+        // DI supplies the request and audit stores (in-memory by default, SQLite
+        // when a path is configured), so pending state and history survive a
+        // restart and their atomic transitions hold across every process on the
+        // same file. The seams are unchanged — this is just which backend is wired.
         _engine = new ApprovalEngine(geo, lists, options.Value, log,
-            clock ?? TimeProvider.System, new InMemoryRequestStore(), audit ?? new InMemoryAuditStore());
+            clock ?? TimeProvider.System, requestStore ?? new InMemoryRequestStore(),
+            audit ?? new InMemoryAuditStore());
         _notifier = new TelegramNotifier(telegram, _engine, options.Value);
         // Telegram is always a channel; DI supplies any others (e.g. e-mail).
         _extra = extraNotifiers?.ToList() ?? new List<INotifier>();

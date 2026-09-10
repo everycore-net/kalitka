@@ -143,6 +143,18 @@ public sealed class GateOptions
     public string AuditDbPath { get; set; } = "";
 
     /// <summary>
+    /// SQLite file for the durable live state — pending requests, consumed one-time
+    /// tokens (replay), and sessions. Empty keeps all three in memory (today's
+    /// behaviour: lost on restart, single instance only). Set a path and the state
+    /// survives a restart, and the atomic transitions (resolve-once, redeem-once,
+    /// close-once) hold across every process pointed at the same file — the
+    /// single-node durable step. True multi-<i>node</i> is the same seam with a
+    /// Postgres backend (a parallel <c>Sqlite*</c>-shaped store); the atomicity is
+    /// already expressed as conditional SQL updates, so that swap is mechanical.
+    /// </summary>
+    public string StateDbPath { get; set; } = "";
+
+    /// <summary>
     /// Secret for the <c>/internal/*</c> endpoints used to arm or disarm hosts
     /// from another service on the same network. Empty disables them. This is
     /// administrative — keep it off the SSH hosts (they use <see cref="AgentSecret"/>).

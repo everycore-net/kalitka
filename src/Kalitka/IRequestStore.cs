@@ -33,4 +33,14 @@ public interface IRequestStore
     /// it was gone, already resolved, or too old (no change made).
     /// </summary>
     bool TryResolve(string id, string toState, DateTimeOffset notOlderThan, out PendingRequest? request);
+
+    /// <summary>
+    /// Atomically attach the one-time grant to the request, but only if it has none
+    /// yet. Returns the effective grant (existing or the candidate just stored) and,
+    /// via the return value, whether THIS call stored it. The atomicity belongs in
+    /// the store, not the engine: with a durable backend <see cref="Get"/> hands back
+    /// a copy, so mutating that copy would be lost — and two status polls landing on
+    /// two instances must not mint two redeemable grants for one approval.
+    /// </summary>
+    bool TrySetGrant(string id, string candidate, out string grant);
 }

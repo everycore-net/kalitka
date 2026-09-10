@@ -419,13 +419,11 @@ public sealed class ApprovalEngine
     /// </summary>
     public (string grant, bool created) EnsureGrant(string id, string candidate)
     {
-        var r = _store.Get(id);
-        if (r is null) return ("", false);
-        lock (r)
-        {
-            if (r.Grant.Length == 0) { r.Grant = candidate; return (candidate, true); }
-            return (r.Grant, false);
-        }
+        // The atomic issue-once lives in the store: with a durable/shared backend
+        // Get returns a copy, so mutating it here would be lost and two instances
+        // could each mint a grant for one approval.
+        var created = _store.TrySetGrant(id, candidate, out var grant);
+        return (grant, created);
     }
 
     /// <summary>
