@@ -54,12 +54,25 @@ i=0
 while [ "$i" -lt 100 ]; do
   sleep 3
   i=$((i + 1))
-  s=$($CURL -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
-      "$KALITKA_URL/agent/status?id=$id" 2>/dev/null | field state) || continue
-  case "$s" in
-    approved) echo "kalitka: approved." >&2; exit 0 ;;
-    denied)   echo "kalitka: denied." >&2;   exit 1 ;;
-    gone)     echo "kalitka: request expired." >&2; exit 1 ;;
+  st=$($CURL -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
+       "$KALITKA_URL/agent/status?id=$id" 2>/dev/null) || continue
+  case "$(printf '%s' "$st" | field state)" in
+    approved)
+      # Approval is not entry: redeem the one-time grant to start a session.
+      grant=$(printf '%s' "$st" | field grant)
+      red=$($CURL -X POST "$KALITKA_URL/agent/redeem" \
+            -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
+            --data-urlencode "grant=$grant" --data-urlencode "agent=$host" 2>/dev/null) \
+        || { echo "kalitka: grant redemption failed." >&2; exit 1; }
+      sid=$(printf '%s' "$red" | field session_id)
+      [ -n "$sid" ] || { echo "kalitka: grant not redeemable (already used or expired)." >&2; exit 1; }
+      # Hand the session id to the PAM session-close hook (best effort; one
+      # concurrent session per user in this PoC — robust correlation is later).
+      mkdir -p /run/kalitka 2>/dev/null && printf '%s' "$sid" > "/run/kalitka/session-${user}" 2>/dev/null || true
+      echo "kalitka: approved." >&2
+      exit 0 ;;
+    denied) echo "kalitka: denied." >&2; exit 1 ;;
+    gone)   echo "kalitka: request expired." >&2; exit 1 ;;
   esac
 done
 

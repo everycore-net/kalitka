@@ -11,7 +11,8 @@ namespace Kalitka;
 /// <see cref="VerbFor"/>), so a policy change between issuance and click applies.
 /// </summary>
 public sealed record Capability(
-    int V, string Jti, string Purpose, string Resource, string RequestId, string Action, long Exp)
+    int V, string Jti, string Purpose, string Resource, string RequestId,
+    string Action, string Subject, string GrantId, long Exp)
 {
     public DateTimeOffset ExpiresAt => DateTimeOffset.FromUnixTimeSeconds(Exp);
 }
@@ -32,7 +33,21 @@ public sealed class OneTimeTokenService
     public string Mint(string purpose, string resource, string requestId, string action, int minutes)
     {
         var exp = _clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds();
-        var cap = new Capability(1, NewJti(), purpose, resource, requestId, action, exp);
+        var cap = new Capability(1, NewJti(), purpose, resource, requestId, action, "", "", exp);
+        return _signer.Sign(JsonSerializer.Serialize(cap), KeyId);
+    }
+
+    /// <summary>
+    /// A short-lived, single-use SSH grant: the bridge between "an admin approved"
+    /// and "the access was used". Bound to a request, subject and resource; carries
+    /// its own grant id. It grants no rights of its own — what it permits is
+    /// resolved server-side at redemption.
+    /// </summary>
+    public string MintGrant(string resource, string requestId, string subject, int minutes)
+    {
+        var exp = _clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds();
+        var cap = new Capability(1, NewJti(), "ssh-grant", resource, requestId,
+            "", subject, NewJti(), exp);
         return _signer.Sign(JsonSerializer.Serialize(cap), KeyId);
     }
 

@@ -24,6 +24,8 @@ builder.Services.AddSingleton<IAuditStore>(sp =>
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 // A second approval channel beside Telegram. GateService picks up every INotifier.
 builder.Services.AddSingleton<INotifier, EmailNotifier>();
+builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
+builder.Services.AddSingleton<GrantService>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -248,13 +250,40 @@ app.MapPost("/agent/request", async (HttpContext ctx, GateService gate) =>
     return Results.Json(new { id, state });
 });
 
-app.MapGet("/agent/status", (HttpContext ctx, GateService gate) =>
+app.MapGet("/agent/status", async (HttpContext ctx, GateService gate, GrantService grants) =>
 {
     var denied = AgentGuard(ctx, gate);
     if (denied is not null) return denied;
 
-    var state = gate.StateOf(ctx.Request.Query["id"].ToString()) ?? "gone";
-    return Results.Json(new { state });
+    var id = ctx.Request.Query["id"].ToString();
+    var state = gate.StateOf(id) ?? "gone";
+    // On approval the agent gets a one-time grant to redeem — approval alone no
+    // longer means "in". Issued once; repeated polls return the same grant.
+    var grant = state == "approved" ? await grants.IssueGrant(id, ctx.RequestAborted) : null;
+    return Results.Json(new { state, grant });
+});
+
+// Redeem the grant exactly once and start a session (grant.redeemed + session.started).
+app.MapPost("/agent/redeem", async (HttpContext ctx, GateService gate, GrantService grants) =>
+{
+    var denied = AgentGuard(ctx, gate);
+    if (denied is not null) return denied;
+
+    var form = await ctx.Request.ReadFormAsync();
+    var result = await grants.Redeem(form["grant"].ToString(), form["agent"].ToString(), ctx.RequestAborted);
+    if (result.Ok) return Results.Json(new { session_id = result.SessionId });
+    return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
+});
+
+// The agent reports the session ended (session.ended).
+app.MapPost("/agent/session/end", async (HttpContext ctx, GateService gate, GrantService grants) =>
+{
+    var denied = AgentGuard(ctx, gate);
+    if (denied is not null) return denied;
+
+    var form = await ctx.Request.ReadFormAsync();
+    var ok = await grants.EndSession(form["session_id"].ToString(), form["outcome"].ToString(), ctx.RequestAborted);
+    return ok ? Results.Ok() : Results.StatusCode(404);
 });
 
 // ---------------------------------------------------------------------------
