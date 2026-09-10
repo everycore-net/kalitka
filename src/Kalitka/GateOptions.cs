@@ -136,6 +136,13 @@ public sealed class GateOptions
     public string SettingsPath { get; set; } = "/data/settings.json";
 
     /// <summary>
+    /// SQLite file for the durable audit log. Empty keeps audit in memory (lost on
+    /// restart) — fine for a home instance; set a path on the data volume to keep
+    /// history across restarts, e.g. <c>/data/audit.db</c>.
+    /// </summary>
+    public string AuditDbPath { get; set; } = "";
+
+    /// <summary>
     /// Secret for the <c>/internal/*</c> endpoints used to arm or disarm hosts
     /// from another service on the same network. Empty disables them.
     /// </summary>

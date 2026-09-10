@@ -53,6 +53,9 @@ services:
       Kalitka__ListsPath: /data/lists.json
       Kalitka__EnforcedPath: /data/enforced.json
       Kalitka__SettingsPath: /data/settings.json
+      # Durable audit log (SQLite) on the data volume, so /admin/history survives
+      # restarts. Empty keeps audit in memory (fine for a home instance).
+      Kalitka__AuditDbPath: /data/audit.db
 
       # Optional: Google sign-in as the second way in.
       # Authorised redirect URIs at Google: https://<KALITKA_HOST>/oauth2/callback

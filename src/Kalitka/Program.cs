@@ -16,6 +16,11 @@ builder.Services.AddSingleton<TokenSigner>(sp =>
 builder.Services.AddTransient<AdminAuth>();
 builder.Services.AddSingleton<OneTimeTokenService>();
 builder.Services.AddSingleton<IReplayStore, InMemoryReplayStore>();
+builder.Services.AddSingleton<IAuditStore>(sp =>
+{
+    var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.AuditDbPath;
+    return string.IsNullOrWhiteSpace(path) ? new InMemoryAuditStore() : new SqliteAuditStore(path);
+});
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 // A second approval channel beside Telegram. GateService picks up every INotifier.
 builder.Services.AddSingleton<INotifier, EmailNotifier>();
@@ -329,7 +334,7 @@ app.MapPost("/action", async (HttpContext ctx, OneTimeTokenService tokens, IRepl
         return Results.Content(Pages.Message("Already used", "This link has already been used."),
             "text/html; charset=utf-8");
 
-    var result = gate.Decide(cap.RequestId, verb, "email:link");
+    var result = await gate.Decide(cap.RequestId, verb, "email:link");
     var message = result.Outcome switch
     {
         CallbackOutcome.Decided        => verb == "ok" ? "Approved. The visitor may continue." : "Denied.",
@@ -363,7 +368,7 @@ adminGroup.MapGet("/login/google", (HttpContext ctx, AdminAuth auth) =>
     return Results.Redirect(auth.LoginUrl(ctx.Request.Query["return"].ToString()), false);
 });
 
-adminGroup.MapGet("/oauth2/callback", async (HttpContext ctx, AdminAuth auth, GateService gate, ILogger<Program> log) =>
+adminGroup.MapGet("/oauth2/callback", async (HttpContext ctx, AdminAuth auth, GateService gate, IAuditStore audit, ILogger<Program> log) =>
 {
     if (!auth.Enabled) return Results.NotFound();
 
@@ -373,12 +378,14 @@ adminGroup.MapGet("/oauth2/callback", async (HttpContext ctx, AdminAuth auth, Ga
     if (!result.Ok || result.Identity is null)
     {
         Audit.Decision(log, "admin-login-denied", "-", ResolveIp(ctx, gate), reason: "google");
+        await audit.Append(AdminEvent(AuditEvents.AdminLoginDenied, "-", "-"), ctx.RequestAborted);
         return Results.Redirect("/admin/login?error=" + Uri.EscapeDataString("Sign-in was not accepted."), false);
     }
 
     SetAdminCookie(ctx, auth.IssueCookie(result.Identity));
     Audit.Decision(log, "admin-login", "-", ResolveIp(ctx, gate),
         identity: result.Identity.Email, actor: result.Identity.Actor, reason: "google");
+    await audit.Append(AdminEvent(AuditEvents.AdminLogin, result.Identity.Actor, result.Identity.Email), ctx.RequestAborted);
     return Results.Redirect(result.ReturnPath, false);
 });
 
@@ -429,12 +436,29 @@ guarded.MapPost("/requests/decide", async (HttpContext ctx, AdminAuth auth, Gate
     var who = Admin(ctx);
     var form = await ctx.Request.ReadFormAsync();
     if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
-    gate.Decide(form["id"].ToString(), form["verb"].ToString(), who.Actor);
+    await gate.Decide(form["id"].ToString(), form["verb"].ToString(), who.Actor);
     return Results.Redirect("/admin/requests", false);
 });
 
-guarded.MapGet("/history", (HttpContext ctx, GateService gate) =>
-    Results.Content(AdminPages.History(Admin(ctx), gate.PendingSnapshot()), "text/html; charset=utf-8"));
+guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
+{
+    var q = ctx.Request.Query;
+    var actor = q["actor"].ToString();
+    var resource = q["resource"].ToString();
+    var eventType = q["event"].ToString();
+    int.TryParse(q["offset"].ToString(), out var offset);
+    const int limit = 50;
+
+    var events = await audit.Query(new AuditQuery(
+        Actor: string.IsNullOrEmpty(actor) ? null : actor,
+        Resource: string.IsNullOrEmpty(resource) ? null : resource,
+        EventType: string.IsNullOrEmpty(eventType) ? null : eventType,
+        Limit: limit, Offset: Math.Max(0, offset)), ctx.RequestAborted);
+
+    return Results.Content(
+        AdminPages.History(Admin(ctx), events, actor, resource, eventType, Math.Max(0, offset), limit),
+        "text/html; charset=utf-8");
+});
 
 // An empty response makes some browsers download the reply as a 0-byte file
 // instead of showing anything. Always answer with something typed.
@@ -560,6 +584,9 @@ static void SetAdminCookie(HttpContext ctx, string value)
 
 // The admin identity the guard filter verified and stashed for the handler.
 static AdminIdentity Admin(HttpContext ctx) => (AdminIdentity)ctx.Items["admin"]!;
+
+static AuditEvent AdminEvent(string type, string actor, string email) =>
+    new(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, type, actor, email, "-", "-", "-", "web", "");
 
 static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
     string.IsNullOrEmpty(gate.InternalSecret)

@@ -147,30 +147,60 @@ public static class AdminPages
 
     // ---- History ------------------------------------------------------------
 
-    public static string History(AdminIdentity who, IReadOnlyList<PendingView> all)
+    public static string History(AdminIdentity who, IReadOnlyList<AuditEvent> events,
+        string actor, string resource, string eventType, int offset, int limit)
     {
-        var done = all.Where(r => r.State != "waiting").ToList();
-        var sb = new StringBuilder("<h1>History</h1>"
-            + "<p class=\"muted\">Recently resolved (in memory). Durable audit is the log.</p>");
+        var sb = new StringBuilder("<h1>History</h1>");
 
-        if (done.Count == 0)
-            sb.Append("<p class=\"muted\">Nothing yet.</p>");
+        // Filter form (GET, so filters live in the URL and survive paging).
+        sb.Append("<form method=\"get\" action=\"/admin/history\" style=\"margin-bottom:14px\">")
+          .Append(Field("actor", actor)).Append(Field("resource", resource)).Append(Field("event", eventType))
+          .Append("<button style=\"width:auto\">Filter</button></form>");
+
+        if (events.Count == 0)
+            sb.Append("<p class=\"muted\">No events.</p>");
         else
         {
-            sb.Append("<table><tr><th>Target</th><th>Says</th><th>From</th><th>When</th><th>Result</th></tr>");
-            foreach (var r in done)
+            sb.Append("<table><tr><th>When (UTC)</th><th>Event</th><th>Actor</th>"
+                + "<th>Resource</th><th>Subject</th><th>Req</th><th>Note</th></tr>");
+            foreach (var e in events)
                 sb.Append("<tr>")
-                  .Append($"<td><code>{H(r.Target)}</code></td>")
-                  .Append($"<td>{H(r.Input)}</td>")
-                  .Append($"<td class=\"muted\">{H(r.Ip)}</td>")
-                  .Append($"<td class=\"muted\">{r.Raised:HH:mm:ss}</td>")
-                  .Append($"<td>{Pill(r.State)}</td>")
+                  .Append($"<td class=\"muted\">{e.Timestamp:yyyy-MM-dd HH:mm:ss}</td>")
+                  .Append($"<td><code>{H(e.EventType)}</code></td>")
+                  .Append($"<td>{H(e.Actor)}</td>")
+                  .Append($"<td>{H(e.Resource)}</td>")
+                  .Append($"<td>{H(e.Subject)}</td>")
+                  .Append($"<td class=\"muted\"><code>{H(Short(e.RequestId))}</code></td>")
+                  .Append($"<td class=\"muted\">{H(e.Metadata)}</td>")
                   .Append("</tr>");
             sb.Append("</table>");
         }
 
+        // Paging, filters carried along.
+        sb.Append("<p style=\"margin-top:14px\">");
+        if (offset > 0)
+            sb.Append($"<a class=\"row\" href=\"{PageUrl(actor, resource, eventType, Math.Max(0, offset - limit))}\">← newer</a> ");
+        if (events.Count == limit)
+            sb.Append($"<a class=\"row\" href=\"{PageUrl(actor, resource, eventType, offset + limit)}\">older →</a>");
+        sb.Append("</p>");
+
         return Shell(who, sb.ToString());
     }
+
+    private static string Field(string name, string value) =>
+        $"<input name=\"{name}\" value=\"{H(value)}\" placeholder=\"{name}\" "
+        + "style=\"width:auto;display:inline-block;margin-right:8px\">";
+
+    private static string PageUrl(string actor, string resource, string eventType, int offset)
+    {
+        var q = new List<string> { $"offset={offset}" };
+        if (!string.IsNullOrEmpty(actor)) q.Add("actor=" + Uri.EscapeDataString(actor));
+        if (!string.IsNullOrEmpty(resource)) q.Add("resource=" + Uri.EscapeDataString(resource));
+        if (!string.IsNullOrEmpty(eventType)) q.Add("event=" + Uri.EscapeDataString(eventType));
+        return "/admin/history?" + string.Join("&", q);
+    }
+
+    private static string Short(string s) => s.Length > 10 ? s[..10] : s;
 
     // ---- bits ---------------------------------------------------------------
 
