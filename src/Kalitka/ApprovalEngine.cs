@@ -52,7 +52,7 @@ public sealed class ApprovalEngine
     private readonly GateOptions _options;
     private readonly ILogger _log;
 
-    private readonly ConcurrentDictionary<string, PendingRequest> _pending = new();
+    private readonly IRequestStore _store;
     private readonly HashSet<string> _enforced = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _enforcedLock = new();
     private readonly SessionService _sessions;
@@ -68,13 +68,14 @@ public sealed class ApprovalEngine
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
 
     public ApprovalEngine(GeoLookup geo, AccessLists lists, GateOptions options,
-        ILogger log, TimeProvider clock)
+        ILogger log, TimeProvider clock, IRequestStore store)
     {
         _geo = geo;
         _lists = lists;
         _options = options;
         _log = log;
         _clock = clock;
+        _store = store;
 
         _sessions = new SessionService(_options.HmacSecret, clock);
         _sessionMinutes = _options.SessionMinutes;
@@ -251,11 +252,8 @@ public sealed class ApprovalEngine
         return false;
     }
 
-    private int PendingCount()
-    {
-        var cutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
-        return _pending.Count(kv => kv.Value.State == "waiting" && kv.Value.Raised >= cutoff);
-    }
+    private int PendingCount() =>
+        _store.CountWaiting(_clock.GetUtcNow().AddMinutes(-_options.PendingMinutes));
 
     public bool IsAllowedIp(string ip) => _lists.IsAllowed(ip, "");
 
@@ -343,15 +341,15 @@ public sealed class ApprovalEngine
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
             Raised = _clock.GetUtcNow(), State = "waiting"
         };
-        _pending[id] = request;
+        _store.Add(request);
 
         Audit.Decision(_log, "asked", target, ip, requestId: id, identity: input);
 
         return ("waiting", id, request);
     }
 
-    public string? StateOf(string id) => _pending.TryGetValue(id, out var r) ? r.State : null;
-    public string? TargetOf(string id) => _pending.TryGetValue(id, out var r) ? r.Target : null;
+    public string? StateOf(string id) => _store.Get(id)?.State;
+    public string? TargetOf(string id) => _store.Get(id)?.Target;
 
     /// <summary>
     /// A snapshot of the requests currently in memory, newest first — for the web
@@ -360,23 +358,19 @@ public sealed class ApprovalEngine
     /// the audit log (a later, store-backed item).
     /// </summary>
     public IReadOnlyList<PendingView> PendingSnapshot() =>
-        _pending.Values
+        _store.Snapshot()
             .OrderByDescending(r => r.Raised)
             .Select(r => new PendingView(
                 r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State))
             .ToList();
 
     public PendingView? RequestView(string id) =>
-        _pending.TryGetValue(id, out var r)
+        _store.Get(id) is { } r
             ? new PendingView(r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State)
             : null;
 
-    private void DropExpired()
-    {
-        var cutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
-        foreach (var kv in _pending)
-            if (kv.Value.Raised < cutoff) _pending.TryRemove(kv.Key, out _);
-    }
+    private void DropExpired() =>
+        _store.DropOlderThan(_clock.GetUtcNow().AddMinutes(-_options.PendingMinutes));
 
     private string Now() => _clock.GetUtcNow().ToString("yyyy-MM-dd HH:mm");
     private static string H(string s) => WebUtility.HtmlEncode(s);
@@ -395,70 +389,56 @@ public sealed class ApprovalEngine
     /// </summary>
     public CallbackResult Decide(string id, string verb, string actor)
     {
-        if (!_pending.TryGetValue(id, out var request))
-            return new CallbackResult(CallbackOutcome.Expired);
+        var request = _store.Get(id);
+        if (request is null) return new CallbackResult(CallbackOutcome.Expired);
+        if (request.State != "waiting") return new CallbackResult(CallbackOutcome.AlreadyHandled);
 
-        if (request.State != "waiting")
-            return new CallbackResult(CallbackOutcome.AlreadyHandled);
-
-        if (request.Raised < _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes))
+        var cutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
+        if (request.Raised < cutoff)
         {
-            _pending.TryRemove(request.Id, out _);
+            _store.Remove(request.Id);
             Audit.Decision(_log, "ignored", request.Target, request.Ip,
                 requestId: request.Id, identity: request.Input, actor: actor, reason: "callback-too-late");
             return new CallbackResult(CallbackOutcome.Expired);
         }
 
-        var stamp = Now();
-        string outcome;
+        var toState = verb switch
+        {
+            "ok" or "aip" or "ain"          => "approved",
+            "no" or "bip" or "bin" or "bco" => "denied",
+            _                               => null
+        };
+        if (toState is null) return new CallbackResult(CallbackOutcome.Ignored);
 
+        // The one atomic step: only the first caller flips waiting → terminal, so
+        // an Approve and a Deny racing the same request cannot both win. The list
+        // side-effect below therefore also happens at most once.
+        if (!_store.TryResolve(id, toState, cutoff, out request) || request is null)
+            return new CallbackResult(CallbackOutcome.AlreadyHandled);
+
+        var stamp = Now();
         switch (verb)
         {
-            case "ok":
-                request.State = "approved";
-                outcome = "✅ let in";
-                break;
-
-            case "no":
-                request.State = "denied";
-                outcome = "✖ rejected";
-                break;
-
-            case "aip":
-                request.State = "approved";
-                _lists.Add("allow", "ip", request.Ip, stamp);
-                outcome = $"✅⭐ let in, IP remembered: {H(request.Ip)}";
-                break;
-
-            case "ain":
-                request.State = "approved";
-                _lists.Add("allow", "input", request.Input, stamp);
-                outcome = $"✅⭐ let in, name remembered: {H(request.Input)}";
-                break;
-
-            case "bip":
-                request.State = "denied";
-                _lists.Add("block", "ip", request.Ip, stamp);
-                outcome = $"⛔ IP blocked: {H(request.Ip)}";
-                break;
-
-            case "bin":
-                request.State = "denied";
-                _lists.Add("block", "input", request.Input, stamp);
-                outcome = $"⛔ name blocked: {H(request.Input)}";
-                break;
-
-            case "bco":
-                request.State = "denied";
-                _lists.Add("block", "country", request.CountryCode, stamp);
-                outcome = $"⛔ country blocked: {H(request.CountryCode)}";
-                break;
-
-            default:
-                return new CallbackResult(CallbackOutcome.Ignored);
+            case "aip": _lists.Add("allow", "ip", request.Ip, stamp); break;
+            case "ain": _lists.Add("allow", "input", request.Input, stamp); break;
+            case "bip": _lists.Add("block", "ip", request.Ip, stamp); break;
+            case "bin": _lists.Add("block", "input", request.Input, stamp); break;
+            case "bco": _lists.Add("block", "country", request.CountryCode, stamp); break;
         }
 
-        Audit.Decision(_log, request.State == "approved" ? "approved" : "denied",
+        var outcome = verb switch
+        {
+            "ok"  => "✅ let in",
+            "no"  => "✖ rejected",
+            "aip" => $"✅⭐ let in, IP remembered: {H(request.Ip)}",
+            "ain" => $"✅⭐ let in, name remembered: {H(request.Input)}",
+            "bip" => $"⛔ IP blocked: {H(request.Ip)}",
+            "bin" => $"⛔ name blocked: {H(request.Input)}",
+            "bco" => $"⛔ country blocked: {H(request.CountryCode)}",
+            _     => ""
+        };
+
+        Audit.Decision(_log, toState == "approved" ? "approved" : "denied",
             request.Target, request.Ip, requestId: request.Id, identity: request.Input,
             actor: actor, reason: verb);
 
