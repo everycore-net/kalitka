@@ -13,6 +13,7 @@ public static class Pages
     private const string Head =
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
       + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+      + "<meta name=\"robots\" content=\"noindex,nofollow\">"
       + "<title>Access</title><style>"
       + "body{font-family:system-ui,sans-serif;background:#0f1117;color:#e6e6e6;display:flex;"
       + "min-height:100vh;align-items:center;justify-content:center;margin:0}"
@@ -69,4 +70,20 @@ public static class Pages
 
     public static string Message(string title, string text) =>
         Head + $"<h1>{H(title)}</h1><p>{H(text)}</p>" + Foot;
+
+    /// <summary>
+    /// The confirmation page for a one-time approval link. The GET that shows this
+    /// never changes anything — a security scanner pre-fetching the link is
+    /// harmless; only the POST from here consumes the link and decides.
+    /// </summary>
+    public static string ActionConfirm(string action, string resource, string says, string token) =>
+        Head
+        + $"<h1>{H(action)} access?</h1>"
+        + $"<p>Resource: <code>{H(resource)}</code></p>"
+        + $"<p>Says: <b>{H(says)}</b></p>"
+        + "<form method=\"post\" action=\"/action\">"
+        + $"<input type=\"hidden\" name=\"t\" value=\"{H(token)}\">"
+        + $"<button>Confirm: {H(action)}</button></form>"
+        + "<p>This link works once and then expires.</p>"
+        + Foot;
 }

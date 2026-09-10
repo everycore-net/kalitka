@@ -159,6 +159,28 @@ scoped to `/admin`, short absolute lifetime) — web access to a guarded app gra
 nothing here. State-changing actions are POSTs with a CSRF token. Login is OIDC,
 so there is no password to brute-force.
 
+## E-mail approvals
+
+A third way to answer, beside Telegram and the console: when SMTP is configured,
+a new request also e-mails the operators (`AdminEmails`) an **Approve** and a
+**Deny** link.
+
+- Each link is a **one-time capability** — signed, single-use, and short-lived
+  (`OneTimeMinutes`, default 15). It carries the request and which action it is
+  for, not the decision's parameters; what the action means is resolved on the
+  server when redeemed.
+- Opening a link **changes nothing** — the `GET` shows a confirmation page, so a
+  mail scanner that pre-fetches the link is harmless. Only the `Confirm` button
+  (a `POST`) consumes the link and resolves the request. It works once; a second
+  use, or the other link after the first decided it, says so.
+
+Configure SMTP (`SmtpHost`, `SmtpPort`, `SmtpUser`, `SmtpPassword`, `SmtpFrom`,
+`SmtpStartTls`); recipients are `AdminEmails`. Empty `SmtpHost` disables the
+channel — Telegram is unaffected either way.
+
+An e-mail link is a bearer capability: whoever holds it can act, so treat the
+mailbox accordingly. It is a convenience channel, not proof of who clicked.
+
 ## Bot commands
 
 | Command | What it does |

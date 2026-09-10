@@ -179,6 +179,23 @@ public sealed class GateOptions
 
     /// <summary>Absolute lifetime of an admin session. Shorter than a visitor one.</summary>
     public int AdminSessionMinutes { get; set; } = 480;
+
+    // ---- Email approval channel (optional) ---------------------------------
+
+    /// <summary>
+    /// SMTP for the e-mail approval channel: when configured, a new request also
+    /// e-mails the operators (<see cref="AdminEmails"/>) an approve/deny link.
+    /// Empty host disables the channel; Telegram is unaffected either way.
+    /// </summary>
+    public string SmtpHost { get; set; } = "";
+    public int SmtpPort { get; set; } = 587;
+    public string SmtpUser { get; set; } = "";
+    public string SmtpPassword { get; set; } = "";
+    public string SmtpFrom { get; set; } = "";
+    public bool SmtpStartTls { get; set; } = true;
+
+    /// <summary>Lifetime of a one-time approval link. Short: it is a capability.</summary>
+    public int OneTimeMinutes { get; set; } = 15;
 }
 
 /// <summary>How wide a Google-proven identity's session reaches. See

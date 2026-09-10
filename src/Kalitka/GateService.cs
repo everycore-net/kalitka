@@ -22,9 +22,11 @@ public sealed class GateService
 {
     private readonly ApprovalEngine _engine;
     private readonly TelegramNotifier _notifier;
+    private readonly IReadOnlyList<INotifier> _extra;
 
     public GateService(ITelegramClient telegram, GeoLookup geo, AccessLists lists,
-        IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null)
+        IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null,
+        IEnumerable<INotifier>? extraNotifiers = null)
     {
         // In-memory store today; the IRequestStore seam is where a durable/shared
         // backend plugs in for multi-instance (see the roadmap). Swapping it is a
@@ -32,6 +34,8 @@ public sealed class GateService
         _engine = new ApprovalEngine(geo, lists, options.Value, log,
             clock ?? TimeProvider.System, new InMemoryRequestStore());
         _notifier = new TelegramNotifier(telegram, _engine, options.Value);
+        // Telegram is always a channel; DI supplies any others (e.g. e-mail).
+        _extra = extraNotifiers?.ToList() ?? new List<INotifier>();
     }
 
     // ---- Configuration and sessions (engine) --------------------------------
@@ -68,7 +72,11 @@ public sealed class GateService
     {
         var (state, id, request) = await _engine.Request(target, input, ip, ct);
         if (request is not null)
+        {
             await _notifier.Announce(request, ct);
+            foreach (var n in _extra)
+                await n.Announce(request, ct);
+        }
         return (state, id);
     }
 
