@@ -7,7 +7,13 @@
     <RootNamespace>Kalitka</RootNamespace>
     <AssemblyName>Kalitka</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.2.0</Version>
+    <Version>0.7.0</Version>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Durable audit store (opt-in via Kalitka__AuditDbPath). The only runtime
+         dependency; a single first-party package, no ORM. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+  </ItemGroup>
 
 </Project>

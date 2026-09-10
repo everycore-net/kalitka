@@ -135,8 +135,13 @@ engine. Telegram stays; the console is additive.
 /admin/dashboard     overview + waiting count
 /admin/requests      requests waiting for a decision
 /admin/requests/{id} one request — approve / deny / remember / block
-/admin/history       recently resolved
+/admin/history       audit log, filter by actor/resource/event + paging
 ```
+
+History is a durable **audit log** of resource-centric events (`access.requested`,
+`access.approved`, `access.denied`, `admin.login`, …) with a fixed envelope, so
+SSH/DB events fit later without a schema change. Set `AuditDbPath` (e.g.
+`/data/audit.db`) to keep it across restarts via SQLite; empty keeps it in memory.
 
 **Who may operate it** is a separate allowlist from who may *enter* guarded hosts:
 

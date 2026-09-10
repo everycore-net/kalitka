@@ -7,6 +7,27 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-10
+
+### Added
+
+- **Durable audit log.** `/admin/history` is now a queryable audit log rather than
+  a peek at memory: resource-centric events with a fixed envelope (`id`,
+  `timestamp`, `event_type`, `actor`, `subject`, `resource`, `request_id`,
+  `grant_id`, `channel`, `metadata`), filterable by actor / resource / event and
+  paged. Event types are `access.requested|approved|denied`, `admin.login`,
+  `admin.login_denied` now, with `grant.*` / `session.*` reserved for the PAM
+  axes so they fit without a schema change.
+- **`IAuditStore` seam.** In-memory by default (a bounded ring); set `AuditDbPath`
+  for a **SQLite** store that survives restarts — the single, first-party runtime
+  dependency (`Microsoft.Data.Sqlite`), append-only, no ORM. New setting:
+  `AuditDbPath`.
+
+### Changed
+
+- `GateService.Decide` is async now (the audit append is awaited, not
+  fire-and-forget). No external behaviour change.
+
 ## [0.6.1] - 2026-09-10
 
 ### Security

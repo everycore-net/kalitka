@@ -53,6 +53,7 @@ public sealed class ApprovalEngine
     private readonly ILogger _log;
 
     private readonly IRequestStore _store;
+    private readonly IAuditStore _audit;
     private readonly HashSet<string> _enforced = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _enforcedLock = new();
     private readonly SessionService _sessions;
@@ -68,7 +69,7 @@ public sealed class ApprovalEngine
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
 
     public ApprovalEngine(GeoLookup geo, AccessLists lists, GateOptions options,
-        ILogger log, TimeProvider clock, IRequestStore store)
+        ILogger log, TimeProvider clock, IRequestStore store, IAuditStore audit)
     {
         _geo = geo;
         _lists = lists;
@@ -76,6 +77,7 @@ public sealed class ApprovalEngine
         _log = log;
         _clock = clock;
         _store = store;
+        _audit = audit;
 
         _sessions = new SessionService(_options.HmacSecret, clock);
         _sessionMinutes = _options.SessionMinutes;
@@ -344,9 +346,22 @@ public sealed class ApprovalEngine
         _store.Add(request);
 
         Audit.Decision(_log, "asked", target, ip, requestId: id, identity: input);
+        await _audit.Append(Event(AuditEvents.AccessRequested,
+            actor: "-", subject: input, resource: "web:" + target, requestId: id, channel: "gate"), ct);
 
         return ("waiting", id, request);
     }
+
+    private AuditEvent Event(string type, string actor, string subject, string resource,
+        string requestId, string channel, string metadata = "") =>
+        new(Guid.NewGuid().ToString("N"), _clock.GetUtcNow(), type,
+            actor, subject, resource, requestId, "-", channel, metadata);
+
+    private static string ChannelOf(string actor) =>
+        actor.StartsWith("telegram:", StringComparison.Ordinal) ? "telegram"
+        : actor.StartsWith("google:", StringComparison.Ordinal) ? "web"
+        : actor.StartsWith("email:", StringComparison.Ordinal) ? "email"
+        : "other";
 
     public string? StateOf(string id) => _store.Get(id)?.State;
     public string? TargetOf(string id) => _store.Get(id)?.Target;
@@ -387,7 +402,7 @@ public sealed class ApprovalEngine
     /// approval nobody is waiting for any more is not an approval — hence the
     /// lifetime check as well.
     /// </summary>
-    public CallbackResult Decide(string id, string verb, string actor)
+    public async Task<CallbackResult> Decide(string id, string verb, string actor)
     {
         var request = _store.Get(id);
         if (request is null) return new CallbackResult(CallbackOutcome.Expired);
@@ -441,6 +456,10 @@ public sealed class ApprovalEngine
         Audit.Decision(_log, toState == "approved" ? "approved" : "denied",
             request.Target, request.Ip, requestId: request.Id, identity: request.Input,
             actor: actor, reason: verb);
+        await _audit.Append(Event(
+            toState == "approved" ? AuditEvents.AccessApproved : AuditEvents.AccessDenied,
+            actor: actor, subject: request.Input, resource: "web:" + request.Target,
+            requestId: request.Id, channel: ChannelOf(actor), metadata: verb), CancellationToken.None);
 
         return new CallbackResult(CallbackOutcome.Decided, request, outcome);
     }

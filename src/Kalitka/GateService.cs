@@ -26,13 +26,13 @@ public sealed class GateService
 
     public GateService(ITelegramClient telegram, GeoLookup geo, AccessLists lists,
         IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null,
-        IEnumerable<INotifier>? extraNotifiers = null)
+        IEnumerable<INotifier>? extraNotifiers = null, IAuditStore? audit = null)
     {
-        // In-memory store today; the IRequestStore seam is where a durable/shared
-        // backend plugs in for multi-instance (see the roadmap). Swapping it is a
-        // one-line change here.
+        // In-memory stores today; the IRequestStore / IAuditStore seams are where
+        // durable/shared backends plug in (see the roadmap). DI supplies the audit
+        // store so the history view reads what the engine wrote.
         _engine = new ApprovalEngine(geo, lists, options.Value, log,
-            clock ?? TimeProvider.System, new InMemoryRequestStore());
+            clock ?? TimeProvider.System, new InMemoryRequestStore(), audit ?? new InMemoryAuditStore());
         _notifier = new TelegramNotifier(telegram, _engine, options.Value);
         // Telegram is always a channel; DI supplies any others (e.g. e-mail).
         _extra = extraNotifiers?.ToList() ?? new List<INotifier>();
@@ -88,7 +88,7 @@ public sealed class GateService
 
     /// <summary>Apply a decision from a non-Telegram channel (the web plane). The
     /// actor is typed, e.g. <c>google:sergej@example.com</c>.</summary>
-    public CallbackResult Decide(string id, string verb, string actor) => _engine.Decide(id, verb, actor);
+    public Task<CallbackResult> Decide(string id, string verb, string actor) => _engine.Decide(id, verb, actor);
 
     // ---- Telegram frontend (notifier) ---------------------------------------
 
