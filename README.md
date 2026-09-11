@@ -201,6 +201,38 @@ access to a guarded app grants nothing here. State-changing actions are POSTs wi
 CSRF token, and the login is bound to the initiating browser by a state nonce. Login
 is OIDC, so there is no password to brute-force.
 
+## Access policies
+
+Tags on agents can carry weight. A policy at `/admin/policies` matches a request by
+resource glob (`ssh:*`) and tags that must **all** be present on the requesting agent
+(`env:prod`), and adds constraints:
+
+```yaml
+name: prod-ssh
+match:
+  resource: "ssh:*"
+  tags: { env: prod }
+approval:
+  required: 2       # distinct approvers before it is approved
+  grant_ttl: 15m    # shorten the one-time SSH grant
+```
+
+A policy **only ever restricts** — it can require more approvals or shorten the grant,
+never grant a capability or resource an agent does not already have (the agent's own
+authority is checked first). Several matching policies combine the strictest way: most
+approvals (`max`), shortest grant (`min`) — there is no rule ordering.
+
+Two things worth knowing about `required: 2`:
+
+- Only an authenticated **control-plane** approver (a Google admin, keyed on the stable
+  `sub`) counts toward a quorum greater than one. The same person approving twice, or
+  via two channels, is still one approver; a Telegram tap or an e-mail link can deny or
+  satisfy a single approval, but does not count as a second person.
+- A **denial from any channel denies immediately** — the quorum is only for approval.
+
+Managing policies needs the `policies.manage` permission (full admin has it). With no
+policies defined, every request needs one approval and the default grant lifetime.
+
 ## E-mail approvals
 
 A third way to answer, beside Telegram and the console: when SMTP is configured,

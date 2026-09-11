@@ -27,7 +27,8 @@ public sealed class GateService
     public GateService(ITelegramClient telegram, IGeoLookup geo, AccessLists lists,
         IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null,
         IEnumerable<INotifier>? extraNotifiers = null, IAuditStore? audit = null,
-        IRequestStore? requestStore = null, IAtomicWork? atomic = null, IConfigStore? config = null)
+        IRequestStore? requestStore = null, IAtomicWork? atomic = null, IConfigStore? config = null,
+        PolicyService? policies = null)
     {
         // DI supplies the request and audit stores (in-memory by default, SQLite
         // when a path is configured), so pending state and history survive a
@@ -39,7 +40,7 @@ public sealed class GateService
         // uses, so all shared config sits in one backend.
         _engine = new ApprovalEngine(geo, lists, options.Value, log,
             clock ?? TimeProvider.System, requestStore ?? new InMemoryRequestStore(),
-            audit ?? new InMemoryAuditStore(), atomic, config);
+            audit ?? new InMemoryAuditStore(), atomic, config, policies);
         _notifier = new TelegramNotifier(telegram, _engine, options.Value);
         // Telegram is always a channel; DI supplies any others (e.g. e-mail).
         _extra = extraNotifiers?.ToList() ?? new List<INotifier>();
@@ -91,9 +92,10 @@ public sealed class GateService
     /// as <c>ssh:prod-01</c>. Same judging and channels as a visitor request; the
     /// agent then polls <see cref="StateOf"/>.
     /// </summary>
-    public async Task<(string state, string id)> RaiseAction(string resource, string subject, string ip, string actor, CancellationToken ct)
+    public async Task<(string state, string id)> RaiseAction(string resource, string subject, string ip, string actor, CancellationToken ct,
+        IReadOnlyList<string>? agentTags = null)
     {
-        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct);
+        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags);
         await AnnounceAll(request, ct);
         return (state, id);
     }

@@ -7,6 +7,30 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.3] - 2026-09-11
+
+### Added
+
+- **Policy enforcement: approval quorum (final slice of 0.19).** A policy's
+  `RequiredApprovals` now holds a request open until that many **distinct** approvers
+  have signed off. A denial from any channel still denies at once.
+- **Distinct-approver-principal.** For a quorum > 1, only an authenticated
+  control-plane identity (`google:<sub>`) counts as a distinct approver — the same
+  person approving via Telegram and via the web, or an e-mail link, must not satisfy
+  four-eyes. Telegram/e-mail may still deny, notify, and satisfy an ordinary single
+  approval (`RequiredApprovals` = 1), but do not count toward a quorum. Each recorded
+  approval writes `access.approval_noted` (with the running count); the admin request
+  detail shows `N / M`.
+
+### Notes
+
+- Storage: `required_approvals` on the requests table (added idempotently for
+  upgrades) and a `request_approvals(request_id, principal)` table whose primary key
+  makes an approval idempotent and the count race-free across nodes (SQLite + Postgres;
+  in-memory keeps a per-request set). Completes 0.19 (tag-driven policy: surface in
+  0.19.1, grant-TTL in 0.19.2, quorum here). With no policy raising the bar, every
+  request still needs exactly one approval — non-breaking.
+
 ## [0.19.2] - 2026-09-11
 
 ### Added

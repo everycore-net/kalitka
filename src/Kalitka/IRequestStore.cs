@@ -43,4 +43,17 @@ public interface IRequestStore
     /// two instances must not mint two redeemable grants for one approval.
     /// </summary>
     bool TrySetGrant(string id, string candidate, out string grant);
+
+    /// <summary>
+    /// Record a distinct approver for a request and return how many distinct approvers
+    /// it now has. Idempotent per principal (approving twice counts once) and atomic,
+    /// so concurrent approvals on different nodes accumulate a correct quorum count.
+    /// The caller decides eligibility (which principals count) and, once the count
+    /// reaches the request's <see cref="PendingRequest.RequiredApprovals"/>, makes the
+    /// single <see cref="TryResolve"/> transition to approved.
+    /// </summary>
+    int AddApprovalAndCount(string id, string principal);
+
+    /// <summary>How many distinct approvers a request has so far (for display).</summary>
+    int ApprovalCount(string id);
 }

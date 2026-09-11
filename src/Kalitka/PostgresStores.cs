@@ -35,8 +35,13 @@ public sealed class PgRequestStore : IRequestStore
             CREATE TABLE IF NOT EXISTS requests(
               id TEXT PRIMARY KEY, target TEXT NOT NULL, input TEXT NOT NULL,
               ip TEXT NOT NULL, resource TEXT NOT NULL, country TEXT, country_code TEXT,
-              city TEXT, raised BIGINT NOT NULL, state TEXT NOT NULL, grant_tok TEXT NOT NULL DEFAULT '');
+              city TEXT, raised BIGINT NOT NULL, state TEXT NOT NULL, grant_tok TEXT NOT NULL DEFAULT '',
+              required_approvals INT NOT NULL DEFAULT 1);
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS required_approvals INT NOT NULL DEFAULT 1;
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
+            CREATE TABLE IF NOT EXISTS request_approvals(
+              request_id TEXT NOT NULL, principal TEXT NOT NULL,
+              PRIMARY KEY(request_id, principal));
             """;
         cmd.ExecuteNonQuery();
     }
@@ -46,12 +51,13 @@ public sealed class PgRequestStore : IRequestStore
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok)
-            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals)
+            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req)
             ON CONFLICT(id) DO UPDATE SET
               target=EXCLUDED.target,input=EXCLUDED.input,ip=EXCLUDED.ip,resource=EXCLUDED.resource,
               country=EXCLUDED.country,country_code=EXCLUDED.country_code,city=EXCLUDED.city,
-              raised=EXCLUDED.raised,state=EXCLUDED.state,grant_tok=EXCLUDED.grant_tok;
+              raised=EXCLUDED.raised,state=EXCLUDED.state,grant_tok=EXCLUDED.grant_tok,
+              required_approvals=EXCLUDED.required_approvals;
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -77,9 +83,36 @@ public sealed class PgRequestStore : IRequestStore
     {
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM requests WHERE id=@id;";
+        cmd.CommandText = "DELETE FROM requests WHERE id=@id; DELETE FROM request_approvals WHERE request_id=@id;";
         cmd.Parameters.AddWithValue("id", id);
         cmd.ExecuteNonQuery();
+    }
+
+    public int AddApprovalAndCount(string id, string principal)
+    {
+        using var conn = PgState.Open(_cs);
+        using (var ins = conn.CreateCommand())
+        {
+            ins.CommandText = "INSERT INTO request_approvals(request_id,principal) VALUES(@id,@p) ON CONFLICT DO NOTHING;";
+            ins.Parameters.AddWithValue("id", id);
+            ins.Parameters.AddWithValue("p", principal);
+            ins.ExecuteNonQuery();
+        }
+        return CountApprovals(conn, id);
+    }
+
+    public int ApprovalCount(string id)
+    {
+        using var conn = PgState.Open(_cs);
+        return CountApprovals(conn, id);
+    }
+
+    private static int CountApprovals(NpgsqlConnection conn, string id)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM request_approvals WHERE request_id=@id;";
+        cmd.Parameters.AddWithValue("id", id);
+        return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
     public IReadOnlyList<PendingRequest> Snapshot()
@@ -106,7 +139,10 @@ public sealed class PgRequestStore : IRequestStore
     {
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM requests WHERE raised<@cutoff;";
+        cmd.CommandText = """
+            DELETE FROM request_approvals WHERE request_id IN (SELECT id FROM requests WHERE raised<@cutoff);
+            DELETE FROM requests WHERE raised<@cutoff;
+            """;
         cmd.Parameters.AddWithValue("cutoff", cutoff.ToUnixTimeMilliseconds());
         cmd.ExecuteNonQuery();
     }
@@ -155,7 +191,7 @@ public sealed class PgRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals";
 
     private static void Bind(NpgsqlCommand cmd, PendingRequest r)
     {
@@ -170,6 +206,7 @@ public sealed class PgRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("raised", r.Raised.ToUnixTimeMilliseconds());
         cmd.Parameters.AddWithValue("state", r.State);
         cmd.Parameters.AddWithValue("grant", r.Grant);
+        cmd.Parameters.AddWithValue("req", r.RequiredApprovals);
     }
 
     private static PendingRequest Read(NpgsqlDataReader r) => new()
@@ -177,7 +214,7 @@ public sealed class PgRequestStore : IRequestStore
         Id = r.GetString(0), Target = r.GetString(1), Input = r.GetString(2), Ip = r.GetString(3),
         Resource = r.GetString(4), Country = r.GetString(5), CountryCode = r.GetString(6),
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
-        State = r.GetString(9), Grant = r.GetString(10)
+        State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11)
     };
 }
 

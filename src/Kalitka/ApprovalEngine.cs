@@ -15,10 +15,13 @@ public sealed class PendingRequest
     public DateTimeOffset Raised;
     public string State = "waiting";   // waiting | approved | denied
     public string Grant = "";          // the one-time grant token, issued once on approval
+    public int RequiredApprovals = 1;  // quorum from policy at raise time; 1 = single approval
 }
 
-/// <summary>What a callback decision came to — enough for a notifier to render it.</summary>
-public enum CallbackOutcome { Expired, AlreadyHandled, Ignored, Decided }
+/// <summary>What a callback decision came to — enough for a notifier to render it.
+/// <see cref="Pending"/> means the approval was recorded but the request still needs
+/// more distinct approvers (a policy quorum) before it becomes approved.</summary>
+public enum CallbackOutcome { Expired, AlreadyHandled, Ignored, Decided, Pending }
 
 /// <summary>The result of <see cref="ApprovalEngine.Decide"/>: outcome plus, when
 /// a decision was actually taken, the request and a one-line description of it.</summary>
@@ -28,7 +31,8 @@ public sealed record CallbackResult(CallbackOutcome Outcome, PendingRequest? Req
 /// web control plane). A snapshot copy, so callers cannot mutate engine state.</summary>
 public sealed record PendingView(
     string Id, string Target, string Input, string Ip,
-    string Country, string CountryCode, string City, DateTimeOffset Raised, string State);
+    string Country, string CountryCode, string City, DateTimeOffset Raised, string State,
+    int RequiredApprovals = 1, int ApprovalCount = 0);
 
 /// <summary>
 /// The decision core, with no idea how it is asked or answered. It owns the
@@ -74,9 +78,11 @@ public sealed class ApprovalEngine
     private int _sessionMinutes;
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
 
+    private readonly PolicyService? _policies;
+
     public ApprovalEngine(IGeoLookup geo, AccessLists lists, GateOptions options,
         ILogger log, TimeProvider clock, IRequestStore store, IAuditStore audit,
-        IAtomicWork? atomic = null, IConfigStore? config = null)
+        IAtomicWork? atomic = null, IConfigStore? config = null, PolicyService? policies = null)
     {
         _geo = geo;
         _lists = lists;
@@ -87,6 +93,7 @@ public sealed class ApprovalEngine
         _audit = audit;
         _atomic = atomic;
         _config = config ?? new JsonFileConfigStore(options, log);
+        _policies = policies;
 
         _sessions = new SessionService(_options.HmacSecret, clock);
         _sessionMinutes = _options.SessionMinutes;
@@ -319,7 +326,7 @@ public sealed class ApprovalEngine
             return ("invalid", "", null);
         }
 
-        return await Raise("web:" + target, target, input, ip, "-", ct);
+        return await Raise("web:" + target, target, input, ip, "-", ct, Array.Empty<string>());
     }
 
     /// <summary>
@@ -330,11 +337,12 @@ public sealed class ApprovalEngine
     /// secret). It does not broker any credentials: it only says yes or no.
     /// </summary>
     public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
-        string resource, string subject, string ip, string actor, CancellationToken ct)
+        string resource, string subject, string ip, string actor, CancellationToken ct,
+        IReadOnlyList<string>? agentTags = null)
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, actor, ct);
+        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>());
     }
 
     /// <summary>
@@ -343,7 +351,8 @@ public sealed class ApprovalEngine
     /// is what the operator sees; <paramref name="resource"/> is the audit identity.
     /// </summary>
     private async Task<(string state, string id, PendingRequest? request)> Raise(
-        string resource, string target, string subject, string ip, string actor, CancellationToken ct)
+        string resource, string target, string subject, string ip, string actor, CancellationToken ct,
+        IReadOnlyList<string> agentTags)
     {
         var place = await _geo.Locate(ip, ct);
 
@@ -384,12 +393,16 @@ public sealed class ApprovalEngine
             return ("blocked", "", null);
         }
 
+        // A tag-driven policy may require more than one approval for this resource.
+        // Policy only restricts, so the floor is 1 (checked in PolicyService).
+        var required = _policies?.Effective(resource, agentTags).RequiredApprovals ?? 1;
+
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
         var request = new PendingRequest
         {
             Id = id, Target = target, Resource = resource, Input = subject, Ip = ip,
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
-            Raised = _clock.GetUtcNow(), State = "waiting"
+            Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required
         };
         _store.Add(request);
 
@@ -440,14 +453,15 @@ public sealed class ApprovalEngine
     public IReadOnlyList<PendingView> PendingSnapshot() =>
         _store.Snapshot()
             .OrderByDescending(r => r.Raised)
-            .Select(r => new PendingView(
-                r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State))
+            .Select(View)
             .ToList();
 
     public PendingView? RequestView(string id) =>
-        _store.Get(id) is { } r
-            ? new PendingView(r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State)
-            : null;
+        _store.Get(id) is { } r ? View(r) : null;
+
+    private PendingView View(PendingRequest r) =>
+        new(r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State,
+            r.RequiredApprovals, r.RequiredApprovals > 1 ? _store.ApprovalCount(r.Id) : 0);
 
     private void DropExpired() =>
         _store.DropOlderThan(_clock.GetUtcNow().AddMinutes(-_options.PendingMinutes));
@@ -489,6 +503,33 @@ public sealed class ApprovalEngine
             _                               => null
         };
         if (toState is null) return new CallbackResult(CallbackOutcome.Ignored);
+
+        // Quorum: a tag-driven policy may require several DISTINCT approvers. A denial
+        // from any channel still denies at once (one "no" is enough). An approval,
+        // when the quorum is > 1, only advances if it comes from an authenticated
+        // control-plane principal (google:<sub>) — the same human approving via
+        // Telegram and via the web must not satisfy four-eyes. When enough distinct
+        // approvers have signed off, we fall through to the single resolve below.
+        if (toState == "approved" && request.RequiredApprovals > 1)
+        {
+            if (!actor.StartsWith("google:", StringComparison.Ordinal))
+            {
+                await _audit.Append(Event(AuditEvents.AccessApprovalNoted, actor, request.Input, request.Resource,
+                    id, ChannelOf(actor), "not counted (channel not eligible for quorum)"), CancellationToken.None);
+                return new CallbackResult(CallbackOutcome.Pending, request,
+                    $"Approval noted — it does not count toward the {request.RequiredApprovals}-approver quorum.");
+            }
+
+            var count = _store.AddApprovalAndCount(id, actor);
+            if (count < request.RequiredApprovals)
+            {
+                await _audit.Append(Event(AuditEvents.AccessApprovalNoted, actor, request.Input, request.Resource,
+                    id, "web", $"{count} of {request.RequiredApprovals}"), CancellationToken.None);
+                return new CallbackResult(CallbackOutcome.Pending, request,
+                    $"Approved by {count} of {request.RequiredApprovals} — waiting for more approvers.");
+            }
+            // Quorum reached — fall through to the terminal transition.
+        }
 
         // The one atomic step: only the first caller flips waiting → terminal, so
         // an Approve and a Deny racing the same request cannot both win. The list

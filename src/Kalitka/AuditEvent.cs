@@ -21,9 +21,10 @@ public sealed record AuditEvent(
 /// <summary>Event types. Resource-centric; grant/session reserved for PAM axes.</summary>
 public static class AuditEvents
 {
-    public const string AccessRequested  = "access.requested";
-    public const string AccessApproved   = "access.approved";
-    public const string AccessDenied     = "access.denied";
+    public const string AccessRequested    = "access.requested";
+    public const string AccessApproved     = "access.approved";
+    public const string AccessApprovalNoted = "access.approval_noted";   // quorum: one approver, not yet enough
+    public const string AccessDenied       = "access.denied";
     public const string GrantCreated     = "grant.created";
     public const string GrantRedeemed    = "grant.redeemed";
     public const string GrantExpired     = "grant.expired";
