@@ -54,6 +54,7 @@ public static class AdminPages
         + Nav(who, Perm.AgentsRead, "/admin/agents", "Agents")
         + Nav(who, Perm.ProfilesManage, "/admin/profiles", "Profiles")
         + Nav(who, Perm.AgentsRead, "/admin/reconcile", "Reconcile")
+        + Nav(who, Perm.PoliciesRead, "/admin/policies", "Policies")
         + Nav(who, Perm.HistoryRead, "/admin/history", "History")
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
@@ -309,6 +310,52 @@ public static class AdminPages
                   .Append($"<td class=\"muted\">{H(string.Join(" ", p.ResourceTemplates))}</td>")
                   .Append($"<td class=\"muted\">{H(string.Join(" ", p.Tags))}</td>")
                   .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/profiles/delete\">"
+                      + $"<input type=\"hidden\" name=\"name\" value=\"{H(p.Name)}\">"
+                      + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                      + "<button class=\"no\">Delete</button></form></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
+
+        return Shell(who, sb.ToString());
+    }
+
+    // ---- Access policies ----------------------------------------------------
+
+    public static string Policies(AdminIdentity who, IReadOnlyList<AccessPolicy> policies, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Policies</h1>")
+          .Append("<p class=\"muted\">A policy only <b>restricts</b> — it can require more approvals "
+              + "or shorten the grant, never grant new access. It matches a request by resource "
+              + "(<code>ssh:*</code>) and tags that must all be on the requesting agent "
+              + "(<code>env:prod</code>). Several matching policies combine the strictest way "
+              + "(most approvals, shortest grant).</p>");
+
+        sb.Append("<h2>New policy</h2>")
+          .Append("<form method=\"post\" action=\"/admin/policies/create\">")
+          .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+          .Append(In("name", "name (e.g. prod-ssh)"))
+          .Append(In("match_resource", "match resource (ssh:*  |  ssh:prod-01  |  *)"))
+          .Append(In("match_tags", "match tags — all required (env:prod role:web)"))
+          .Append(In("required", "required approvals (e.g. 2)"))
+          .Append(In("grant_ttl", "grant TTL minutes (0 = no override)"))
+          .Append("<div class=\"btns\"><button>Save policy</button></div></form>");
+
+        sb.Append("<h2>Policies</h2>");
+        if (policies.Count == 0)
+            sb.Append("<p class=\"muted\">No policies yet — every request needs one approval and the default grant lifetime.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Name</th><th>Resource</th><th>Tags</th>"
+                + "<th>Approvals</th><th>Grant TTL</th><th></th></tr>");
+            foreach (var p in policies)
+                sb.Append("<tr>")
+                  .Append($"<td><code>{H(p.Name)}</code></td>")
+                  .Append($"<td><code>{H(p.MatchResource)}</code></td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", p.MatchTags))}</td>")
+                  .Append($"<td>{p.RequiredApprovals}</td>")
+                  .Append($"<td class=\"muted\">{(p.GrantTtlMinutes > 0 ? p.GrantTtlMinutes + " min" : "—")}</td>")
+                  .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/policies/delete\">"
                       + $"<input type=\"hidden\" name=\"name\" value=\"{H(p.Name)}\">"
                       + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
                       + "<button class=\"no\">Delete</button></form></td>")

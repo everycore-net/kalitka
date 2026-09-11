@@ -18,6 +18,8 @@ public static class Perm
     public const string AgentsManage    = "agents.manage";
     public const string ProfilesManage  = "profiles.manage";
     public const string EnrollmentManage = "enrollment.manage";
+    public const string PoliciesRead    = "policies.read";
+    public const string PoliciesManage  = "policies.manage";
 
     /// <summary>Read/approve/deny access requests + read history.</summary>
     public static readonly IReadOnlySet<string> Approver =
@@ -27,9 +29,13 @@ public static class Perm
     public static readonly IReadOnlySet<string> AgentAdmin =
         new HashSet<string> { AgentsRead, AgentsManage, ProfilesManage, EnrollmentManage };
 
+    /// <summary>Read and manage access policies.</summary>
+    public static readonly IReadOnlySet<string> PolicyAdmin =
+        new HashSet<string> { PoliciesRead, PoliciesManage };
+
     /// <summary>Full admin — every permission there is.</summary>
     public static readonly IReadOnlySet<string> All =
-        new HashSet<string>(Approver.Concat(AgentAdmin));
+        new HashSet<string>(Approver.Concat(AgentAdmin).Concat(PolicyAdmin));
 }
 
 public static class AdminRouting

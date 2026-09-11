@@ -7,6 +7,31 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-09-11
+
+### Added
+
+- **Tag-driven access policies — the surface (first slice of 0.19).** A policy matches
+  a request by resource glob (`ssh:*`) and tags that must all be on the requesting
+  agent (`env:prod`), and carries constraints — `RequiredApprovals` and an optional
+  `GrantTtlMinutes`. A policy **only ever restricts**: the agent's own authority
+  (capability + allowed resource) is checked first, and a policy can never grant a new
+  capability or resource. Several matching policies combine the strictest way — most
+  approvals (`max`), shortest grant (`min`) — so there is no rule ordering. Managed at
+  `/admin/policies`; CRUD is audited (`policy.created` / `updated` / `deleted`), with
+  the same append-only revision history as profiles.
+- **Policy permissions.** New `policies.read` / `policies.manage` and a **PolicyAdmin**
+  bundle; full admin gets them automatically.
+
+### Notes
+
+- This slice ships the model, storage, matching/combination and the console — it is
+  **not yet enforced** on the approval flow. Grant-TTL enforcement follows in 0.19.2
+  and the approval quorum (with the distinct-approver-principal rule) in 0.19.3, so the
+  behaviour change lands deliberately and in reviewable steps. Additive and
+  non-breaking: with no policies defined, every request needs one approval and the
+  default grant lifetime, exactly as before.
+
 ## [0.18.0] - 2026-09-11
 
 ### Added
