@@ -88,6 +88,8 @@ public class GateFactory : WebApplicationFactory<Program>
         builder.UseSetting("Kalitka:GoogleClientId", "test-client");
         builder.UseSetting("Kalitka:GoogleClientSecret", "test-secret");
         builder.UseSetting("Kalitka:AdminEmails:0", "admin@example.com");
+        builder.UseSetting("Kalitka:ApproverEmails:0", "approver@example.com");     // RBAC: approve only
+        builder.UseSetting("Kalitka:AgentAdminEmails:0", "agentadmin@example.com"); // RBAC: agents only
         builder.UseSetting("Kalitka:InternalSecret", "internal-secret");   // /internal/*
         builder.UseSetting("Kalitka:AgentSecret", "agent-secret");         // /agent/*
 

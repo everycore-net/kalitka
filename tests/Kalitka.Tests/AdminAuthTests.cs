@@ -124,6 +124,31 @@ public class AdminAuthTests
         Assert.False(a.ValidateCsrf(token, "sub-123"));   // no longer valid forever
     }
 
+    [Fact]
+    public void Permissions_resolve_additively_from_the_allowlists()
+    {
+        var opts = Options.Create(new GateOptions
+        {
+            HmacSecret = Secret, GateHost = "gate.example.com",
+            GoogleClientId = "c", GoogleClientSecret = "s",
+            AdminEmails = new[] { "boss@example.com" },
+            ApproverEmails = new[] { "appr@example.com", "both@example.com" },
+            AgentAdminEmails = new[] { "agent@example.com", "both@example.com" },
+        });
+        var a = new AdminAuth(new GoogleAuth(new HttpClient(), opts, NullLogger<GoogleAuth>.Instance),
+            new TokenSigner(Secret), opts, ClockAt());
+
+        Assert.True(a.ResolvePermissions("boss@example.com").SetEquals(Perm.All));           // full admin
+        Assert.True(a.ResolvePermissions("appr@example.com").SetEquals(Perm.Approver));      // one bundle
+        Assert.True(a.ResolvePermissions("agent@example.com").SetEquals(Perm.AgentAdmin));   // the other
+        Assert.True(a.ResolvePermissions("both@example.com")                                 // union of both
+            .SetEquals(new HashSet<string>(Perm.Approver.Concat(Perm.AgentAdmin))));
+        Assert.Empty(a.ResolvePermissions("nobody@example.com"));                            // fail closed
+
+        Assert.True(a.IsPermitted("appr@example.com"));
+        Assert.False(a.IsPermitted("nobody@example.com"));
+    }
+
     // ---- Login callback (fake identity, no network) -------------------------
 
     private const string Secret = "unit-test-signing-key-0123456789";

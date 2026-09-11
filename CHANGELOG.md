@@ -7,6 +7,32 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-11
+
+### Added
+
+- **Admin RBAC — permission-based, with two narrow roles beside full admin.** The
+  control plane is now gated per-permission (`requests.read`, `requests.decide`,
+  `history.read`, `agents.read`, `agents.manage`, `profiles.manage`,
+  `enrollment.manage`); roles are just bundles of those. Two narrow roles let you
+  grant less than full admin:
+  - `ApproverEmails` → **Approver** — read/approve/deny access requests + read history.
+  - `AgentAdminEmails` → **AgentAdmin** — manage agents, profiles, enrollment and
+    reconciliation.
+
+  `AdminEmails`/`AdminDomains` are unchanged and mean **full admin** (every
+  permission) — existing deployments keep working exactly as before. Membership is
+  additive: an address on several lists gets the union of their permissions.
+
+### Notes
+
+- Every admin endpoint enforces a permission (a denied page GET redirects to the
+  dashboard, a denied mutation is 403); the nav only shows sections you can use, but
+  that is UX — the endpoint checks are the boundary. Effective permissions are
+  **resolved from the current config on each request**, not frozen into the session,
+  so removing an address from an allowlist revokes access at once. A policy/config
+  role will be added when a standalone policy surface exists. Non-breaking.
+
 ## [0.17.2] - 2026-09-11
 
 ### Added
