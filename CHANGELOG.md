@@ -7,6 +7,36 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-09-12
+
+### Added
+
+- **`kalitka-agent` — the reference client (first slice of 0.21).** A small, universal
+  agent runtime (`deploy/kalitka-agent`, bash + OpenSSL 3): it holds the Ed25519
+  private key and speaks the `/agent/v1/*` protocol, building the canonical request,
+  timestamp, nonce and **signature** itself. Subcommands: `keygen`, `pubkey`, `enroll`,
+  `request`, `poll`, `redeem`, `session-end`, `heartbeat`. It signs when a key is
+  present and falls back to the shared secret otherwise, so strong (signature-based)
+  credentials are used automatically. This is where the 0.20 server capability becomes
+  a real end-to-end path: without a signing client, signed requests were unreachable in
+  the SSH flow.
+- The SSH PAM hooks (`deploy/ssh/`) are now **thin wrappers** around `kalitka-agent`;
+  any future agent (DB, sudo, …) gets the same credential model for free.
+
+### Fixed
+
+- `deploy/ssh/README.md` was stale — it still described the pre-0.15 `/agent/request`,
+  `/agent/status`, `/agent/redeem`, `/agent/session/end`; rewritten for `/agent/v1/*`,
+  `kalitka-agent`, and key-based credentials.
+
+### Notes
+
+- The client/server signature interop (bash + OpenSSL 3 → the server's BouncyCastle
+  verify) is proven by a known-answer vector generated with OpenSSL and asserted in the
+  test suite. Server code is unchanged from 0.20.2, so the gate needs no redeploy;
+  install `kalitka-agent` on the SSH hosts. Migration observability
+  (`last_auth_method`, …) and a secretless enrolment mode follow in 0.21.2 / 0.21.3.
+
 ## [0.20.2] - 2026-09-11
 
 ### Added

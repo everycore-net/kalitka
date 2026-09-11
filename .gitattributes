@@ -1,0 +1,4 @@
+# Shell scripts and the agent client must keep LF line endings: a CRLF shebang
+# silently breaks execution on the Linux/POSIX hosts they run on.
+*.sh text eol=lf
+deploy/kalitka-agent text eol=lf

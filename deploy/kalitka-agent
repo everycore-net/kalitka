@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# kalitka-agent — the reference Kalitka client.
+#
+# A small, universal agent runtime (not SSH-specific): it holds an Ed25519 private
+# key locally and speaks the /agent/v1/* protocol, building the canonical request,
+# timestamp, nonce and signature itself. SSH PAM hooks, a future DB agent, a sudo
+# hook — anything that needs the gate — wraps this and gets the same strong
+# credential model for free.
+#
+# Auth is chosen per call: if a private key is present it SIGNS each request
+# (nothing reusable leaves the host); otherwise it falls back to the shared secret
+# for the migration window. Signing needs OpenSSL 3 (Ed25519 `pkeyutl -rawin`).
+#
+# Config is sourced from $KALITKA_CONF (default /etc/kalitka-approve.conf):
+#   KALITKA_URL=https://gate.example.com
+#   KALITKA_AGENT_ID=...                 # the registered agent id
+#   KALITKA_AGENT_KEY=/etc/kalitka/agent.key   # Ed25519 private key (PEM); default below
+#   KALITKA_AGENT_SECRET=...             # migration fallback only; unset once key-based
+#
+# Subcommands:
+#   keygen                 create the private key if absent, print the public key
+#   pubkey                 print the public key (base64, for /admin/agents)
+#   enroll --token T [--host H]     enrol: generate a key, register its public key
+#   request --host H --user U [--ip IP]
+#   poll --id ID
+#   redeem --grant G [--agent NAME]
+#   session-end --session-id S [--outcome O]
+#   heartbeat
+set -euo pipefail
+
+SCHEME="kalitka-agent-sig-v1"
+CONF="${KALITKA_CONF:-/etc/kalitka-approve.conf}"
+[ -r "$CONF" ] && . "$CONF"
+KEY="${KALITKA_AGENT_KEY:-/etc/kalitka/agent.key}"
+CURL_OPTS="-fsS --connect-timeout 5 --max-time 15"
+
+die() { echo "kalitka-agent: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+need openssl; need curl
+
+# jq-free JSON scalar read: {"id":"AB",...} -> value by key.
+field() { sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'; }
+
+urlenc() {
+  local s="$1" o="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in [a-zA-Z0-9.~_-]) o+="$c" ;; *) printf -v c '%%%02X' "'$c"; o+="$c" ;; esac
+  done
+  printf '%s' "$o"
+}
+
+sha256hex() { openssl dgst -sha256 | awk '{print $NF}'; }
+b64() { openssl base64 -A; }
+pubkey_b64() { openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | tail -c 32 | b64; }
+have_key() { [ -n "${KALITKA_AGENT_ID:-}" ] && [ -r "$KEY" ]; }
+
+keygen() {
+  if [ ! -f "$KEY" ]; then
+    mkdir -p "$(dirname "$KEY")"
+    ( umask 077; openssl genpkey -algorithm ed25519 -out "$KEY" 2>/dev/null ) || die "key generation failed (need OpenSSL 3)"
+    chmod 600 "$KEY"
+  fi
+  pubkey_b64
+}
+
+# call METHOD PATH [BODY] — signed if a key is present, else shared-secret.
+call() {
+  : "${KALITKA_URL:?set KALITKA_URL}"
+  local method="$1" path="$2" body="${3:-}"
+  local -a args=($CURL_OPTS -X "$method")
+  [ -n "$body" ] && args+=(--data "$body" -H "Content-Type: application/x-www-form-urlencoded")
+
+  if have_key; then
+    local ts nonce bh msg sig tmp
+    ts="$(date +%s)"; nonce="$(openssl rand -hex 16)"
+    bh="$(printf '%s' "$body" | sha256hex)"
+    msg="$(printf '%s\n%s\n%s\n%s\n%s\n%s' "$SCHEME" "$method" "$path" "$bh" "$ts" "$nonce")"
+    # Ed25519 is a one-shot signature: OpenSSL needs the message as a real file
+    # (a pipe has no size for the oneshot operation), so stage it in a temp file.
+    tmp="$(mktemp)"; printf '%s' "$msg" > "$tmp"
+    sig="$(openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$tmp" 2>/dev/null | b64)" || { rm -f "$tmp"; die "signing failed (need OpenSSL 3 for Ed25519)"; }
+    rm -f "$tmp"
+    args+=(-H "X-Kalitka-Agent-Id: $KALITKA_AGENT_ID" -H "X-Kalitka-Signature: $sig" \
+           -H "X-Kalitka-Timestamp: $ts" -H "X-Kalitka-Nonce: $nonce")
+  elif [ -n "${KALITKA_AGENT_SECRET:-}" ]; then
+    if [ -n "${KALITKA_AGENT_ID:-}" ]; then
+      args+=(-H "X-Kalitka-Agent-Id: $KALITKA_AGENT_ID" -H "X-Kalitka-Agent-Secret: $KALITKA_AGENT_SECRET")
+    else
+      args+=(-H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET")
+    fi
+  else
+    die "no credentials: run 'kalitka-agent keygen' and register the key, or set KALITKA_AGENT_SECRET"
+  fi
+
+  curl "${args[@]}" "$KALITKA_URL$path"
+}
+
+# --- argument parsing (--flag value) --------------------------------------------
+arg() { # arg NAME "$@" -> echoes the value after --NAME
+  local want="$1"; shift
+  while [ $# -gt 0 ]; do case "$1" in "--$want") printf '%s' "${2:-}"; return 0 ;; esac; shift; done
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  keygen)  keygen; echo ;;
+  pubkey)  [ -r "$KEY" ] || die "no key at $KEY"; pubkey_b64; echo ;;
+
+  enroll)
+    : "${KALITKA_URL:?set KALITKA_URL}"
+    tok="$(arg token "$@")"; [ -n "$tok" ] || die "enroll needs --token"
+    host="$(arg host "$@")"; [ -n "$host" ] || host="$(hostname -s 2>/dev/null || hostname)"
+    keygen >/dev/null
+    pub="$(pubkey_b64)"
+    secret="$(openssl rand -hex 24)"   # satisfies the enrol secret requirement; not kept — the key is the credential
+    body="token=$(urlenc "$tok")&secret=$(urlenc "$secret")&hostname=$(urlenc "$host")&public_key=$(urlenc "$pub")"
+    curl $CURL_OPTS -X POST --data "$body" -H "Content-Type: application/x-www-form-urlencoded" "$KALITKA_URL/agent/v1/enroll"
+    ;;
+
+  request)
+    host="$(arg host "$@")"; [ -n "$host" ] || host="$(hostname -s 2>/dev/null || hostname)"
+    user="$(arg user "$@")"; [ -n "$user" ] || die "request needs --user"
+    ip="$(arg ip "$@")"
+    call POST /agent/v1/requests "host=$(urlenc "$host")&user=$(urlenc "$user")&ip=$(urlenc "$ip")"
+    ;;
+
+  poll)
+    id="$(arg id "$@")"; [ -n "$id" ] || die "poll needs --id"
+    call GET "/agent/v1/requests/$id"
+    ;;
+
+  redeem)
+    grant="$(arg grant "$@")"; [ -n "$grant" ] || die "redeem needs --grant"
+    agent="$(arg agent "$@")"; [ -n "$agent" ] || agent="$(hostname -s 2>/dev/null || hostname)"
+    call POST /agent/v1/grants/redeem "grant=$(urlenc "$grant")&agent=$(urlenc "$agent")"
+    ;;
+
+  session-end)
+    sid="$(arg session-id "$@")"; [ -n "$sid" ] || die "session-end needs --session-id"
+    out="$(arg outcome "$@")"; [ -n "$out" ] || out="closed"
+    call POST /agent/v1/sessions/end "session_id=$(urlenc "$sid")&outcome=$(urlenc "$out")" >/dev/null
+    ;;
+
+  heartbeat) call POST /agent/v1/heartbeat "" >/dev/null ;;
+
+  ""|-h|--help|help)
+    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $cmd (try --help)" ;;
+esac

@@ -53,6 +53,21 @@ public class AgentSigningTests
         Assert.False(AgentSignatures.Verify("not-base64!!", msg, sig));                    // malformed key
     }
 
+    [Fact]
+    public void Verifies_a_signature_produced_by_openssl_ed25519()
+    {
+        // Known-answer vector generated on a real host with OpenSSL 3 (the reference
+        // `kalitka-agent` client's toolchain), proving the bash/openssl signing path
+        // interoperates with the server's BouncyCastle verification — the one seam a
+        // pure-C# test cannot exercise.
+        const string pub = "coPe9TigXmca/o8v0a58u8KT1aUmDJsPnK1itNOmUxQ=";
+        const string sig = "JCyV1iGeKzHg5fIK5KbDSwZ4KPNbAGFnQn6bLoYCxm7X1XjDtcUdG2szKqTjlLBgrgRvCkoxyds+00yVeH5VAw==";
+        var msg = Encoding.UTF8.GetBytes("kalitka-interop-vector");
+
+        Assert.True(AgentSignatures.Verify(pub, msg, sig));
+        Assert.False(AgentSignatures.Verify(pub, Encoding.UTF8.GetBytes("kalitka-interop-vectoR"), sig));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
