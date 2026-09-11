@@ -264,13 +264,15 @@ public sealed class PostgresStoreTests
     {
         if (Skip) return;
         var a = new Agent("pg-a", "pg-a", "linux", "h", AgentStatus.Active, AgentSecrets.Hash("s"),
-            new[] { "ssh" }, new[] { "ssh:*" }, "", DateTimeOffset.UtcNow, null, "", null);
+            new[] { "ssh" }, new[] { "ssh:*" }, "", DateTimeOffset.UtcNow, null, "", null)
+        { Tags = new[] { "env:prod", "role:web" } };
         new PgAgentStore(_cs!).Create(a);
 
         var got = new PgAgentStore(_cs!).GetById("pg-a")!;
         Assert.Equal(AgentStatus.Active, got.Status);
         Assert.True(AgentSecrets.Verify("s", got.SecretHash));
         Assert.Equal(new[] { "ssh:*" }, got.AllowedResources);
+        Assert.Equal(new[] { "env:prod", "role:web" }, got.Tags);
 
         Assert.True(new PgAgentStore(_cs!).SetStatus("pg-a", AgentStatus.Revoked, DateTimeOffset.UtcNow));
         var seen = new PgAgentStore(_cs!).GetById("pg-a")!;   // a second node

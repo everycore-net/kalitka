@@ -106,6 +106,7 @@ builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 builder.Services.AddSingleton<INotifier, EmailNotifier>();
 builder.Services.AddSingleton<GrantService>();
 builder.Services.AddSingleton<AgentService>();
+builder.Services.AddSingleton<ProfileService>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -344,7 +345,7 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     // The authenticated agent may only raise resources it is scoped to (capability
     // + allowed resource) — a valid credential is not a licence for any resource.
     var resource = "ssh:" + host;
-    if (!identity.MayRepresent(resource)) return Results.StatusCode(403);
+    if (!identity.MayRepresent(resource, AgentCapabilities.Request)) return Results.StatusCode(403);
 
     var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted);
     return Results.Json(new { id, state });
@@ -663,10 +664,14 @@ guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
 
 // ---- Agents (control plane) ------------------------------------------------
 
-guarded.MapGet("/agents", (HttpContext ctx, AdminAuth auth, AgentService agentsSvc) =>
+guarded.MapGet("/agents", (HttpContext ctx, AdminAuth auth, AgentService agentsSvc, ProfileService profiles) =>
 {
     var who = Admin(ctx);
-    return Results.Content(AdminPages.Agents(who, agentsSvc.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+    var tag = ctx.Request.Query["tag"].ToString().Trim();
+    var agents = agentsSvc.All();
+    if (tag.Length > 0)
+        agents = agents.Where(a => a.Tags.Any(t => t.Contains(tag, StringComparison.OrdinalIgnoreCase))).ToList();
+    return Results.Content(AdminPages.Agents(who, agents, profiles.All(), auth.IssueCsrf(who.Sub), tag), "text/html; charset=utf-8");
 });
 
 guarded.MapGet("/agents/{id}", (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>
@@ -674,33 +679,90 @@ guarded.MapGet("/agents/{id}", (HttpContext ctx, string id, AdminAuth auth, Agen
     var who = Admin(ctx);
     var agent = agentsSvc.Get(id);
     return agent is null
-        ? Results.Content(AdminPages.Agents(who, agentsSvc.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8")
+        ? Results.Redirect("/admin/agents", false)
         : Results.Content(AdminPages.AgentDetail(who, agent, auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
 });
 
-guarded.MapPost("/agents/create", async (HttpContext ctx, AdminAuth auth, AgentService agentsSvc) =>
+guarded.MapPost("/agents/create", async (HttpContext ctx, AdminAuth auth, AgentService agentsSvc, ProfileService profiles) =>
 {
     var who = Admin(ctx);
     var form = await ctx.Request.ReadFormAsync();
     if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
 
+    var wantToken = form["mode"].ToString() == "token";
+    var profileName = form["profile"].ToString().Trim();
+    var hostname = form["hostname"].ToString().Trim();
+
+    // From a profile: expand its templates against the hostname and snapshot onto
+    // the agent. Otherwise free-form from the fields.
+    if (profileName.Length > 0)
+    {
+        var profile = profiles.Get(profileName);
+        if (profile is null) return Results.BadRequest();
+        if (hostname.Length == 0) return Results.BadRequest();
+
+        if (wantToken)
+        {
+            var t = await agentsSvc.CreateEnrollmentTokenFromProfile(profile, hostname, who.Actor, ctx.RequestAborted);
+            return Results.Content(AdminPages.SecretShown(who, "Enrollment token",
+                "Give this to the agent once — it is single-use and expires.", t,
+                "Enrol with: kalitka-agent enroll --token <token>. It is not shown again."), "text/html; charset=utf-8");
+        }
+        var c = await agentsSvc.CreateFromProfile(profile, hostname, form["display_name"].ToString(), who.Actor, ctx.RequestAborted);
+        return Results.Content(AdminPages.SecretShown(who, "Agent created",
+            $"Agent id {c.Agent.Id} — its secret, shown once:", c.Secret,
+            "Store it on the host as KALITKA_AGENT_SECRET (with the id as KALITKA_AGENT_ID). If lost, rotate."),
+            "text/html; charset=utf-8");
+    }
+
     var name = form["display_name"].ToString();
     var platform = form["platform"].ToString();
     var caps = Words(form["capabilities"].ToString());
     var resources = Words(form["allowed_resources"].ToString());
+    var tags = Words(form["tags"].ToString());
 
-    if (form["mode"].ToString() == "token")
+    if (wantToken)
     {
-        var token = await agentsSvc.CreateEnrollmentToken(name, platform, caps, resources, who.Actor, ctx.RequestAborted);
+        var token = await agentsSvc.CreateEnrollmentToken(name, platform, caps, resources, who.Actor, ctx.RequestAborted, tags);
         return Results.Content(AdminPages.SecretShown(who, "Enrollment token", "Give this to the agent once — it is single-use and expires.",
             token, "Enrol with: kalitka-agent enroll --token <token>. It is not shown again."), "text/html; charset=utf-8");
     }
 
-    var created = await agentsSvc.Create(name, platform, caps, resources, who.Actor, ctx.RequestAborted);
+    var created = await agentsSvc.Create(name, platform, caps, resources, who.Actor, ctx.RequestAborted, tags);
     return Results.Content(AdminPages.SecretShown(who, "Agent created",
         $"Agent id {created.Agent.Id} — its secret, shown once:", created.Secret,
         "Store it on the host as KALITKA_AGENT_SECRET (with the id as KALITKA_AGENT_ID). If lost, rotate."),
         "text/html; charset=utf-8");
+});
+
+// ---- Agent profiles (templates) --------------------------------------------
+
+guarded.MapGet("/profiles", (HttpContext ctx, AdminAuth auth, ProfileService profiles) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AdminPages.Profiles(who, profiles.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+});
+
+guarded.MapPost("/profiles/create", async (HttpContext ctx, AdminAuth auth, ProfileService profiles) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var name = form["name"].ToString().Trim();
+    if (name.Length == 0) return Results.BadRequest();
+    var profile = new AgentProfile(name, form["platform"].ToString().Trim(),
+        Words(form["capabilities"].ToString()), Words(form["resource_templates"].ToString()), Words(form["tags"].ToString()));
+    await profiles.Save(profile, who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/profiles", false);
+});
+
+guarded.MapPost("/profiles/delete", async (HttpContext ctx, AdminAuth auth, ProfileService profiles) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await profiles.Delete(form["name"].ToString().Trim(), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/profiles", false);
 });
 
 guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>

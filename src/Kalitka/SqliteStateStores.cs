@@ -437,7 +437,7 @@ public sealed class SqliteAgentStore : IAgentStore
               hostname TEXT NOT NULL, status TEXT NOT NULL, secret_hash TEXT NOT NULL,
               capabilities TEXT NOT NULL, allowed_resources TEXT NOT NULL, metadata TEXT NOT NULL,
               created_at INTEGER NOT NULL, last_seen_at INTEGER, last_ip TEXT NOT NULL DEFAULT '',
-              revoked_at INTEGER);
+              revoked_at INTEGER, tags TEXT NOT NULL DEFAULT '[]');
             """;
         cmd.ExecuteNonQuery();
     }
@@ -457,12 +457,12 @@ public sealed class SqliteAgentStore : IAgentStore
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at)
-            VALUES($id,$dn,$pf,$hn,$st,$sh,$cap,$res,$md,$ca,$ls,$ip,$rv)
+            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags)
+            VALUES($id,$dn,$pf,$hn,$st,$sh,$cap,$res,$md,$ca,$ls,$ip,$rv,$tags)
             ON CONFLICT(id) DO UPDATE SET
               display_name=$dn,platform=$pf,hostname=$hn,status=$st,secret_hash=$sh,
               capabilities=$cap,allowed_resources=$res,metadata=$md,created_at=$ca,
-              last_seen_at=$ls,last_ip=$ip,revoked_at=$rv;
+              last_seen_at=$ls,last_ip=$ip,revoked_at=$rv,tags=$tags;
             """;
         cmd.Parameters.AddWithValue("$id", a.Id);
         cmd.Parameters.AddWithValue("$dn", a.DisplayName);
@@ -477,6 +477,7 @@ public sealed class SqliteAgentStore : IAgentStore
         cmd.Parameters.AddWithValue("$ls", (object?)a.LastSeenAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$ip", a.LastIp);
         cmd.Parameters.AddWithValue("$rv", (object?)a.RevokedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$tags", JsonSerializer.Serialize(a.Tags));
         cmd.ExecuteNonQuery();
     }
 
@@ -524,7 +525,7 @@ public sealed class SqliteAgentStore : IAgentStore
     }
 
     private const string Cols =
-        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at";
+        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags";
 
     private static Agent Read(SqliteDataReader r) => new(
         r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3),
@@ -533,5 +534,8 @@ public sealed class SqliteAgentStore : IAgentStore
         JsonSerializer.Deserialize<string[]>(r.GetString(7)) ?? Array.Empty<string>(),
         r.GetString(8), DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(9)),
         r.IsDBNull(10) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(10)),
-        r.GetString(11), r.IsDBNull(12) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(12)));
+        r.GetString(11), r.IsDBNull(12) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(12)))
+    {
+        Tags = JsonSerializer.Deserialize<string[]>(r.GetString(13)) ?? Array.Empty<string>()
+    };
 }

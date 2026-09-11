@@ -48,6 +48,7 @@ public static class AdminPages
         + "<a href=\"/admin/dashboard\">Dashboard</a>"
         + "<a href=\"/admin/requests\">Requests</a>"
         + "<a href=\"/admin/agents\">Agents</a>"
+        + "<a href=\"/admin/profiles\">Profiles</a>"
         + "<a href=\"/admin/history\">History</a>"
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
@@ -205,40 +206,97 @@ public static class AdminPages
 
     // ---- Agents -------------------------------------------------------------
 
-    public static string Agents(AdminIdentity who, IReadOnlyList<Agent> agents, string csrf)
+    public static string Agents(AdminIdentity who, IReadOnlyList<Agent> agents,
+        IReadOnlyList<AgentProfile> profiles, string csrf, string tagFilter)
     {
         var sb = new StringBuilder("<h1>Agents</h1>");
 
-        // Create form: one profile, two ways to provision — a secret shown once, or
-        // a single-use enrollment token the machine redeems itself.
+        // Create form. From a profile (pick one + a hostname; its templates expand
+        // and are snapshotted onto the agent), or free-form. Two ways to provision:
+        // a secret shown once, or a single-use enrollment token.
         sb.Append("<h2>New agent</h2>")
           .Append("<form method=\"post\" action=\"/admin/agents/create\">")
           .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
-          .Append(In("display_name", "name (e.g. prod-linux-01)"))
-          .Append(In("platform", "platform (linux, windows, …)"))
-          .Append(In("capabilities", "capabilities (ssh sudo …)"))
-          .Append(In("allowed_resources", "allowed resources (ssh:prod-01 ssh:*)"))
+          .Append("<select name=\"profile\" style=\"display:block;width:100%;max-width:420px;margin:6px 0;padding:8px;"
+              + "border-radius:8px;border:1px solid #2a3140;background:#0f1117;color:#e6e6e6\">")
+          .Append("<option value=\"\">— no profile (free-form below) —</option>");
+        foreach (var p in profiles) sb.Append($"<option value=\"{H(p.Name)}\">{H(p.Name)}</option>");
+        sb.Append("</select>")
+          .Append(In("hostname", "hostname — fills {hostname} in profile templates"))
+          .Append(In("display_name", "name (free-form; defaults to hostname)"))
+          .Append(In("platform", "platform (free-form only: linux, windows, …)"))
+          .Append(In("capabilities", "capabilities (free-form only: access.request grant.redeem …)"))
+          .Append(In("allowed_resources", "allowed resources (free-form only: ssh:prod-01 ssh:*)"))
+          .Append(In("tags", "tags (free-form only: env:prod role:web)"))
           .Append("<div class=\"btns\">")
           .Append("<button name=\"mode\" value=\"create\">Create (show secret once)</button>")
           .Append("<button class=\"mut\" name=\"mode\" value=\"token\">Enrollment token</button>")
           .Append("</div></form>");
 
         sb.Append("<h2>Registered</h2>");
+        sb.Append("<form method=\"get\" action=\"/admin/agents\" style=\"margin-bottom:12px\">")
+          .Append($"<input name=\"tag\" value=\"{H(tagFilter)}\" placeholder=\"filter by tag (e.g. env:prod)\" "
+              + "style=\"width:auto;display:inline-block;margin-right:8px;padding:8px;border-radius:8px;"
+              + "border:1px solid #2a3140;background:#0f1117;color:#e6e6e6\">")
+          .Append("<button style=\"width:auto\">Filter</button></form>");
+
         if (agents.Count == 0)
-            sb.Append("<p class=\"muted\">No agents yet.</p>");
+            sb.Append("<p class=\"muted\">No agents.</p>");
         else
         {
-            sb.Append("<table><tr><th>Name</th><th>Platform</th><th>Capabilities</th>"
-                + "<th>Resources</th><th>Status</th><th>Last seen</th><th></th></tr>");
+            sb.Append("<table><tr><th>Name</th><th>Platform</th><th>Resources</th>"
+                + "<th>Tags</th><th>Status</th><th>Last seen</th><th></th></tr>");
             foreach (var a in agents)
                 sb.Append("<tr>")
                   .Append($"<td>{H(a.DisplayName)}<br><span class=\"muted\">{H(a.Hostname)}</span></td>")
                   .Append($"<td>{H(a.Platform)}</td>")
-                  .Append($"<td class=\"muted\">{H(string.Join(" ", a.Capabilities))}</td>")
                   .Append($"<td class=\"muted\">{H(string.Join(" ", a.AllowedResources))}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", a.Tags))}</td>")
                   .Append($"<td>{StatusPill(a.Status)}</td>")
                   .Append($"<td class=\"muted\">{Seen(a.LastSeenAt)}</td>")
                   .Append($"<td><a class=\"row\" href=\"/admin/agents/{H(a.Id)}\">open →</a></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
+
+        return Shell(who, sb.ToString());
+    }
+
+    public static string Profiles(AdminIdentity who, IReadOnlyList<AgentProfile> profiles, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Profiles</h1>")
+          .Append("<p class=\"muted\">A profile is a template + classification. Its resource templates "
+              + "(<code>ssh:{hostname}</code>) are expanded and <b>snapshotted onto the agent</b> at create/enroll; "
+              + "editing a profile does not change agents already created from it.</p>");
+
+        sb.Append("<h2>New profile</h2>")
+          .Append("<form method=\"post\" action=\"/admin/profiles/create\">")
+          .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+          .Append(In("name", "name (e.g. linux-server)"))
+          .Append(In("platform", "platform (linux, windows, …)"))
+          .Append(In("capabilities", "capabilities (access.request grant.redeem session.end)"))
+          .Append(In("resource_templates", "resource templates (ssh:{hostname} sudo:{hostname})"))
+          .Append(In("tags", "tags (env:prod role:web)"))
+          .Append("<div class=\"btns\"><button>Save profile</button></div></form>");
+
+        sb.Append("<h2>Profiles</h2>");
+        if (profiles.Count == 0)
+            sb.Append("<p class=\"muted\">No profiles yet.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Name</th><th>Platform</th><th>Capabilities</th>"
+                + "<th>Resource templates</th><th>Tags</th><th></th></tr>");
+            foreach (var p in profiles)
+                sb.Append("<tr>")
+                  .Append($"<td><code>{H(p.Name)}</code></td>")
+                  .Append($"<td>{H(p.Platform)}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", p.Capabilities))}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", p.ResourceTemplates))}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", p.Tags))}</td>")
+                  .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/profiles/delete\">"
+                      + $"<input type=\"hidden\" name=\"name\" value=\"{H(p.Name)}\">"
+                      + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                      + "<button class=\"no\">Delete</button></form></td>")
                   .Append("</tr>");
             sb.Append("</table>");
         }
@@ -256,6 +314,7 @@ public static class AdminPages
           .Append($"<tr><th>Hostname</th><td>{H(a.Hostname)}</td></tr>")
           .Append($"<tr><th>Capabilities</th><td><code>{H(string.Join(" ", a.Capabilities))}</code></td></tr>")
           .Append($"<tr><th>Resources</th><td><code>{H(string.Join(" ", a.AllowedResources))}</code></td></tr>")
+          .Append($"<tr><th>Tags</th><td class=\"muted\">{H(string.Join(" ", a.Tags))}</td></tr>")
           .Append($"<tr><th>Created</th><td class=\"muted\">{a.CreatedAt:yyyy-MM-dd HH:mm} UTC</td></tr>")
           .Append($"<tr><th>Last seen</th><td class=\"muted\">{Seen(a.LastSeenAt)}{(string.IsNullOrEmpty(a.LastIp) ? "" : " · " + H(a.LastIp))}</td></tr>")
           .Append(string.IsNullOrEmpty(a.Metadata) ? "" : $"<tr><th>Reported</th><td class=\"muted\">{H(a.Metadata)}</td></tr>")
