@@ -211,8 +211,8 @@ public sealed class ApprovalEngine
 
     public bool IsCookieValid(string? cookie, string host) => _sessions.IsValid(cookie, host);
 
-    public string BuildState(string target) => _sessions.BuildState(target);
-    public bool TryReadState(string state, out string target) => _sessions.TryReadState(state, out target);
+    public string BuildState(string target, string nonce) => _sessions.BuildState(target, nonce);
+    public bool TryReadState(string state, string nonce, out string target) => _sessions.TryReadState(state, nonce, out target);
 
     /// <summary>
     /// A redirect target must be a host kalitka is actually guarding — nothing
@@ -573,9 +573,27 @@ public sealed class ApprovalEngine
     {
         lock (_enforcedLock)
         {
-            _config.Mutate("settings", _ => JsonSerializer.Serialize(new { sessionMinutes = minutes }));
+            // Read-modify-write the settings blob rather than overwrite it, so a
+            // future second setting is not silently dropped when session length changes.
+            _config.Mutate("settings", cur =>
+            {
+                var obj = ParseSettingsObject(cur);
+                obj["sessionMinutes"] = minutes;
+                return obj.ToJsonString();
+            });
             _sessionMinutes = minutes;
             _configLoadedAt = _clock.GetUtcNow();
         }
+    }
+
+    private static System.Text.Json.Nodes.JsonObject ParseSettingsObject(string? blob)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(blob))
+                return System.Text.Json.Nodes.JsonNode.Parse(blob)?.AsObject() ?? new();
+        }
+        catch { /* malformed → start fresh, same as LoadSessionMinutes' fallback */ }
+        return new();
     }
 }

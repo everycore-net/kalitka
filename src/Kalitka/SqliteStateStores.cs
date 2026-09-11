@@ -441,6 +441,25 @@ public sealed class SqliteAgentStore : IAgentStore
               provenance TEXT NOT NULL DEFAULT '{}');
             """;
         cmd.ExecuteNonQuery();
+
+        // Columns added after the table first shipped (tags in 0.16, provenance in
+        // 0.17). CREATE TABLE IF NOT EXISTS never adds columns to a pre-existing
+        // table, so an agents table created by 0.14/0.15 would otherwise make every
+        // SELECT throw "no such column". Add them idempotently.
+        EnsureColumn(conn, "tags", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(conn, "provenance", "TEXT NOT NULL DEFAULT '{}'");
+    }
+
+    private static void EnsureColumn(Microsoft.Data.Sqlite.SqliteConnection conn, string column, string definition)
+    {
+        using var check = conn.CreateCommand();
+        check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name=$n;";
+        check.Parameters.AddWithValue("$n", column);
+        if (Convert.ToInt64(check.ExecuteScalar()) > 0) return;
+
+        using var alter = conn.CreateCommand();
+        alter.CommandText = $"ALTER TABLE agents ADD COLUMN {column} {definition};";
+        alter.ExecuteNonQuery();
     }
 
     public Agent? GetById(string id)

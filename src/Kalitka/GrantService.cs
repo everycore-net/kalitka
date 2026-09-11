@@ -36,17 +36,22 @@ public sealed class GrantService
     }
 
     /// <summary>The grant for an approved SSH request, issued once. Null if the
-    /// request is not approved or is not an agent resource.</summary>
-    public async Task<string?> IssueGrant(string id, string actor, CancellationToken ct)
+    /// request is not approved, is not an agent resource, or the requesting agent is
+    /// not scoped to redeem that resource — a valid credential is not a licence to
+    /// collect the grant for a resource outside the agent's scope (this mirrors the
+    /// check <see cref="Redeem"/> makes, so the grant is never even handed out to the
+    /// wrong agent, and the <c>grant.created</c> event is attributed correctly).</summary>
+    public async Task<string?> IssueGrant(string id, AgentIdentity agent, CancellationToken ct)
     {
         if (_gate.StateOf(id) != "approved") return null;
         var resource = _gate.ResourceOf(id) ?? "";
         if (!resource.StartsWith("ssh:", StringComparison.Ordinal)) return null;
+        if (!agent.MayRepresent(resource, AgentCapabilities.Redeem)) return null;
 
         var subject = _gate.SubjectOf(id) ?? "";
         var (grant, created) = _gate.EnsureGrant(id, _tokens.MintGrant(resource, id, subject, _grantMinutes));
         if (created && _tokens.Read(grant) is { } cap)
-            await _audit.Append(Event(AuditEvents.GrantCreated, actor, subject, resource, id, cap.GrantId, ""), ct);
+            await _audit.Append(Event(AuditEvents.GrantCreated, agent.Actor, subject, resource, id, cap.GrantId, ""), ct);
         return grant;
     }
 

@@ -65,13 +65,25 @@ public class SessionServiceTests
         var clock = ClockAt();
         var s = Svc(clock);
 
-        var state = s.BuildState("app.example.com");
-        Assert.True(s.TryReadState(state, out var target));
+        var state = s.BuildState("app.example.com", "nonce-abc");
+        Assert.True(s.TryReadState(state, "nonce-abc", out var target));
         Assert.Equal("app.example.com", target);
 
-        Assert.False(s.TryReadState(state[..^1] + (state[^1] == 'a' ? 'b' : 'a'), out _));
+        Assert.False(s.TryReadState(state[..^1] + (state[^1] == 'a' ? 'b' : 'a'), "nonce-abc", out _));
 
         clock.Advance(TimeSpan.FromMinutes(11));   // state lives 10 minutes
-        Assert.False(s.TryReadState(state, out _));
+        Assert.False(s.TryReadState(state, "nonce-abc", out _));
+    }
+
+    [Fact]
+    public void State_requires_the_matching_browser_nonce()
+    {
+        var clock = ClockAt();
+        var s = Svc(clock);
+
+        var state = s.BuildState("app.example.com", "nonce-abc");
+        Assert.False(s.TryReadState(state, "nonce-xyz", out _));   // wrong browser
+        Assert.False(s.TryReadState(state, "", out _));            // no login cookie
+        Assert.True(s.TryReadState(state, "nonce-abc", out _));    // right browser
     }
 }

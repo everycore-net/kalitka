@@ -7,6 +7,53 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-09-11
+
+### Fixed
+
+- **Admin login loop.** The admin session cookie was `SameSite=Strict`, but the
+  console is entered through the Google OIDC callback — a cross-site redirect chain.
+  The browser withheld the just-set cookie on the redirect to `/admin/dashboard`, the
+  guard saw nothing, and bounced back to the login page forever. It is now
+  `SameSite=Lax` (state-changing POSTs remain CSRF-protected, so this does not weaken
+  the plane). Regression-tested end to end against a stubbed identity.
+- **`SetSessionMinutes` overwrote the whole settings blob** instead of read-modify-
+  write — latent data loss once a second setting exists. Now merges.
+- **Store schema upgrades.** The agent stores add `tags`/`provenance` columns
+  idempotently (`ALTER TABLE`), so a database created by 0.14/0.15 no longer breaks
+  every read after an upgrade (`CREATE TABLE IF NOT EXISTS` never adds columns).
+
+### Added
+
+- **Localized visitor pages (English, German, Russian).** The pages a visitor or
+  e-mail approver sees are rendered in the browser's language (negotiated from
+  `Accept-Language`, English fallback); the admin console stays English. New
+  `Localization.cs`.
+- **kalitka.app visual identity.** Visitor pages restyled to the brand (near-black,
+  one cyan accent, square mark + wordmark, localized tagline). Every page carries a
+  quiet source-offer footer, satisfying the AGPL §13 network-use obligation.
+
+### Security
+
+- **Agent grant issuance now checks the poller's scope** (`GrantService.IssueGrant`):
+  an approved request's grant is no longer handed to an agent not scoped to redeem
+  that resource, and the `grant.created` event is attributed correctly. (Redeem
+  already re-checked; this closes the least-privilege gap on the issuing side.)
+- **OAuth login is bound to the browser that started it.** Both the admin and visitor
+  flows set a short-lived nonce cookie at login start and require it to match the
+  nonce inside the signed OAuth state at the callback — defeating login-CSRF /
+  forced-login.
+- **Admin CSRF token now expires** with the session instead of being valid until
+  `HmacSecret` rotation.
+- **Constant-time comparison** for the Telegram-webhook, internal-switch, and legacy
+  global-agent secrets (they used `==`; registered-agent secrets and signed tokens
+  already used fixed-time compares).
+
+### Docs
+
+- `SECURITY.md` corrected: per-host session scope is the default (since 0.16), not
+  unshipped. Added `THIRD-PARTY-NOTICES` (MaxMind Apache-2.0 attribution, etc.).
+
 ## [0.17.0] - 2026-09-11
 
 ### Added

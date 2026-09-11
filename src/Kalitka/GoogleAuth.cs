@@ -14,7 +14,10 @@ namespace Kalitka;
 /// audience are implied. What is checked is the e-mail, that Google says it is
 /// verified, and that it is on the allow list.
 /// </summary>
-public sealed class GoogleAuth
+// Not sealed, and ResolveIdentity is virtual, so a test double can supply a verified
+// identity without the real Google round-trip — this is what makes the login callback,
+// the allowlist gate, and the session-cookie attributes testable end to end.
+public class GoogleAuth
 {
     private readonly HttpClient _http;
     private readonly GateOptions _options;
@@ -67,7 +70,7 @@ public sealed class GoogleAuth
     /// verified. The admin flow keys identity on <c>sub</c>, so it survives a
     /// display-e-mail change.
     /// </summary>
-    public async Task<(string Email, string Sub)?> ResolveIdentity(string code, string redirectUri, CancellationToken ct)
+    public virtual async Task<(string Email, string Sub)?> ResolveIdentity(string code, string redirectUri, CancellationToken ct)
     {
         try
         {
