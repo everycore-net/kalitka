@@ -64,6 +64,10 @@ services:
       Kalitka__StateDbPath: /data/state.db
       # Tip: point AuditDbPath and StateDbPath at the SAME file to get atomic
       # state+audit (a decision and its audit event commit together).
+      # For several kalitka instances (true multi-node), point them all at ONE
+      # Postgres instead — it takes precedence over the SQLite paths above and
+      # holds requests, replay, sessions and audit together (state+audit atomic):
+      # Kalitka__PostgresConnectionString: "Host=db;Username=kalitka;Password=...;Database=kalitka"
 
       # Optional: geolocation for the notification (informational, never blocks).
       # The default HTTP lookup (ip-api.com) sends each visitor IP to a third party.

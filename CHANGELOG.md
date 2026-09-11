@@ -7,6 +7,23 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Postgres backend — true multi-node (0.13, first slice).** Set
+  `PostgresConnectionString` and the durable stores — pending requests, replay,
+  sessions **and** audit — all live in one Postgres database, so several kalitka
+  instances share the same state and their atomic transitions hold across the
+  cluster (state and audit commit in one transaction, since they share the
+  connection). Same seams and guarantees as the SQLite backend, in Postgres SQL
+  (`PgRequestStore` / `PgReplayStore` / `PgSessionStore` / `PgAuditStore` /
+  `PgAtomicWork`). Backend precedence: Postgres > SQLite
+  (`StateDbPath`/`AuditDbPath`) > in-memory. New opt-in dependency `Npgsql`, loaded
+  only on the Postgres path. Tested against real Postgres in CI: resolve / redeem /
+  close once-only, concurrency (one winner), atomic rollback of a redeem's four
+  effects, and a wired end-to-end run on Postgres.
+- Still per-instance, and the remaining slice before "true multi-node" is complete:
+  the enforced-hosts / settings / lists JSON.
+
 ## [0.12.0] - 2026-09-11
 
 ### Added

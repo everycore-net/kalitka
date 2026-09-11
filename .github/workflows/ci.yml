@@ -11,6 +11,19 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Postgres for the multi-node backend tests. They skip when
+    # KALITKA_TEST_POSTGRES is unset (local runs); here it is set, so they run.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kalitka
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v7
 
@@ -21,6 +34,8 @@ jobs:
       - run: dotnet build src/Kalitka/Kalitka.csproj -c Release
 
       - run: dotnet test tests/Kalitka.Tests/Kalitka.Tests.csproj -c Release
+        env:
+          KALITKA_TEST_POSTGRES: "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=kalitka"
 
   image:
     # Prove the Dockerfile still builds on every change. No push here; that only
