@@ -167,12 +167,26 @@ earlier behaviour, where the audit append is a best-effort second step.
 
 **Who may operate it** is a separate allowlist from who may *enter* guarded hosts:
 
-- `AdminEmails` — the primary mechanism, exact match (`sergej@example.com`).
+- `AdminEmails` — the primary mechanism, exact match (`sergej@example.com`). Full
+  admin: every permission.
 - `AdminDomains` — a deliberately broader, **explicitly-enabled** mode. A whole
   domain is "anyone the org gave an account", a large blast radius for a console
-  that can approve access — so it is not an equivalent default. With both set the
-  check is OR; with neither set the web login is **disabled** (fail-closed), and
-  Telegram approval still works.
+  that can approve access — so it is not an equivalent default. Also full admin.
+  With both set the check is OR; with none of the lists set the web login is
+  **disabled** (fail-closed), and Telegram approval still works.
+
+The console is **permission-based**, so you can grant less than full admin with two
+narrow roles (each is a bundle of permissions; membership is additive — an address on
+several lists gets the union):
+
+- `ApproverEmails` — **Approver**: read/approve/deny access requests and read history.
+- `AgentAdminEmails` — **AgentAdmin**: manage agents, profiles, enrollment and
+  reconciliation.
+
+Every endpoint checks a permission; the nav only shows what you can use. Effective
+permissions are resolved from the current config on each request, so removing an
+address takes effect at once — not at session expiry. (A policy/config role will be
+added when a policy surface exists.)
 
 Login is Google OIDC (only a verified e-mail on the allowlist gets in; the stable
 `sub` keys the session). Add the console's redirect URI to your Google client:
@@ -181,10 +195,11 @@ Login is Google OIDC (only a verified e-mail on the allowlist gets in; the stabl
 https://gate.example.com/admin/oauth2/callback
 ```
 
-The admin session is a separate signed cookie (its own derived key, `SameSite=Strict`,
-scoped to `/admin`, short absolute lifetime) — web access to a guarded app grants
-nothing here. State-changing actions are POSTs with a CSRF token. Login is OIDC,
-so there is no password to brute-force.
+The admin session is a separate signed cookie (its own derived key, `SameSite=Lax`
+so it survives the OIDC redirect, scoped to `/admin`, short absolute lifetime) — web
+access to a guarded app grants nothing here. State-changing actions are POSTs with a
+CSRF token, and the login is bound to the initiating browser by a state nonce. Login
+is OIDC, so there is no password to brute-force.
 
 ## E-mail approvals
 

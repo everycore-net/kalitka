@@ -238,6 +238,17 @@ public sealed class GateOptions
     public string[] AdminEmails { get; set; } = Array.Empty<string>();
     public string[] AdminDomains { get; set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Narrow admin roles (permission bundles), for granting less than full admin.
+    /// <see cref="AdminEmails"/>/<see cref="AdminDomains"/> stay full admin (every
+    /// permission). <see cref="ApproverEmails"/> may read and decide access requests
+    /// and read history; <see cref="AgentAdminEmails"/> may manage agents, profiles,
+    /// enrollment and reconciliation. Membership is additive: an address on several
+    /// lists gets the union of their permissions. Exact e-mail match, like AdminEmails.
+    /// </summary>
+    public string[] ApproverEmails { get; set; } = Array.Empty<string>();
+    public string[] AgentAdminEmails { get; set; } = Array.Empty<string>();
+
     /// <summary>Absolute lifetime of an admin session. Shorter than a visitor one.</summary>
     public int AdminSessionMinutes { get; set; } = 480;
 

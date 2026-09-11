@@ -49,15 +49,19 @@ public static class AdminPages
         Head
         + $"<div class=\"top\"><span class=\"brand\"><img class=\"mark\" src=\"{Brand.IconDataUri}\" alt=\"\" width=\"22\" height=\"22\"><b>kalitka</b></span>"
         + "<a href=\"/admin/dashboard\">Dashboard</a>"
-        + "<a href=\"/admin/requests\">Requests</a>"
-        + "<a href=\"/admin/agents\">Agents</a>"
-        + "<a href=\"/admin/profiles\">Profiles</a>"
-        + "<a href=\"/admin/reconcile\">Reconcile</a>"
-        + "<a href=\"/admin/history\">History</a>"
+        // Nav mirrors permissions — purely UX; the endpoint guards are the boundary.
+        + Nav(who, Perm.RequestsRead, "/admin/requests", "Requests")
+        + Nav(who, Perm.AgentsRead, "/admin/agents", "Agents")
+        + Nav(who, Perm.ProfilesManage, "/admin/profiles", "Profiles")
+        + Nav(who, Perm.AgentsRead, "/admin/reconcile", "Reconcile")
+        + Nav(who, Perm.HistoryRead, "/admin/history", "History")
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
         + "<form class=\"inline\" method=\"post\" action=\"/admin/logout\"><button class=\"mut\">Sign out</button></form>"
         + "</div><div class=\"wrap\">" + body + "</div>" + Foot;
+
+    private static string Nav(AdminIdentity who, string permission, string href, string label) =>
+        who.Can(permission) ? $"<a href=\"{href}\">{H(label)}</a>" : "";
 
     // ---- Login (unauthenticated) -------------------------------------------
 
@@ -78,11 +82,17 @@ public static class AdminPages
     public static string Dashboard(AdminIdentity who, int waiting, int hosts) =>
         Shell(who,
             "<h1>Overview</h1>"
-            + $"<a class=\"row\" href=\"/admin/requests\"><span class=\"tile\"><b>{waiting}</b>waiting</span></a>"
-            + $"<span class=\"tile\"><b>{hosts}</b>guarded hosts</span>"
-            + "<p class=\"muted\">Requests waiting for a decision appear under "
-            + "<a class=\"row\" href=\"/admin/requests\">Requests</a>. This is a second channel; "
-            + "Telegram still works.</p>");
+            // Only surface what this operator may act on.
+            + (who.Can(Perm.RequestsRead)
+                ? $"<a class=\"row\" href=\"/admin/requests\"><span class=\"tile\"><b>{waiting}</b>waiting</span></a>"
+                  + $"<span class=\"tile\"><b>{hosts}</b>guarded hosts</span>"
+                  + "<p class=\"muted\">Requests waiting for a decision appear under "
+                  + "<a class=\"row\" href=\"/admin/requests\">Requests</a>. This is a second channel; "
+                  + "Telegram still works.</p>"
+                : who.Can(Perm.AgentsRead)
+                    ? "<p class=\"muted\">Manage agents and profiles under "
+                      + "<a class=\"row\" href=\"/admin/agents\">Agents</a>.</p>"
+                    : "<p class=\"muted\">No sections are available to your account.</p>"));
 
     // ---- Requests list ------------------------------------------------------
 

@@ -11,6 +11,13 @@ public sealed record AdminIdentity(string Sub, string Email)
     /// identity and can change; the sub does not.
     /// </summary>
     public string Actor => $"google:{Sub}";
+
+    /// <summary>Effective permissions for <b>this request</b>, resolved from the
+    /// current config at guard time — never frozen into the cookie, so removing an
+    /// address from an allowlist takes effect at once. Empty until the guard fills it.</summary>
+    public IReadOnlySet<string> Permissions { get; init; } = new HashSet<string>();
+
+    public bool Can(string permission) => Permissions.Contains(permission);
 }
 
 /// <summary>
@@ -50,37 +57,52 @@ public sealed class AdminAuth
     /// allowlist is populated. Neither list means fail closed — no admin login.
     /// </summary>
     public bool Enabled =>
-        _google.Enabled && (_options.AdminEmails.Length > 0 || _options.AdminDomains.Length > 0);
+        _google.Enabled && (_options.AdminEmails.Length > 0 || _options.AdminDomains.Length > 0
+            || _options.ApproverEmails.Length > 0 || _options.AgentAdminEmails.Length > 0);
+
+    /// <summary>Permitted to reach the control plane at all — i.e. holds at least one
+    /// permission. Kept for the callback/cookie allowlist re-check.</summary>
+    public bool IsPermitted(string email) => ResolvePermissions(email).Count > 0;
 
     /// <summary>
-    /// Emails are the primary mechanism (exact match); domains are the broader,
-    /// explicit mode. With neither populated nobody is permitted.
+    /// The effective permissions for an address, resolved from the current config.
+    /// Full admin (<see cref="GateOptions.AdminEmails"/>/<see cref="GateOptions.AdminDomains"/>)
+    /// gets everything; the narrow lists add their bundles; membership is additive
+    /// (the union across every list the address matches). Nobody listed → empty.
     /// </summary>
-    public bool IsPermitted(string email)
+    public IReadOnlySet<string> ResolvePermissions(string email)
     {
         email = email.Trim().ToLowerInvariant();
-        if (email.Length == 0) return false;
+        if (email.Length == 0) return EmptyPerms;
 
-        var hasEmails = _options.AdminEmails.Length > 0;
-        var hasDomains = _options.AdminDomains.Length > 0;
-        if (!hasEmails && !hasDomains) return false;   // fail closed
+        if (MatchesFullAdmin(email)) return Perm.All;
 
-        if (hasEmails && _options.AdminEmails.Any(x =>
-                string.Equals(x.Trim(), email, StringComparison.OrdinalIgnoreCase)))
-            return true;
+        var perms = new HashSet<string>();
+        if (InList(_options.ApproverEmails, email)) perms.UnionWith(Perm.Approver);
+        if (InList(_options.AgentAdminEmails, email)) perms.UnionWith(Perm.AgentAdmin);
+        return perms;
+    }
 
-        if (hasDomains)
+    private static readonly IReadOnlySet<string> EmptyPerms = new HashSet<string>();
+
+    // Full admin: exact e-mail, or (broader, explicit) whole domain. Fail closed if
+    // no full-admin list is configured — but the narrow lists can still grant access.
+    private bool MatchesFullAdmin(string email)
+    {
+        if (InList(_options.AdminEmails, email)) return true;
+        if (_options.AdminDomains.Length > 0)
         {
             var at = email.LastIndexOf('@');
             if (at < 0) return false;
             var domain = email[(at + 1)..];
-            if (_options.AdminDomains.Any(d =>
-                    string.Equals(d.Trim(), domain, StringComparison.OrdinalIgnoreCase)))
+            if (_options.AdminDomains.Any(d => string.Equals(d.Trim(), domain, StringComparison.OrdinalIgnoreCase)))
                 return true;
         }
-
         return false;
     }
+
+    private static bool InList(string[] list, string email) =>
+        list.Any(x => string.Equals(x.Trim(), email, StringComparison.OrdinalIgnoreCase));
 
     // ---- Login --------------------------------------------------------------
 

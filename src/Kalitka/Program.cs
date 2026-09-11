@@ -622,11 +622,14 @@ var guarded = adminGroup.MapGroup("");
 guarded.AddEndpointFilter(async (ctx, next) =>
 {
     var http = ctx.HttpContext;
-    var who = http.RequestServices.GetRequiredService<AdminAuth>()
-        .ReadCookie(http.Request.Cookies[AdminAuth.CookieName]);
+    var adminAuth = http.RequestServices.GetRequiredService<AdminAuth>();
+    var who = adminAuth.ReadCookie(http.Request.Cookies[AdminAuth.CookieName]);
     if (who is null)
         return Results.Redirect("/admin/login?return=" + Uri.EscapeDataString(http.Request.Path), false);
-    http.Items["admin"] = who;
+    // Resolve permissions from the current config for this request (not frozen in the
+    // cookie), so an allowlist change takes effect at once. Per-endpoint filters and
+    // the nav both read who.Permissions.
+    http.Items["admin"] = who with { Permissions = adminAuth.ResolvePermissions(who.Email) };
     return await next(ctx);
 });
 
@@ -639,7 +642,8 @@ guarded.MapGet("/dashboard", (HttpContext ctx, GateService gate) =>
 });
 
 guarded.MapGet("/requests", (HttpContext ctx, GateService gate) =>
-    Results.Content(AdminPages.Requests(Admin(ctx), gate.PendingSnapshot()), "text/html; charset=utf-8"));
+    Results.Content(AdminPages.Requests(Admin(ctx), gate.PendingSnapshot()), "text/html; charset=utf-8"))
+    .RequirePermission(Perm.RequestsRead);
 
 guarded.MapGet("/requests/{id}", (HttpContext ctx, string id, AdminAuth auth, GateService gate) =>
 {
@@ -648,7 +652,7 @@ guarded.MapGet("/requests/{id}", (HttpContext ctx, string id, AdminAuth auth, Ga
     return view is null
         ? Results.Content(AdminPages.Requests(who, gate.PendingSnapshot()), "text/html; charset=utf-8")
         : Results.Content(AdminPages.Detail(who, view, auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
-});
+}).RequirePermission(Perm.RequestsRead);
 
 guarded.MapPost("/requests/decide", async (HttpContext ctx, AdminAuth auth, GateService gate) =>
 {
@@ -657,7 +661,7 @@ guarded.MapPost("/requests/decide", async (HttpContext ctx, AdminAuth auth, Gate
     if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
     await gate.Decide(form["id"].ToString(), form["verb"].ToString(), who.Actor);
     return Results.Redirect("/admin/requests", false);
-});
+}).RequirePermission(Perm.RequestsDecide);
 
 guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
 {
@@ -677,7 +681,7 @@ guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
     return Results.Content(
         AdminPages.History(Admin(ctx), events, actor, resource, eventType, Math.Max(0, offset), limit),
         "text/html; charset=utf-8");
-});
+}).RequirePermission(Perm.HistoryRead);
 
 // ---- Agents (control plane) ------------------------------------------------
 
@@ -689,7 +693,7 @@ guarded.MapGet("/agents", (HttpContext ctx, AdminAuth auth, AgentService agentsS
     if (tag.Length > 0)
         agents = agents.Where(a => a.Tags.Any(t => t.Contains(tag, StringComparison.OrdinalIgnoreCase))).ToList();
     return Results.Content(AdminPages.Agents(who, agents, profiles.All(), auth.IssueCsrf(who.Sub), tag), "text/html; charset=utf-8");
-});
+}).RequirePermission(Perm.AgentsRead);
 
 guarded.MapGet("/agents/{id}", (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc, ReconcileService reconcile) =>
 {
@@ -698,7 +702,7 @@ guarded.MapGet("/agents/{id}", (HttpContext ctx, string id, AdminAuth auth, Agen
     return agent is null
         ? Results.Redirect("/admin/agents", false)
         : Results.Content(AdminPages.AgentDetail(who, agent, auth.IssueCsrf(who.Sub), reconcile.Preview(id)), "text/html; charset=utf-8");
-});
+}).RequirePermission(Perm.AgentsRead);
 
 guarded.MapPost("/agents/create", async (HttpContext ctx, AdminAuth auth, AgentService agentsSvc, ProfileService profiles) =>
 {
@@ -750,7 +754,7 @@ guarded.MapPost("/agents/create", async (HttpContext ctx, AdminAuth auth, AgentS
         $"Agent id {created.Agent.Id} — its secret, shown once:", created.Secret,
         "Store it on the host as KALITKA_AGENT_SECRET (with the id as KALITKA_AGENT_ID). If lost, rotate."),
         "text/html; charset=utf-8");
-});
+}).RequirePermission(Perm.AgentsManage);
 
 // ---- Agent profiles (templates) --------------------------------------------
 
@@ -758,7 +762,7 @@ guarded.MapGet("/profiles", (HttpContext ctx, AdminAuth auth, ProfileService pro
 {
     var who = Admin(ctx);
     return Results.Content(AdminPages.Profiles(who, profiles.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
-});
+}).RequirePermission(Perm.AgentsRead);
 
 guarded.MapPost("/profiles/create", async (HttpContext ctx, AdminAuth auth, ProfileService profiles) =>
 {
@@ -771,7 +775,7 @@ guarded.MapPost("/profiles/create", async (HttpContext ctx, AdminAuth auth, Prof
         Words(form["capabilities"].ToString()), Words(form["resource_templates"].ToString()), Words(form["tags"].ToString()));
     await profiles.Save(profile, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/profiles", false);
-});
+}).RequirePermission(Perm.ProfilesManage);
 
 guarded.MapPost("/profiles/delete", async (HttpContext ctx, AdminAuth auth, ProfileService profiles) =>
 {
@@ -780,7 +784,7 @@ guarded.MapPost("/profiles/delete", async (HttpContext ctx, AdminAuth auth, Prof
     if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
     await profiles.Delete(form["name"].ToString().Trim(), who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/profiles", false);
-});
+}).RequirePermission(Perm.ProfilesManage);
 
 // ---- Reconcile: deliberate, audited apply of profile changes to agents -----
 
@@ -788,7 +792,7 @@ guarded.MapGet("/reconcile", (HttpContext ctx, AdminAuth auth, ReconcileService 
 {
     var who = Admin(ctx);
     return Results.Content(AdminPages.Reconcile(who, reconcile.PreviewAll(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
-});
+}).RequirePermission(Perm.AgentsRead);
 
 guarded.MapPost("/reconcile/apply", async (HttpContext ctx, AdminAuth auth, ReconcileService reconcile) =>
 {
@@ -798,7 +802,7 @@ guarded.MapPost("/reconcile/apply", async (HttpContext ctx, AdminAuth auth, Reco
     var confirm = form["confirm"].ToString() == "1";
     await reconcile.Apply(form["agent"].ToString().Trim(), confirm, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/reconcile", false);
-});
+}).RequirePermission(Perm.AgentsManage);
 
 // Bulk apply — only the plans that grant nothing new. Expansions are never applied
 // here; they need per-agent confirmation.
@@ -810,7 +814,7 @@ guarded.MapPost("/reconcile/apply-safe", async (HttpContext ctx, AdminAuth auth,
     foreach (var p in reconcile.PreviewAll().Where(p => !p.IsExpansion))
         await reconcile.Apply(p.AgentId, confirmExpansion: false, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/reconcile", false);
-});
+}).RequirePermission(Perm.AgentsManage);
 
 guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>
 {
@@ -831,7 +835,7 @@ guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminA
                 "The old secret no longer works. Update the host now."), "text/html; charset=utf-8");
     }
     return Results.Redirect("/admin/agents/" + id, false);
-});
+}).RequirePermission(Perm.AgentsManage);
 
 // An empty response makes some browsers download the reply as a 0-byte file
 // instead of showing anything. Always answer with something typed.
