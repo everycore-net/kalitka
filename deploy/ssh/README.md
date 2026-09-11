@@ -41,13 +41,21 @@ next is a decision to make *after* this slice works end to end.
    share it:
    ```
    install -m 0600 -o root -g root /dev/null /etc/kalitka-approve.conf
-   # then edit:
+   # then edit — preferred: a registered agent (revocable, resource-scoped):
    KALITKA_URL=https://gate.example.com
-   KALITKA_AGENT_SECRET=...           # equals kalitka's Kalitka__AgentSecret
+   KALITKA_AGENT_ID=...               # from /admin/agents
+   KALITKA_AGENT_SECRET=...           # shown once on create/rotate
    ```
-   Use `AgentSecret`, **not** the administrative `InternalSecret` — that is the
-   point of the split: this host never holds a credential that can reach
-   `/internal/*`.
+   Create the agent in the **Agents** console (`/admin/agents`): give it the `ssh`
+   capability and the resources it may raise (e.g. `ssh:prod-01`), then copy the id
+   and the one-time secret here. Because the agent is individually identified, it
+   can be **revoked or rotated** without touching any other host, and it can only
+   raise the resources it is scoped to.
+
+   *Deprecated migration path:* leave `KALITKA_AGENT_ID` empty and set
+   `KALITKA_AGENT_SECRET` to kalitka's global `Kalitka__AgentSecret`. Either way this
+   is **not** the administrative `InternalSecret` — this host never holds a
+   credential that can reach `/internal/*`.
 4. Add two lines to `/etc/pam.d/sshd`. The approve hook gates entry (after the
    auth/account stack); the session hook closes the session on logout:
    ```

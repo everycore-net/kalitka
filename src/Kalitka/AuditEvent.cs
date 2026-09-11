@@ -31,6 +31,15 @@ public static class AuditEvents
     public const string SessionEnded     = "session.ended";
     public const string AdminLogin       = "admin.login";
     public const string AdminLoginDenied = "admin.login_denied";
+
+    public const string AgentEnrollmentCreated = "agent.enrollment_created";
+    public const string AgentEnrolled          = "agent.enrolled";
+    public const string AgentAuthFailed        = "agent.auth_failed";
+    public const string AgentDisabled          = "agent.disabled";
+    public const string AgentEnabled           = "agent.enabled";
+    public const string AgentCredentialRotated = "agent.credential_rotated";
+    public const string AgentRevoked           = "agent.revoked";
+    public const string AgentResourceDenied    = "agent.resource_denied";
 }
 
 /// <summary>A narrow query over the audit log: a few filters and a page.</summary>

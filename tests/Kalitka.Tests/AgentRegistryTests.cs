@@ -152,6 +152,28 @@ public class AgentRegistryTests : IClassFixture<GateFactory>
     }
 
     [Fact]
+    public async Task Enrolled_agent_can_then_authenticate_and_raise()
+    {
+        var svc = _f.Services.GetRequiredService<AgentService>();
+        var token = await svc.CreateEnrollmentToken("enrolltest", "linux", new[] { "ssh" }, new[] { "ssh:enrolled-host" }, "google:admin", default);
+        const string secret = "enroll-secret-abcdef123456";
+
+        var enroll = await Client().SendAsync(new HttpRequestMessage(HttpMethod.Post, "/agent/enroll")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            { ["token"] = token, ["secret"] = secret, ["hostname"] = "enrolled.local", ["metadata"] = "os=debian" })
+        });
+        Assert.Equal(HttpStatusCode.OK, enroll.StatusCode);
+        var agentId = Field(await enroll.Content.ReadAsStringAsync(), "agent_id")!;
+
+        // The freshly-enrolled agent can now authenticate and raise its resource, but
+        // nothing outside its scope.
+        Assert.Equal(200, await RaiseStatus(agentId, secret, "enrolled-host"));
+        Assert.Equal(403, await RaiseStatus(agentId, secret, "other-host"));
+        Assert.Equal(403, await RaiseStatus(agentId, "wrong-secret-abcdef", "enrolled-host"));
+    }
+
+    [Fact]
     public async Task Agent_id_survives_request_grant_session_audit()
     {
         var store = _f.Services.GetRequiredService<IAgentStore>();

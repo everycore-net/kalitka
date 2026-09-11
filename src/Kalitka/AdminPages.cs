@@ -47,6 +47,7 @@ public static class AdminPages
         + "<div class=\"top\"><b>kalitka</b>"
         + "<a href=\"/admin/dashboard\">Dashboard</a>"
         + "<a href=\"/admin/requests\">Requests</a>"
+        + "<a href=\"/admin/agents\">Agents</a>"
         + "<a href=\"/admin/history\">History</a>"
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
@@ -201,6 +202,111 @@ public static class AdminPages
     }
 
     private static string Short(string s) => s.Length > 10 ? s[..10] : s;
+
+    // ---- Agents -------------------------------------------------------------
+
+    public static string Agents(AdminIdentity who, IReadOnlyList<Agent> agents, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Agents</h1>");
+
+        // Create form: one profile, two ways to provision — a secret shown once, or
+        // a single-use enrollment token the machine redeems itself.
+        sb.Append("<h2>New agent</h2>")
+          .Append("<form method=\"post\" action=\"/admin/agents/create\">")
+          .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+          .Append(In("display_name", "name (e.g. prod-linux-01)"))
+          .Append(In("platform", "platform (linux, windows, …)"))
+          .Append(In("capabilities", "capabilities (ssh sudo …)"))
+          .Append(In("allowed_resources", "allowed resources (ssh:prod-01 ssh:*)"))
+          .Append("<div class=\"btns\">")
+          .Append("<button name=\"mode\" value=\"create\">Create (show secret once)</button>")
+          .Append("<button class=\"mut\" name=\"mode\" value=\"token\">Enrollment token</button>")
+          .Append("</div></form>");
+
+        sb.Append("<h2>Registered</h2>");
+        if (agents.Count == 0)
+            sb.Append("<p class=\"muted\">No agents yet.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Name</th><th>Platform</th><th>Capabilities</th>"
+                + "<th>Resources</th><th>Status</th><th>Last seen</th><th></th></tr>");
+            foreach (var a in agents)
+                sb.Append("<tr>")
+                  .Append($"<td>{H(a.DisplayName)}<br><span class=\"muted\">{H(a.Hostname)}</span></td>")
+                  .Append($"<td>{H(a.Platform)}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", a.Capabilities))}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", a.AllowedResources))}</td>")
+                  .Append($"<td>{StatusPill(a.Status)}</td>")
+                  .Append($"<td class=\"muted\">{Seen(a.LastSeenAt)}</td>")
+                  .Append($"<td><a class=\"row\" href=\"/admin/agents/{H(a.Id)}\">open →</a></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
+
+        return Shell(who, sb.ToString());
+    }
+
+    public static string AgentDetail(AdminIdentity who, Agent a, string csrf)
+    {
+        var sb = new StringBuilder($"<h1>Agent <code>{H(a.DisplayName)}</code></h1>");
+        sb.Append("<table>")
+          .Append($"<tr><th>Id</th><td><code>{H(a.Id)}</code></td></tr>")
+          .Append($"<tr><th>Status</th><td>{StatusPill(a.Status)}</td></tr>")
+          .Append($"<tr><th>Platform</th><td>{H(a.Platform)}</td></tr>")
+          .Append($"<tr><th>Hostname</th><td>{H(a.Hostname)}</td></tr>")
+          .Append($"<tr><th>Capabilities</th><td><code>{H(string.Join(" ", a.Capabilities))}</code></td></tr>")
+          .Append($"<tr><th>Resources</th><td><code>{H(string.Join(" ", a.AllowedResources))}</code></td></tr>")
+          .Append($"<tr><th>Created</th><td class=\"muted\">{a.CreatedAt:yyyy-MM-dd HH:mm} UTC</td></tr>")
+          .Append($"<tr><th>Last seen</th><td class=\"muted\">{Seen(a.LastSeenAt)}{(string.IsNullOrEmpty(a.LastIp) ? "" : " · " + H(a.LastIp))}</td></tr>")
+          .Append(string.IsNullOrEmpty(a.Metadata) ? "" : $"<tr><th>Reported</th><td class=\"muted\">{H(a.Metadata)}</td></tr>")
+          .Append("</table>");
+
+        sb.Append("<div class=\"btns\">");
+        if (a.Status != AgentStatus.Revoked)
+        {
+            if (a.Status == AgentStatus.Disabled) sb.Append(Act(a.Id, csrf, "enable", "Enable", "ok"));
+            else if (a.Status == AgentStatus.Active) sb.Append(Act(a.Id, csrf, "disable", "Disable", "mut"));
+            sb.Append(Act(a.Id, csrf, "rotate", "Rotate secret", ""));
+            sb.Append(Act(a.Id, csrf, "revoke", "Revoke", "no"));
+        }
+        else sb.Append("<span class=\"muted\">Revoked — re-enrol to return.</span>");
+        sb.Append("</div>");
+
+        sb.Append("<p style=\"margin-top:18px\"><a class=\"row\" href=\"/admin/agents\">← back</a></p>");
+        return Shell(who, sb.ToString());
+    }
+
+    /// <summary>Show a secret or enrollment token exactly once — it is never stored
+    /// in a form we can render again.</summary>
+    public static string SecretShown(AdminIdentity who, string title, string label, string value, string note) =>
+        Shell(who,
+            $"<h1>{H(title)}</h1>"
+            + "<div class=\"card\" style=\"max-width:640px\">"
+            + $"<p class=\"muted\">{H(label)}</p>"
+            + $"<p><code style=\"font-size:1rem;word-break:break-all\">{H(value)}</code></p>"
+            + $"<p class=\"muted\">{H(note)}</p></div>"
+            + "<p style=\"margin-top:18px\"><a class=\"row\" href=\"/admin/agents\">← back to agents</a></p>");
+
+    private static string In(string name, string placeholder) =>
+        $"<input name=\"{name}\" placeholder=\"{H(placeholder)}\" "
+        + "style=\"display:block;width:100%;max-width:420px;margin:6px 0;padding:8px;border-radius:8px;"
+        + "border:1px solid #2a3140;background:#0f1117;color:#e6e6e6\">";
+
+    private static string Act(string id, string csrf, string verb, string label, string cls) =>
+        $"<form class=\"inline\" method=\"post\" action=\"/admin/agents/{H(id)}/action\">"
+        + $"<input type=\"hidden\" name=\"verb\" value=\"{H(verb)}\">"
+        + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+        + $"<button class=\"{cls}\">{H(label)}</button></form>";
+
+    private static string StatusPill(AgentStatus s) => s switch
+    {
+        AgentStatus.Active => "<span class=\"pill approved\">active</span>",
+        AgentStatus.Pending => "<span class=\"pill waiting\">pending</span>",
+        AgentStatus.Disabled => "<span class=\"pill waiting\">disabled</span>",
+        _ => "<span class=\"pill denied\">revoked</span>",
+    };
+
+    private static string Seen(DateTimeOffset? at) => at is null ? "never" : $"{at:yyyy-MM-dd HH:mm} UTC";
 
     // ---- bits ---------------------------------------------------------------
 

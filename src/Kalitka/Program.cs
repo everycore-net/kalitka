@@ -105,6 +105,7 @@ builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 // A second approval channel beside Telegram. GateService picks up every INotifier.
 builder.Services.AddSingleton<INotifier, EmailNotifier>();
 builder.Services.AddSingleton<GrantService>();
+builder.Services.AddSingleton<AgentService>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -367,6 +368,23 @@ app.MapPost("/agent/session/end", async (HttpContext ctx, GateService gate, Gran
     return ok ? Results.Ok() : Results.StatusCode(404);
 });
 
+// Self-enrolment: an agent presents a one-time enrollment token and its own
+// generated secret to become active. The token itself is the authorization here.
+app.MapPost("/agent/enroll", async (HttpContext ctx, AgentService agentsSvc) =>
+{
+    var form = await ctx.Request.ReadFormAsync();
+    var result = await agentsSvc.Enroll(
+        form["token"].ToString(), form["secret"].ToString(),
+        form["hostname"].ToString(), form["metadata"].ToString(), ctx.RequestAborted);
+    return result.Ok
+        ? Results.Json(new { agent_id = result.AgentId })
+        : Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 400);
+});
+
+// A liveness ping. last_seen is also updated on any authenticated agent call.
+app.MapPost("/agent/heartbeat", (HttpContext ctx, GateService gate, IAgentStore agents) =>
+    AuthenticateAgent(ctx, gate, agents) is null ? Results.StatusCode(403) : Results.Ok());
+
 // ---------------------------------------------------------------------------
 // Telegram webhook: secret path plus secret header
 // ---------------------------------------------------------------------------
@@ -608,6 +626,69 @@ guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
         "text/html; charset=utf-8");
 });
 
+// ---- Agents (control plane) ------------------------------------------------
+
+guarded.MapGet("/agents", (HttpContext ctx, AdminAuth auth, AgentService agentsSvc) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AdminPages.Agents(who, agentsSvc.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+});
+
+guarded.MapGet("/agents/{id}", (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>
+{
+    var who = Admin(ctx);
+    var agent = agentsSvc.Get(id);
+    return agent is null
+        ? Results.Content(AdminPages.Agents(who, agentsSvc.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8")
+        : Results.Content(AdminPages.AgentDetail(who, agent, auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+});
+
+guarded.MapPost("/agents/create", async (HttpContext ctx, AdminAuth auth, AgentService agentsSvc) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+
+    var name = form["display_name"].ToString();
+    var platform = form["platform"].ToString();
+    var caps = Words(form["capabilities"].ToString());
+    var resources = Words(form["allowed_resources"].ToString());
+
+    if (form["mode"].ToString() == "token")
+    {
+        var token = await agentsSvc.CreateEnrollmentToken(name, platform, caps, resources, who.Actor, ctx.RequestAborted);
+        return Results.Content(AdminPages.SecretShown(who, "Enrollment token", "Give this to the agent once — it is single-use and expires.",
+            token, "Enrol with: kalitka-agent enroll --token <token>. It is not shown again."), "text/html; charset=utf-8");
+    }
+
+    var created = await agentsSvc.Create(name, platform, caps, resources, who.Actor, ctx.RequestAborted);
+    return Results.Content(AdminPages.SecretShown(who, "Agent created",
+        $"Agent id {created.Agent.Id} — its secret, shown once:", created.Secret,
+        "Store it on the host as KALITKA_AGENT_SECRET (with the id as KALITKA_AGENT_ID). If lost, rotate."),
+        "text/html; charset=utf-8");
+});
+
+guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+
+    switch (form["verb"].ToString())
+    {
+        case "disable": await agentsSvc.Disable(id, who.Actor, ctx.RequestAborted); break;
+        case "enable":  await agentsSvc.Enable(id, who.Actor, ctx.RequestAborted); break;
+        case "revoke":  await agentsSvc.Revoke(id, who.Actor, ctx.RequestAborted); break;
+        case "rotate":
+            var secret = await agentsSvc.Rotate(id, who.Actor, ctx.RequestAborted);
+            if (secret is null) break;
+            return Results.Content(AdminPages.SecretShown(who, "Secret rotated",
+                $"New secret for agent {id}, shown once:", secret,
+                "The old secret no longer works. Update the host now."), "text/html; charset=utf-8");
+    }
+    return Results.Redirect("/admin/agents/" + id, false);
+});
+
 // An empty response makes some browsers download the reply as a 0-byte file
 // instead of showing anything. Always answer with something typed.
 app.MapFallback(() => Results.Content(Pages.Message("404", "Nothing here."),
@@ -732,6 +813,10 @@ static void SetAdminCookie(HttpContext ctx, string value)
 
 // The admin identity the guard filter verified and stashed for the handler.
 static AdminIdentity Admin(HttpContext ctx) => (AdminIdentity)ctx.Items["admin"]!;
+
+// Split a free-text list (capabilities, resources) on spaces/commas.
+static string[] Words(string s) =>
+    s.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
 static AuditEvent AdminEvent(string type, string actor, string email) =>
     new(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, type, actor, email, "-", "-", "-", "web", "");

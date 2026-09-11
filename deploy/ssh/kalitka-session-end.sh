@@ -24,6 +24,13 @@ set -eu
 : "${KALITKA_URL:?set KALITKA_URL}"
 : "${KALITKA_AGENT_SECRET:?set KALITKA_AGENT_SECRET}"
 
+# Same credential choice as the approve hook: per-agent registry, else legacy.
+if [ -n "${KALITKA_AGENT_ID:-}" ]; then
+  AUTH="-H X-Kalitka-Agent-Id:$KALITKA_AGENT_ID -H X-Kalitka-Agent-Secret:$KALITKA_AGENT_SECRET"
+else
+  AUTH="-H X-Kalitka-Agent:$KALITKA_AGENT_SECRET"
+fi
+
 user="${PAM_USER:-unknown}"
 state="/run/kalitka/session-${user}"
 [ -r "$state" ] || exit 0                      # nothing was redeemed for this user
@@ -32,7 +39,7 @@ sid=$(cat "$state" 2>/dev/null || true)
 
 # Bounded like the approve hook: a hung gate must not wedge logout.
 curl -fsS --connect-timeout 5 --max-time 10 -X POST "$KALITKA_URL/agent/session/end" \
-  -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
+  $AUTH \
   --data-urlencode "session_id=$sid" \
   --data-urlencode "outcome=closed" >/dev/null 2>&1 || true
 
