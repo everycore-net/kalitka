@@ -76,7 +76,11 @@ public sealed record AgentIdentity(
     /// <summary>The audit actor: <c>agent:&lt;id&gt;</c>, or <c>agent</c> for the legacy caller.</summary>
     public string Actor => IsLegacy ? "agent" : $"agent:{AgentId}";
 
-    public static AgentIdentity FromAgent(Agent a) => new(a.Id, a.Capabilities, a.AllowedResources, false);
+    /// <summary>The agent's tags (e.g. <c>env:prod</c>) — used to select the access
+    /// policies that apply to its requests. Empty for the legacy global-secret caller.</summary>
+    public IReadOnlyList<string> Tags { get; init; } = Array.Empty<string>();
+
+    public static AgentIdentity FromAgent(Agent a) => new(a.Id, a.Capabilities, a.AllowedResources, false) { Tags = a.Tags };
 
     /// <summary>Legacy global-secret caller: no capability model; empty resource
     /// binding means "any" (the pre-registry behaviour).</summary>
