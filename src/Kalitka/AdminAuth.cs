@@ -85,29 +85,33 @@ public sealed class AdminAuth
     // ---- Login --------------------------------------------------------------
 
     /// <summary>Google authorization URL for admin login, carrying a signed state
-    /// with a short life and the page to return to.</summary>
-    public string LoginUrl(string returnPath)
+    /// with a short life, a browser-bound nonce (echoed in a login cookie), and the
+    /// page to return to.</summary>
+    public string LoginUrl(string returnPath, string nonce)
     {
         var exp = _clock.GetUtcNow().AddMinutes(StateMinutes).ToUnixTimeSeconds();
-        var state = _signer.Sign($"{exp}|{SafeReturn(returnPath)}", StateKey);
+        var state = _signer.Sign($"{exp}|{nonce}|{SafeReturn(returnPath)}", StateKey);
         return _google.AuthorizationUrl(state, _google.AdminRedirectUri);
     }
 
     public sealed record LoginResult(bool Ok, AdminIdentity? Identity = null, string ReturnPath = "/admin/dashboard");
 
     /// <summary>
-    /// Completes the callback: state must be intact and unexpired, Google must
-    /// return a verified identity, and the e-mail must be on the allowlist.
+    /// Completes the callback: state must be intact and unexpired, its nonce must
+    /// match the one from the login cookie (so a state cannot be replayed into
+    /// another browser — login-CSRF), Google must return a verified identity, and
+    /// the e-mail must be on the allowlist.
     /// </summary>
-    public async Task<LoginResult> CompleteLogin(string code, string state, CancellationToken ct)
+    public async Task<LoginResult> CompleteLogin(string code, string state, string nonce, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(code) || !_signer.Verify(state, StateKey, out var payload))
             return new LoginResult(false);
 
-        var parts = payload.Split('|', 2);
-        if (parts.Length != 2 || !long.TryParse(parts[0], out var exp)) return new LoginResult(false);
+        var parts = payload.Split('|', 3);
+        if (parts.Length != 3 || !long.TryParse(parts[0], out var exp)) return new LoginResult(false);
         if (_clock.GetUtcNow().ToUnixTimeSeconds() > exp) return new LoginResult(false);
-        var returnPath = SafeReturn(parts[1]);
+        if (!SessionService.NonceMatches(parts[1], nonce)) return new LoginResult(false);
+        var returnPath = SafeReturn(parts[2]);
 
         var identity = await _google.ResolveIdentity(code, _google.AdminRedirectUri, ct);
         if (identity is null || !IsPermitted(identity.Value.Email)) return new LoginResult(false);
@@ -115,12 +119,25 @@ public sealed class AdminAuth
         return new LoginResult(true, new AdminIdentity(identity.Value.Sub, identity.Value.Email), returnPath);
     }
 
-    // ---- CSRF (stateless, bound to the session subject) ---------------------
+    // ---- CSRF (stateless, bound to the session subject, with an expiry) ------
+    // Bound to the subject and given the same lifetime as the admin session, so a
+    // leaked token is not valid forever — it dies with (or before) the session
+    // rather than only when HmacSecret is rotated.
 
-    public string IssueCsrf(string sub) => _signer.Sign(sub, CsrfKey);
+    public string IssueCsrf(string sub)
+    {
+        var exp = _clock.GetUtcNow().AddMinutes(_options.AdminSessionMinutes).ToUnixTimeSeconds();
+        return _signer.Sign($"{exp}|{sub}", CsrfKey);
+    }
 
-    public bool ValidateCsrf(string? token, string sub) =>
-        !string.IsNullOrEmpty(token) && _signer.Verify(token, CsrfKey, out var s) && s == sub;
+    public bool ValidateCsrf(string? token, string sub)
+    {
+        if (string.IsNullOrEmpty(token) || !_signer.Verify(token, CsrfKey, out var payload)) return false;
+        var parts = payload.Split('|', 2);
+        if (parts.Length != 2 || !long.TryParse(parts[0], out var exp)) return false;
+        if (_clock.GetUtcNow().ToUnixTimeSeconds() > exp) return false;
+        return parts[1] == sub;
+    }
 
     // ---- Session cookie -----------------------------------------------------
 

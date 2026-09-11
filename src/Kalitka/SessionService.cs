@@ -47,15 +47,18 @@ public sealed class SessionService
             Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(parts[2]));
     }
 
-    // ---- OAuth state: carries the target, signed, no storage ----------------
+    // ---- OAuth state: carries the target + a browser-bound nonce, signed -----
+    // The nonce is echoed in a cookie set at login start; the callback requires the
+    // two to match, so a state minted for one browser cannot be replayed to force a
+    // login in another (login-CSRF). Signed, no server-side storage.
 
-    public string BuildState(string target, int minutes = 10)
+    public string BuildState(string target, string nonce, int minutes = 10)
     {
-        var body = $"{_clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds()}|{target}";
+        var body = $"{_clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds()}|{nonce}|{target}";
         return $"{Convert.ToBase64String(Encoding.UTF8.GetBytes(body))}.{Signature(body)}";
     }
 
-    public bool TryReadState(string state, out string target)
+    public bool TryReadState(string state, string nonce, out string target)
     {
         target = "";
         if (string.IsNullOrEmpty(state)) return false;
@@ -72,13 +75,20 @@ public sealed class SessionService
                 Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(parts[1])))
             return false;
 
-        var fields = body.Split('|', 2);
-        if (fields.Length != 2 || !long.TryParse(fields[0], out var expiry)) return false;
+        var fields = body.Split('|', 3);
+        if (fields.Length != 3 || !long.TryParse(fields[0], out var expiry)) return false;
         if (_clock.GetUtcNow().ToUnixTimeSeconds() > expiry) return false;
+        if (!NonceMatches(fields[1], nonce)) return false;
 
-        target = fields[1];
+        target = fields[2];
         return true;
     }
+
+    /// <summary>Constant-time nonce check; an empty cookie nonce never matches.</summary>
+    internal static bool NonceMatches(string stateNonce, string cookieNonce) =>
+        !string.IsNullOrEmpty(cookieNonce) &&
+        CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(stateNonce), Encoding.UTF8.GetBytes(cookieNonce));
 
     private long Expiry(int minutes) => _clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds();
 

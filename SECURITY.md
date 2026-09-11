@@ -38,5 +38,8 @@ README:
 - **`TrustedProxies` must be set correctly.** Every allow/block/bypass decision
   rests on the client address, which is only trustworthy when forwarded headers
   come from a proxy you named.
-- **A Google sign-in currently covers sibling hosts** under the cookie domain.
-  Per-host isolation is tracked as a feature, not yet shipped.
+- **Session scope is per-host by default.** A manual approval and a Google sign-in
+  both grant a session bound to the one host it was for (`SessionScope=Application`,
+  the default). `SessionScope=Domain` is an explicit opt-in for a single session that
+  spans every guarded host under the cookie domain — enable it only when that shared
+  blast radius is acceptable.

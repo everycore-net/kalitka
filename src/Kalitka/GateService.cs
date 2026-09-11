@@ -59,8 +59,8 @@ public sealed class GateService
     public string BuildIdentitySession(string target) => _engine.BuildIdentitySession(target);
     public bool IsCookieValid(string? cookie, string host) => _engine.IsCookieValid(cookie, host);
 
-    public string BuildState(string target) => _engine.BuildState(target);
-    public bool TryReadState(string state, out string target) => _engine.TryReadState(state, out target);
+    public string BuildState(string target, string nonce) => _engine.BuildState(target, nonce);
+    public bool TryReadState(string state, string nonce, out string target) => _engine.TryReadState(state, nonce, out target);
 
     // ---- Hosts and policies (engine) ----------------------------------------
 

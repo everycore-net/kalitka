@@ -548,6 +548,11 @@ public sealed class PgAgentStore : IAgentStore
               created_at BIGINT NOT NULL, last_seen_at BIGINT, last_ip TEXT NOT NULL DEFAULT '',
               revoked_at BIGINT, tags TEXT NOT NULL DEFAULT '[]',
               provenance TEXT NOT NULL DEFAULT '{}');
+            -- Columns added after the table first shipped (tags 0.16, provenance 0.17):
+            -- add them idempotently so an agents table from 0.14/0.15 does not make
+            -- every SELECT fail with "column does not exist".
+            ALTER TABLE agents ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE agents ADD COLUMN IF NOT EXISTS provenance TEXT NOT NULL DEFAULT '{}';
             """;
         cmd.ExecuteNonQuery();
     }

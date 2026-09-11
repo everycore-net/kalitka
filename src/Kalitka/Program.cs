@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Kalitka;
 using Microsoft.Extensions.Options;
@@ -202,7 +204,7 @@ app.MapMethods("/authz/{*rest}", new[] { "GET", "HEAD" }, authzCheck);
 // What the visitor sees
 // ---------------------------------------------------------------------------
 app.MapGet("/request", (HttpContext ctx, GoogleAuth google) =>
-    Results.Content(Pages.Form(ctx.Request.Query["target"].ToString(), null, google.Enabled),
+    Results.Content(Pages.Form(VisitorLang(ctx), ctx.Request.Query["target"].ToString(), false, google.Enabled),
         "text/html; charset=utf-8"));
 
 app.MapPost("/request", async (HttpContext ctx, GateService gate, GoogleAuth google) =>
@@ -210,6 +212,8 @@ app.MapPost("/request", async (HttpContext ctx, GateService gate, GoogleAuth goo
     var form = await ctx.Request.ReadFormAsync();
     var target = form["target"].ToString();
     var input = form["input"].ToString();
+    var lang = VisitorLang(ctx);
+    var s = L10n.For(lang);
 
     var ip = ResolveIp(ctx, gate);
 
@@ -225,9 +229,9 @@ app.MapPost("/request", async (HttpContext ctx, GateService gate, GoogleAuth goo
     {
         // Refused and blocked look the same on purpose: a blocked caller should
         // not learn that they are blocked.
-        "blocked" => Results.Content(Pages.Message("Refused", "Access denied."), "text/html; charset=utf-8"),
-        "invalid" => Results.Content(Pages.Form(target, "Please enter something valid.", google.Enabled), "text/html; charset=utf-8"),
-        _         => Results.Content(Pages.Waiting(id, target), "text/html; charset=utf-8")
+        "blocked" => Results.Content(Pages.Message(lang, s.RefusedTitle, s.AccessDenied), "text/html; charset=utf-8"),
+        "invalid" => Results.Content(Pages.Form(lang, target, error: true, google.Enabled), "text/html; charset=utf-8"),
+        _         => Results.Content(Pages.Waiting(lang, id, target), "text/html; charset=utf-8")
     };
 });
 
@@ -258,21 +262,26 @@ app.MapGet("/google/login", (HttpContext ctx, GateService gate, GoogleAuth googl
     var target = ctx.Request.Query["target"].ToString();
     if (!gate.IsGuardedHost(target)) return Results.BadRequest();
 
-    return Results.Redirect(google.AuthorizationUrl(gate.BuildState(target)), false);
+    var nonce = NewStateNonce();
+    SetStateCookie(ctx, "kalitka_oauth_state", "/", nonce);
+    return Results.Redirect(google.AuthorizationUrl(gate.BuildState(target, nonce)), false);
 });
 
 app.MapGet("/oauth2/callback", async (HttpContext ctx, GateService gate, GoogleAuth google) =>
 {
     var code = ctx.Request.Query["code"].ToString();
     var state = ctx.Request.Query["state"].ToString();
+    var nonce = ctx.Request.Cookies["kalitka_oauth_state"] ?? "";
+    ClearStateCookie(ctx, "kalitka_oauth_state", "/");
 
-    if (string.IsNullOrEmpty(code) || !gate.TryReadState(state, out var target) || !gate.IsGuardedHost(target))
-        return Results.Content(Pages.Message("Error", "Sign-in was not valid. Please try again."),
+    var s = L10n.For(VisitorLang(ctx));
+    if (string.IsNullOrEmpty(code) || !gate.TryReadState(state, nonce, out var target) || !gate.IsGuardedHost(target))
+        return Results.Content(Pages.Message(VisitorLang(ctx), s.ErrorTitle, s.SigninInvalid),
             "text/html; charset=utf-8");
 
     var email = await google.ResolveEmail(code, ctx.RequestAborted);
     if (email is null || !google.IsPermitted(email))
-        return Results.Content(Pages.Message("Refused", "This Google account is not permitted."),
+        return Results.Content(Pages.Message(VisitorLang(ctx), s.RefusedTitle, s.GoogleNotPermitted),
             "text/html; charset=utf-8");
 
     Audit.Decision(app.Logger, "approved", target, ResolveIp(ctx, gate), identity: email, reason: "google");
@@ -364,7 +373,7 @@ static async Task<IResult> AgentPoll(HttpContext ctx, GateService gate, GrantSer
     var state = gate.StateOf(id) ?? "gone";
     // On approval the agent gets a one-time grant to redeem — approval alone no
     // longer means "in". Issued once; repeated polls return the same grant.
-    var grant = state == "approved" ? await grants.IssueGrant(id, identity.Actor, ctx.RequestAborted) : null;
+    var grant = state == "approved" ? await grants.IssueGrant(id, identity, ctx.RequestAborted) : null;
     return Results.Json(new { state, grant });
 }
 
@@ -427,7 +436,7 @@ static void MarkAgentVersion(HttpContext ctx)
 // ---------------------------------------------------------------------------
 app.MapPost(options.WebhookPath, async (HttpContext ctx, GateService gate, ILogger<Program> log) =>
 {
-    if (ctx.Request.Headers["X-Telegram-Bot-Api-Secret-Token"].ToString() != options.WebhookSecret)
+    if (!SecretEquals(ctx.Request.Headers["X-Telegram-Bot-Api-Secret-Token"].ToString(), options.WebhookSecret))
         return Results.StatusCode(403);
 
     try
@@ -504,47 +513,50 @@ app.MapPost(options.WebhookPath, async (HttpContext ctx, GateService gate, ILogg
 // ---------------------------------------------------------------------------
 app.MapGet("/action", (HttpContext ctx, OneTimeTokenService tokens, GateService gate) =>
 {
+    var lang = VisitorLang(ctx);
+    var s = L10n.For(lang);
     var token = ctx.Request.Query["t"].ToString();
     var cap = tokens.Read(token);
     var verb = cap is null ? null : OneTimeTokenService.VerbFor(cap.Purpose, cap.Action);
     if (cap is null || verb is null)
-        return Results.Content(Pages.Message("Link invalid", "This link is not valid or has expired."),
+        return Results.Content(Pages.Message(lang, s.LinkInvalidTitle, s.LinkInvalidText),
             "text/html; charset=utf-8");
 
     var view = gate.RequestView(cap.RequestId);
     if (view is null || view.State != "waiting")
-        return Results.Content(Pages.Message("Nothing to do",
-            "That request is no longer waiting — it may already have been decided or expired."),
+        return Results.Content(Pages.Message(lang, s.NothingToDoTitle, s.NothingToDoText),
             "text/html; charset=utf-8");
 
     return Results.Content(
-        Pages.ActionConfirm(verb == "ok" ? "Approve" : "Deny", cap.Resource, view.Input, token),
+        Pages.ActionConfirm(lang, verb == "ok", cap.Resource, view.Input, token),
         "text/html; charset=utf-8");
 });
 
 app.MapPost("/action", async (HttpContext ctx, OneTimeTokenService tokens, IReplayStore replay, GateService gate) =>
 {
+    var lang = VisitorLang(ctx);
+    var s = L10n.For(lang);
     var form = await ctx.Request.ReadFormAsync();
     var cap = tokens.Read(form["t"].ToString());
     var verb = cap is null ? null : OneTimeTokenService.VerbFor(cap.Purpose, cap.Action);
     if (cap is null || verb is null)
-        return Results.Content(Pages.Message("Link invalid", "This link is not valid or has expired."),
+        return Results.Content(Pages.Message(lang, s.LinkInvalidTitle, s.LinkInvalidText),
             "text/html; charset=utf-8");
 
     // Consume first (single-use), then resolve. A spent link cannot act again,
     // and the resolve-once guarantee handles a request already decided elsewhere.
     if (!await replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ctx.RequestAborted))
-        return Results.Content(Pages.Message("Already used", "This link has already been used."),
+        return Results.Content(Pages.Message(lang, s.AlreadyUsedTitle, s.AlreadyUsedText),
             "text/html; charset=utf-8");
 
     var result = await gate.Decide(cap.RequestId, verb, "email:link");
     var message = result.Outcome switch
     {
-        CallbackOutcome.Decided        => verb == "ok" ? "Approved. The visitor may continue." : "Denied.",
-        CallbackOutcome.AlreadyHandled => "That request was already decided.",
-        _                              => "That request is no longer waiting — it may have expired."
+        CallbackOutcome.Decided        => verb == "ok" ? s.ActionApproved : s.ActionDenied,
+        CallbackOutcome.AlreadyHandled => s.ActionAlreadyDecided,
+        _                              => s.ActionNoLongerWaiting
     };
-    return Results.Content(Pages.Message("Done", message), "text/html; charset=utf-8");
+    return Results.Content(Pages.Message(lang, s.DoneTitle, message), "text/html; charset=utf-8");
 });
 
 // ---------------------------------------------------------------------------
@@ -568,15 +580,19 @@ adminGroup.MapGet("/login", (HttpContext ctx, AdminAuth auth) =>
 adminGroup.MapGet("/login/google", (HttpContext ctx, AdminAuth auth) =>
 {
     if (!auth.Enabled) return Results.NotFound();
-    return Results.Redirect(auth.LoginUrl(ctx.Request.Query["return"].ToString()), false);
+    var nonce = NewStateNonce();
+    SetStateCookie(ctx, "kalitka_admin_state", "/admin", nonce);
+    return Results.Redirect(auth.LoginUrl(ctx.Request.Query["return"].ToString(), nonce), false);
 });
 
 adminGroup.MapGet("/oauth2/callback", async (HttpContext ctx, AdminAuth auth, GateService gate, IAuditStore audit, ILogger<Program> log) =>
 {
     if (!auth.Enabled) return Results.NotFound();
 
+    var nonce = ctx.Request.Cookies["kalitka_admin_state"] ?? "";
+    ClearStateCookie(ctx, "kalitka_admin_state", "/admin");
     var result = await auth.CompleteLogin(
-        ctx.Request.Query["code"].ToString(), ctx.Request.Query["state"].ToString(), ctx.RequestAborted);
+        ctx.Request.Query["code"].ToString(), ctx.Request.Query["state"].ToString(), nonce, ctx.RequestAborted);
 
     if (!result.Ok || result.Identity is null)
     {
@@ -819,11 +835,26 @@ guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminA
 
 // An empty response makes some browsers download the reply as a 0-byte file
 // instead of showing anything. Always answer with something typed.
-app.MapFallback(() => Results.Content(Pages.Message("404", "Nothing here."),
-    "text/html; charset=utf-8", statusCode: 404));
+app.MapFallback((HttpContext ctx) =>
+{
+    var s = L10n.For(VisitorLang(ctx));
+    return Results.Content(Pages.Message(VisitorLang(ctx), s.NotFoundTitle, s.NotFoundText),
+        "text/html; charset=utf-8", statusCode: 404);
+});
 
 app.Run();
 return;
+
+/// <summary>The visitor's language, negotiated from the browser's Accept-Language
+/// header (no cookie, no state). Falls back to English.</summary>
+static Lang VisitorLang(HttpContext ctx) => L10n.Negotiate(ctx.Request.Headers.AcceptLanguage.ToString());
+
+/// <summary>Constant-time equality for the plaintext shared secrets (Telegram
+/// webhook, internal switch, legacy global agent), so a wrong value cannot be
+/// recovered byte by byte from response timing. Registered-agent secrets and signed
+/// tokens already use PBKDF2 / HMAC with fixed-time compares; these were the gaps.</summary>
+static bool SecretEquals(string a, string b) =>
+    CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));
 
 /// <summary>
 /// The client address, honouring forwarded headers only when the request came
@@ -915,18 +946,45 @@ static void SetSessionCookie(HttpContext ctx, GateService gate, string value)
         Path = "/"
     };
 
-    // Set on the parent domain so the browser carries it to every guarded host.
-    // A manual approval is still bound to one host inside the cookie; a Google
-    // session is not — see the tracked issue on per-host isolation.
+    // Set on the parent domain so the browser carries it to every guarded host; the
+    // scope inside the token, not the cookie's reach, is what limits access. Both a
+    // manual approval and (since 0.16, SessionScope=Application by default) a Google
+    // session are bound to the one host they were granted for; SessionScope=Domain is
+    // the explicit opt-in for a session that spans every guarded host.
     if (!string.IsNullOrWhiteSpace(gate.CookieDomain)) cookie.Domain = gate.CookieDomain;
 
     ctx.Response.Cookies.Append(gate.CookieName, value, cookie);
 }
 
+// ---- OAuth state nonce cookie -----------------------------------------------
+// A short-lived, browser-bound nonce set when a login starts and required to match
+// the nonce inside the signed OAuth state at the callback (defeats login-CSRF). Lax,
+// like the session cookies, so it survives the cross-site redirect back from Google.
+static string NewStateNonce() => Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+
+static void SetStateCookie(HttpContext ctx, string name, string path, string nonce) =>
+    ctx.Response.Cookies.Append(name, nonce, new CookieOptions
+    {
+        Secure = true,
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        Path = path,
+        MaxAge = TimeSpan.FromMinutes(10),
+    });
+
+static void ClearStateCookie(HttpContext ctx, string name, string path) =>
+    ctx.Response.Cookies.Delete(name, new CookieOptions { Secure = true, Path = path });
+
 /// <summary>
-/// The admin session cookie is stricter than a visitor session: SameSite=Strict
-/// (the control plane is never reached cross-site), scoped to /admin, and with no
-/// Expires — the absolute lifetime is the signed token's own, not the browser's.
+/// The admin session cookie: scoped to /admin, no Expires (the absolute lifetime is
+/// the signed token's own, not the browser's). SameSite=Lax, not Strict: the console
+/// is entered through the Google OIDC callback, which is a cross-site redirect chain
+/// (accounts.google.com → /admin/oauth2/callback → 302 /admin/dashboard). With Strict
+/// the browser withholds the just-set cookie on that first navigation, the guard sees
+/// nothing and bounces back to login — an endless login loop. Lax sends the cookie on
+/// top-level GET navigations (this case) while still withholding it on cross-site
+/// POSTs; state-changing POSTs are separately CSRF-protected, so this does not weaken
+/// the control plane.
 /// </summary>
 static void SetAdminCookie(HttpContext ctx, string value)
 {
@@ -934,7 +992,7 @@ static void SetAdminCookie(HttpContext ctx, string value)
     {
         Secure = true,
         HttpOnly = true,
-        SameSite = SameSiteMode.Strict,
+        SameSite = SameSiteMode.Lax,
         Path = "/admin",
     });
 }
@@ -951,7 +1009,7 @@ static AuditEvent AdminEvent(string type, string actor, string email) =>
 
 static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
     string.IsNullOrEmpty(gate.InternalSecret)
-    || ctx.Request.Headers["X-Kalitka-Internal"].ToString() != gate.InternalSecret
+    || !SecretEquals(ctx.Request.Headers["X-Kalitka-Internal"].ToString(), gate.InternalSecret)
         ? Results.StatusCode(403)
         : null;
 
@@ -975,7 +1033,7 @@ static AgentIdentity? AuthenticateAgent(HttpContext ctx, GateService gate, IAgen
 
     // Legacy global secret — deprecated, kept for one migration window.
     var legacy = ctx.Request.Headers["X-Kalitka-Agent"].ToString();
-    if (!string.IsNullOrEmpty(gate.AgentSecret) && legacy == gate.AgentSecret)
+    if (!string.IsNullOrEmpty(gate.AgentSecret) && SecretEquals(legacy, gate.AgentSecret))
         return AgentIdentity.Legacy(gate.AgentResources);
 
     return null;
