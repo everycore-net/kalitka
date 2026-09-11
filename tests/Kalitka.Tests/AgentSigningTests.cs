@@ -165,6 +165,35 @@ public class AgentSigningTests
         }
 
         [Fact]
+        public async Task A_signed_call_records_signature_auth_for_observability()
+        {
+            var (pub, priv) = NewKeyPair();
+            var id = RegisterWithKey("sig-obs", pub);              // key_id "k1"
+            Assert.Equal(HttpStatusCode.OK, (await Client().SendAsync(Signed(id, priv, Body("o")))).StatusCode);
+
+            var a = _f.Services.GetRequiredService<IAgentStore>().GetById(id)!;
+            Assert.Equal("signature", a.LastAuthMethod);
+            Assert.Equal("k1", a.LastKeyId);
+            Assert.NotNull(a.LastSignedAt);
+        }
+
+        [Fact]
+        public async Task A_secret_call_records_secret_auth()
+        {
+            var (pub, _) = NewKeyPair();
+            var id = RegisterWithKey("sec-obs", pub);              // hashed secret is "unused-secret"
+            var req = new HttpRequestMessage(HttpMethod.Post, "/agent/request")
+            { Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["host"] = "s", ["user"] = "u", ["ip"] = "1.2.3.4" }) };
+            req.Headers.Add("X-Kalitka-Agent-Id", id);
+            req.Headers.Add("X-Kalitka-Agent-Secret", "unused-secret");   // secret path (no signature header)
+            Assert.Equal(HttpStatusCode.OK, (await Client().SendAsync(req)).StatusCode);
+
+            var a = _f.Services.GetRequiredService<IAgentStore>().GetById(id)!;
+            Assert.Equal("secret", a.LastAuthMethod);
+            Assert.Null(a.LastSignedAt);   // secret auth does not stamp last-signed
+        }
+
+        [Fact]
         public async Task Rotation_overlaps_then_the_removed_key_stops_working()
         {
             var svc = _f.Services.GetRequiredService<AgentService>();

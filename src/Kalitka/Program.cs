@@ -1077,7 +1077,7 @@ static async Task<AgentIdentity?> AuthenticateAgent(HttpContext ctx, GateService
         var agent = agents.GetById(id);
         if (agent is null || agent.Status != AgentStatus.Active) return null;   // unknown/disabled/revoked/pending
         if (!AgentSecrets.Verify(secret, agent.SecretHash)) return null;
-        agents.TouchLastSeen(id, DateTimeOffset.UtcNow, ResolveIp(ctx, gate));
+        agents.RecordAuth(id, DateTimeOffset.UtcNow, ResolveIp(ctx, gate), "secret", "");
         return AgentIdentity.FromAgent(agent);
     }
 
@@ -1108,15 +1108,16 @@ static async Task<AgentIdentity?> AuthenticateSigned(HttpContext ctx, GateServic
         ctx.Request.Method, ctx.Request.Path + ctx.Request.QueryString, bodyHash, tsRaw, nonce);
 
     // The named key if given, otherwise any of the agent's keys.
-    var candidates = agent.Keys.Where(k => keyId.Length == 0 || k.KeyId == keyId);
-    if (!candidates.Any(k => AgentSignatures.Verify(k.PublicKey, message, sig))) return null;
+    var matched = agent.Keys.Where(k => keyId.Length == 0 || k.KeyId == keyId)
+        .FirstOrDefault(k => AgentSignatures.Verify(k.PublicKey, message, sig));
+    if (matched is null) return null;
 
     // Valid signature — burn the nonce (only now, so a bad signature cannot exhaust
     // the nonce space) so this exact request cannot be replayed inside the window.
     var expiry = DateTimeOffset.FromUnixTimeSeconds(ts).AddSeconds(AgentSignatures.MaxSkewSeconds);
     if (!await replay.TryConsumeAsync($"agentsig:{id}:{nonce}", expiry, ctx.RequestAborted)) return null;
 
-    agents.TouchLastSeen(id, DateTimeOffset.UtcNow, ResolveIp(ctx, gate));
+    agents.RecordAuth(id, DateTimeOffset.UtcNow, ResolveIp(ctx, gate), "signature", matched.KeyId);
     return AgentIdentity.FromAgent(agent);
 }
 

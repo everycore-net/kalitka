@@ -267,13 +267,14 @@ public static class AdminPages
         else
         {
             sb.Append("<table><tr><th>Name</th><th>Platform</th><th>Resources</th>"
-                + "<th>Tags</th><th>Status</th><th>Last seen</th><th></th></tr>");
+                + "<th>Tags</th><th>Auth</th><th>Status</th><th>Last seen</th><th></th></tr>");
             foreach (var a in agents)
                 sb.Append("<tr>")
                   .Append($"<td>{H(a.DisplayName)}<br><span class=\"muted\">{H(a.Hostname)}</span></td>")
                   .Append($"<td>{H(a.Platform)}</td>")
                   .Append($"<td class=\"muted\">{H(string.Join(" ", a.AllowedResources))}</td>")
                   .Append($"<td class=\"muted\">{H(string.Join(" ", a.Tags))}</td>")
+                  .Append($"<td>{AuthBadge(a)}</td>")
                   .Append($"<td>{StatusPill(a.Status)}</td>")
                   .Append($"<td class=\"muted\">{Seen(a.LastSeenAt)}</td>")
                   .Append($"<td><a class=\"row\" href=\"/admin/agents/{H(a.Id)}\">open →</a></td>")
@@ -386,6 +387,7 @@ public static class AdminPages
           .Append(string.IsNullOrEmpty(a.ProfileId) ? ""
               : $"<tr><th>Profile</th><td><code>{H(a.ProfileId)}</code> <span class=\"muted\">@ {H(a.ProfileHostname)}, rev {a.AppliedProfileRevision}</span></td></tr>")
           .Append($"<tr><th>Created</th><td class=\"muted\">{a.CreatedAt:yyyy-MM-dd HH:mm} UTC</td></tr>")
+          .Append($"<tr><th>Auth</th><td>{AuthBadge(a)}{(a.LastSignedAt is { } ls ? $" <span class=\"muted\">· last signed {ls:yyyy-MM-dd HH:mm} UTC</span>" : "")}</td></tr>")
           .Append($"<tr><th>Last seen</th><td class=\"muted\">{Seen(a.LastSeenAt)}{(string.IsNullOrEmpty(a.LastIp) ? "" : " · " + H(a.LastIp))}</td></tr>")
           .Append(string.IsNullOrEmpty(a.Metadata) ? "" : $"<tr><th>Reported</th><td class=\"muted\">{H(a.Metadata)}</td></tr>")
           .Append("</table>");
@@ -534,6 +536,16 @@ public static class AdminPages
         AgentStatus.Pending => "<span class=\"pill waiting\">pending</span>",
         AgentStatus.Disabled => "<span class=\"pill waiting\">disabled</span>",
         _ => "<span class=\"pill denied\">revoked</span>",
+    };
+
+    // How the agent last authenticated — signature (green, migrated) vs secret (amber,
+    // still on the fallback), so an operator can see who is left before dropping secrets.
+    private static string AuthBadge(Agent a) => a.LastAuthMethod switch
+    {
+        "signature" => "<span class=\"pill approved\">signature</span>"
+            + (string.IsNullOrEmpty(a.LastKeyId) ? "" : $" <span class=\"muted\">{H(a.LastKeyId)}</span>"),
+        "secret" => "<span class=\"pill waiting\">secret</span>",
+        _ => "<span class=\"muted\">—</span>",
     };
 
     private static string Seen(DateTimeOffset? at) => at is null ? "never" : $"{at:yyyy-MM-dd HH:mm} UTC";

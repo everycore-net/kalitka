@@ -486,17 +486,22 @@ public sealed class SqliteAgentStore : IAgentStore
               capabilities TEXT NOT NULL, allowed_resources TEXT NOT NULL, metadata TEXT NOT NULL,
               created_at INTEGER NOT NULL, last_seen_at INTEGER, last_ip TEXT NOT NULL DEFAULT '',
               revoked_at INTEGER, tags TEXT NOT NULL DEFAULT '[]',
-              provenance TEXT NOT NULL DEFAULT '{}', keys TEXT NOT NULL DEFAULT '[]');
+              provenance TEXT NOT NULL DEFAULT '{}', keys TEXT NOT NULL DEFAULT '[]',
+              last_auth_method TEXT NOT NULL DEFAULT '', last_key_id TEXT NOT NULL DEFAULT '',
+              last_signed_at INTEGER);
             """;
         cmd.ExecuteNonQuery();
 
-        // Columns added after the table first shipped (tags in 0.16, provenance in
-        // 0.17, keys in 0.20). CREATE TABLE IF NOT EXISTS never adds columns to a
-        // pre-existing table, so an older agents table would otherwise make every
-        // SELECT throw "no such column". Add them idempotently.
+        // Columns added after the table first shipped (tags 0.16, provenance 0.17,
+        // keys 0.20, auth observability 0.21.2). CREATE TABLE IF NOT EXISTS never adds
+        // columns to a pre-existing table, so an older agents table would otherwise make
+        // every SELECT throw "no such column". Add them idempotently.
         EnsureColumn(conn, "tags", "TEXT NOT NULL DEFAULT '[]'");
         EnsureColumn(conn, "provenance", "TEXT NOT NULL DEFAULT '{}'");
         EnsureColumn(conn, "keys", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(conn, "last_auth_method", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(conn, "last_key_id", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(conn, "last_signed_at", "INTEGER");
     }
 
     private static void EnsureColumn(Microsoft.Data.Sqlite.SqliteConnection conn, string column, string definition)
@@ -526,12 +531,13 @@ public sealed class SqliteAgentStore : IAgentStore
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys)
-            VALUES($id,$dn,$pf,$hn,$st,$sh,$cap,$res,$md,$ca,$ls,$ip,$rv,$tags,$prov,$keys)
+            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys,last_auth_method,last_key_id,last_signed_at)
+            VALUES($id,$dn,$pf,$hn,$st,$sh,$cap,$res,$md,$ca,$ls,$ip,$rv,$tags,$prov,$keys,$lam,$lki,$lsa)
             ON CONFLICT(id) DO UPDATE SET
               display_name=$dn,platform=$pf,hostname=$hn,status=$st,secret_hash=$sh,
               capabilities=$cap,allowed_resources=$res,metadata=$md,created_at=$ca,
-              last_seen_at=$ls,last_ip=$ip,revoked_at=$rv,tags=$tags,provenance=$prov,keys=$keys;
+              last_seen_at=$ls,last_ip=$ip,revoked_at=$rv,tags=$tags,provenance=$prov,keys=$keys,
+              last_auth_method=$lam,last_key_id=$lki,last_signed_at=$lsa;
             """;
         cmd.Parameters.AddWithValue("$id", a.Id);
         cmd.Parameters.AddWithValue("$dn", a.DisplayName);
@@ -549,6 +555,9 @@ public sealed class SqliteAgentStore : IAgentStore
         cmd.Parameters.AddWithValue("$tags", JsonSerializer.Serialize(a.Tags));
         cmd.Parameters.AddWithValue("$prov", JsonSerializer.Serialize(new AgentProvenance(a.ProfileId, a.ProfileHostname, a.AppliedProfileRevision)));
         cmd.Parameters.AddWithValue("$keys", JsonSerializer.Serialize(a.Keys));
+        cmd.Parameters.AddWithValue("$lam", a.LastAuthMethod);
+        cmd.Parameters.AddWithValue("$lki", a.LastKeyId);
+        cmd.Parameters.AddWithValue("$lsa", (object?)a.LastSignedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 
@@ -573,13 +582,19 @@ public sealed class SqliteAgentStore : IAgentStore
         return cmd.ExecuteNonQuery() == 1;
     }
 
-    public void TouchLastSeen(string id, DateTimeOffset at, string ip)
+    public void RecordAuth(string id, DateTimeOffset at, string ip, string method, string keyId)
     {
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE agents SET last_seen_at=$ls, last_ip=$ip WHERE id=$id;";
+        cmd.CommandText = """
+            UPDATE agents SET last_seen_at=$ls, last_ip=$ip, last_auth_method=$m, last_key_id=$k,
+              last_signed_at=CASE WHEN $m='signature' THEN $ls ELSE last_signed_at END
+            WHERE id=$id;
+            """;
         cmd.Parameters.AddWithValue("$ls", at.ToUnixTimeMilliseconds());
         cmd.Parameters.AddWithValue("$ip", ip);
+        cmd.Parameters.AddWithValue("$m", method);
+        cmd.Parameters.AddWithValue("$k", keyId);
         cmd.Parameters.AddWithValue("$id", id);
         cmd.ExecuteNonQuery();
     }
@@ -596,7 +611,7 @@ public sealed class SqliteAgentStore : IAgentStore
     }
 
     private const string Cols =
-        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys";
+        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys,last_auth_method,last_key_id,last_signed_at";
 
     private static Agent Read(SqliteDataReader r)
     {
@@ -615,6 +630,9 @@ public sealed class SqliteAgentStore : IAgentStore
             ProfileHostname = prov.ProfileHostname,
             AppliedProfileRevision = prov.AppliedProfileRevision,
             Keys = JsonSerializer.Deserialize<AgentKey[]>(r.GetString(15)) ?? Array.Empty<AgentKey>(),
+            LastAuthMethod = r.GetString(16),
+            LastKeyId = r.GetString(17),
+            LastSignedAt = r.IsDBNull(18) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(18)),
         };
     }
 }

@@ -59,6 +59,15 @@ public sealed record Agent(
     /// parallel through the migration window.</summary>
     public IReadOnlyList<AgentKey> Keys { get; init; } = Array.Empty<AgentKey>();
 
+    // ---- Migration observability (0.21.2) -----------------------------------
+    // How the agent last authenticated, so an operator can see — before removing
+    // shared secrets — which agents have moved to signatures and which still use the
+    // fallback. Set on every authenticated call; empty until the first.
+
+    public string LastAuthMethod { get; init; } = "";   // "signature" | "secret" | ""
+    public string LastKeyId { get; init; } = "";        // the key that signed, when signature
+    public DateTimeOffset? LastSignedAt { get; init; }  // last time it authenticated by signature
+
     /// <summary>Stamp profile provenance onto a copy; a null provenance leaves the
     /// agent unmanaged (empty <see cref="ProfileId"/>).</summary>
     internal Agent WithProvenance(AgentProvenance? p) => p is null ? this : this with
@@ -167,7 +176,12 @@ public interface IAgentStore
     void Create(Agent agent);
     bool SetStatus(string id, AgentStatus status, DateTimeOffset at);
     bool RotateSecret(string id, string newHash);
-    void TouchLastSeen(string id, DateTimeOffset at, string ip);
+
+    /// <summary>Record an authenticated call: updates last-seen/ip and how it
+    /// authenticated (<paramref name="method"/> = "signature" | "secret", the signing
+    /// <paramref name="keyId"/> when applicable), stamping last-signed only for signatures.</summary>
+    void RecordAuth(string id, DateTimeOffset at, string ip, string method, string keyId);
+
     IReadOnlyList<Agent> Snapshot();
 }
 
@@ -193,9 +207,14 @@ public sealed class InMemoryAgentStore : IAgentStore
         return true;
     }
 
-    public void TouchLastSeen(string id, DateTimeOffset at, string ip)
+    public void RecordAuth(string id, DateTimeOffset at, string ip, string method, string keyId)
     {
-        if (_agents.TryGetValue(id, out var a)) _agents[id] = a with { LastSeenAt = at, LastIp = ip };
+        if (_agents.TryGetValue(id, out var a))
+            _agents[id] = a with
+            {
+                LastSeenAt = at, LastIp = ip, LastAuthMethod = method, LastKeyId = keyId,
+                LastSignedAt = method == "signature" ? at : a.LastSignedAt,
+            };
     }
 
     public IReadOnlyList<Agent> Snapshot() => _agents.Values.OrderBy(a => a.DisplayName).ToList();
