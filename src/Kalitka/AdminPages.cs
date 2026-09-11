@@ -28,6 +28,7 @@ public static class AdminPages
       + ".pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:.75rem}"
       + ".waiting{background:#3a2f10;color:#f0c674}.approved{background:#12331c;color:#7ad08a}"
       + ".denied{background:#3a1414;color:#ff8a8a}"
+      + ".add{color:#7ad08a}.rem{color:#ff8a8a}"
       + ".tile{display:inline-block;background:#171a22;border:1px solid #262b36;border-radius:12px;"
       + "padding:16px 20px;margin:0 12px 12px 0}.tile b{font-size:1.6rem;display:block}"
       + ".btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}"
@@ -49,6 +50,7 @@ public static class AdminPages
         + "<a href=\"/admin/requests\">Requests</a>"
         + "<a href=\"/admin/agents\">Agents</a>"
         + "<a href=\"/admin/profiles\">Profiles</a>"
+        + "<a href=\"/admin/reconcile\">Reconcile</a>"
         + "<a href=\"/admin/history\">History</a>"
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
@@ -304,7 +306,7 @@ public static class AdminPages
         return Shell(who, sb.ToString());
     }
 
-    public static string AgentDetail(AdminIdentity who, Agent a, string csrf)
+    public static string AgentDetail(AdminIdentity who, Agent a, string csrf, ReconcileService.Plan? drift = null)
     {
         var sb = new StringBuilder($"<h1>Agent <code>{H(a.DisplayName)}</code></h1>");
         sb.Append("<table>")
@@ -315,6 +317,8 @@ public static class AdminPages
           .Append($"<tr><th>Capabilities</th><td><code>{H(string.Join(" ", a.Capabilities))}</code></td></tr>")
           .Append($"<tr><th>Resources</th><td><code>{H(string.Join(" ", a.AllowedResources))}</code></td></tr>")
           .Append($"<tr><th>Tags</th><td class=\"muted\">{H(string.Join(" ", a.Tags))}</td></tr>")
+          .Append(string.IsNullOrEmpty(a.ProfileId) ? ""
+              : $"<tr><th>Profile</th><td><code>{H(a.ProfileId)}</code> <span class=\"muted\">@ {H(a.ProfileHostname)}, rev {a.AppliedProfileRevision}</span></td></tr>")
           .Append($"<tr><th>Created</th><td class=\"muted\">{a.CreatedAt:yyyy-MM-dd HH:mm} UTC</td></tr>")
           .Append($"<tr><th>Last seen</th><td class=\"muted\">{Seen(a.LastSeenAt)}{(string.IsNullOrEmpty(a.LastIp) ? "" : " · " + H(a.LastIp))}</td></tr>")
           .Append(string.IsNullOrEmpty(a.Metadata) ? "" : $"<tr><th>Reported</th><td class=\"muted\">{H(a.Metadata)}</td></tr>")
@@ -331,8 +335,83 @@ public static class AdminPages
         else sb.Append("<span class=\"muted\">Revoked — re-enrol to return.</span>");
         sb.Append("</div>");
 
+        if (drift is not null && drift.HasChanges)
+        {
+            sb.Append("<h2>Profile drift</h2>")
+              .Append($"<p class=\"muted\">Profile <code>{H(drift.ProfileId)}</code> changed (rev {drift.FromRevision}→{drift.ToRevision}). "
+                  + "Applying updates this agent; any local overrides are kept"
+                  + (drift.IsExpansion ? ", and this <b>grants new access</b> — confirm to apply." : ".") + "</p>")
+              .Append($"<p>{Changes(drift)}</p>")
+              .Append(ApplyForm(drift, csrf));
+        }
+
         sb.Append("<p style=\"margin-top:18px\"><a class=\"row\" href=\"/admin/agents\">← back</a></p>");
         return Shell(who, sb.ToString());
+    }
+
+    // ---- Reconcile ----------------------------------------------------------
+
+    public static string Reconcile(AdminIdentity who, IReadOnlyList<ReconcileService.Plan> plans, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Reconcile</h1>")
+          .Append("<p class=\"muted\">Profile changes reach already-enrolled agents only here, deliberately. "
+              + "A change that <b>grants</b> a new capability or resource (an expansion) must be confirmed; "
+              + "removals and tag changes apply directly. Local overrides on an agent are preserved.</p>");
+
+        if (plans.Count == 0)
+            return Shell(who, sb.Append("<p class=\"muted\">All profile-managed agents are in sync.</p>").ToString());
+
+        var safe = plans.Count(p => !p.IsExpansion);
+        if (safe > 0)
+            sb.Append("<form method=\"post\" action=\"/admin/reconcile/apply-safe\">")
+              .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+              .Append($"<div class=\"btns\"><button class=\"ok\">Apply all {safe} safe change(s)</button></div>")
+              .Append("<p class=\"muted\">Safe = removals, tag changes and revision bumps only. Expansions are applied per agent below.</p></form>");
+
+        sb.Append("<table><tr><th>Agent</th><th>Profile</th><th>Change</th><th></th></tr>");
+        foreach (var p in plans)
+            sb.Append("<tr>")
+              .Append($"<td><a class=\"row\" href=\"/admin/agents/{H(p.AgentId)}\">{H(p.AgentId)}</a><br><span class=\"muted\">{H(p.Hostname)}</span></td>")
+              .Append($"<td><code>{H(p.ProfileId)}</code><br><span class=\"muted\">rev {p.FromRevision}→{p.ToRevision}</span></td>")
+              .Append($"<td>{Changes(p)}{(p.IsExpansion ? " <span class=\"pill denied\">expansion</span>" : "")}</td>")
+              .Append($"<td>{ApplyForm(p, csrf)}</td>")
+              .Append("</tr>");
+        sb.Append("</table>");
+        return Shell(who, sb.ToString());
+    }
+
+    /// <summary>The +added / -removed tokens for one plan, grouped by kind.</summary>
+    private static string Changes(ReconcileService.Plan p)
+    {
+        var sb = new StringBuilder();
+        Group(sb, "caps", p.AddedCapabilities, p.RemovedCapabilities);
+        Group(sb, "res", p.AddedResources, p.RemovedResources);
+        Group(sb, "tags", p.AddedTags, p.RemovedTags);
+        if (sb.Length == 0) sb.Append("<span class=\"muted\">revision only</span>");
+        return sb.ToString();
+
+        static void Group(StringBuilder sb, string label, string[] added, string[] removed)
+        {
+            if (added.Length == 0 && removed.Length == 0) return;
+            sb.Append($"<span class=\"muted\">{label}:</span> ");
+            foreach (var a in added) sb.Append($"<code class=\"add\">+{H(a)}</code> ");
+            foreach (var r in removed) sb.Append($"<code class=\"rem\">-{H(r)}</code> ");
+        }
+    }
+
+    /// <summary>Apply button for one plan. An expansion carries a required confirm
+    /// checkbox (the server enforces it regardless).</summary>
+    private static string ApplyForm(ReconcileService.Plan p, string csrf)
+    {
+        var sb = new StringBuilder("<form class=\"inline\" method=\"post\" action=\"/admin/reconcile/apply\">")
+          .Append($"<input type=\"hidden\" name=\"agent\" value=\"{H(p.AgentId)}\">")
+          .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">");
+        if (p.IsExpansion)
+            sb.Append("<label class=\"muted\" style=\"margin-right:6px\"><input type=\"checkbox\" name=\"confirm\" value=\"1\" required> confirm</label>")
+              .Append("<button class=\"no\">Apply</button>");
+        else
+            sb.Append("<button class=\"ok\">Apply</button>");
+        return sb.Append("</form>").ToString();
     }
 
     /// <summary>Show a secret or enrollment token exactly once — it is never stored

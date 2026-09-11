@@ -265,7 +265,10 @@ public sealed class PostgresStoreTests
         if (Skip) return;
         var a = new Agent("pg-a", "pg-a", "linux", "h", AgentStatus.Active, AgentSecrets.Hash("s"),
             new[] { "ssh" }, new[] { "ssh:*" }, "", DateTimeOffset.UtcNow, null, "", null)
-        { Tags = new[] { "env:prod", "role:web" } };
+        {
+            Tags = new[] { "env:prod", "role:web" },
+            ProfileId = "linux-server", ProfileHostname = "pg-host", AppliedProfileRevision = 3
+        };
         new PgAgentStore(_cs!).Create(a);
 
         var got = new PgAgentStore(_cs!).GetById("pg-a")!;
@@ -273,6 +276,9 @@ public sealed class PostgresStoreTests
         Assert.True(AgentSecrets.Verify("s", got.SecretHash));
         Assert.Equal(new[] { "ssh:*" }, got.AllowedResources);
         Assert.Equal(new[] { "env:prod", "role:web" }, got.Tags);
+        Assert.Equal("linux-server", got.ProfileId);       // provenance round-trips
+        Assert.Equal("pg-host", got.ProfileHostname);
+        Assert.Equal(3, got.AppliedProfileRevision);
 
         Assert.True(new PgAgentStore(_cs!).SetStatus("pg-a", AgentStatus.Revoked, DateTimeOffset.UtcNow));
         var seen = new PgAgentStore(_cs!).GetById("pg-a")!;   // a second node

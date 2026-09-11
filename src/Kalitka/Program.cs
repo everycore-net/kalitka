@@ -107,6 +107,7 @@ builder.Services.AddSingleton<INotifier, EmailNotifier>();
 builder.Services.AddSingleton<GrantService>();
 builder.Services.AddSingleton<AgentService>();
 builder.Services.AddSingleton<ProfileService>();
+builder.Services.AddSingleton<ReconcileService>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -674,13 +675,13 @@ guarded.MapGet("/agents", (HttpContext ctx, AdminAuth auth, AgentService agentsS
     return Results.Content(AdminPages.Agents(who, agents, profiles.All(), auth.IssueCsrf(who.Sub), tag), "text/html; charset=utf-8");
 });
 
-guarded.MapGet("/agents/{id}", (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>
+guarded.MapGet("/agents/{id}", (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc, ReconcileService reconcile) =>
 {
     var who = Admin(ctx);
     var agent = agentsSvc.Get(id);
     return agent is null
         ? Results.Redirect("/admin/agents", false)
-        : Results.Content(AdminPages.AgentDetail(who, agent, auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+        : Results.Content(AdminPages.AgentDetail(who, agent, auth.IssueCsrf(who.Sub), reconcile.Preview(id)), "text/html; charset=utf-8");
 });
 
 guarded.MapPost("/agents/create", async (HttpContext ctx, AdminAuth auth, AgentService agentsSvc, ProfileService profiles) =>
@@ -763,6 +764,36 @@ guarded.MapPost("/profiles/delete", async (HttpContext ctx, AdminAuth auth, Prof
     if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
     await profiles.Delete(form["name"].ToString().Trim(), who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/profiles", false);
+});
+
+// ---- Reconcile: deliberate, audited apply of profile changes to agents -----
+
+guarded.MapGet("/reconcile", (HttpContext ctx, AdminAuth auth, ReconcileService reconcile) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AdminPages.Reconcile(who, reconcile.PreviewAll(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+});
+
+guarded.MapPost("/reconcile/apply", async (HttpContext ctx, AdminAuth auth, ReconcileService reconcile) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var confirm = form["confirm"].ToString() == "1";
+    await reconcile.Apply(form["agent"].ToString().Trim(), confirm, who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/reconcile", false);
+});
+
+// Bulk apply — only the plans that grant nothing new. Expansions are never applied
+// here; they need per-agent confirmation.
+guarded.MapPost("/reconcile/apply-safe", async (HttpContext ctx, AdminAuth auth, ReconcileService reconcile) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    foreach (var p in reconcile.PreviewAll().Where(p => !p.IsExpansion))
+        await reconcile.Apply(p.AgentId, confirmExpansion: false, who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/reconcile", false);
 });
 
 guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>

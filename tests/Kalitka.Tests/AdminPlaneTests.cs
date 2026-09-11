@@ -102,6 +102,62 @@ public class AdminPlaneTests : IClassFixture<GateFactory>
     }
 
     [Fact]
+    public async Task Reconcile_page_lists_drift_and_apply_updates_the_agent()
+    {
+        var profiles = _f.Services.GetRequiredService<ProfileService>();
+        var agentsSvc = _f.Services.GetRequiredService<AgentService>();
+        var store = _f.Services.GetRequiredService<IAgentStore>();
+
+        var p = new AgentProfile("rec-linux", "linux", new[] { AgentCapabilities.Request },
+            new[] { "ssh:{hostname}" }, Array.Empty<string>());
+        await profiles.Save(p, "google:admin", default);
+        var created = await agentsSvc.CreateFromProfile(profiles.Get("rec-linux")!, "rec-01", null, "google:admin", default);
+        await profiles.Save(p with { ResourceTemplates = new[] { "ssh:{hostname}", "sudo:{hostname}" } }, "google:admin", default);
+
+        var (cookie, csrf) = Admin();
+
+        // The overview shows the drifting agent flagged as an expansion.
+        var list = new HttpRequestMessage(HttpMethod.Get, "/admin/reconcile");
+        WithCookie(list, cookie);
+        var listHtml = await (await Client().SendAsync(list)).Content.ReadAsStringAsync();
+        Assert.Contains(created.Agent.Id, listHtml);
+        Assert.Contains("expansion", listHtml);
+
+        // Applying an expansion without confirmation changes nothing.
+        var noConfirm = new HttpRequestMessage(HttpMethod.Post, "/admin/reconcile/apply")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            { ["agent"] = created.Agent.Id, ["csrf"] = csrf })
+        };
+        WithCookie(noConfirm, cookie);
+        Assert.Equal(HttpStatusCode.Found, (await Client().SendAsync(noConfirm)).StatusCode);
+        Assert.DoesNotContain("sudo:rec-01", store.GetById(created.Agent.Id)!.AllowedResources);
+
+        // With confirmation it applies.
+        var confirm = new HttpRequestMessage(HttpMethod.Post, "/admin/reconcile/apply")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            { ["agent"] = created.Agent.Id, ["confirm"] = "1", ["csrf"] = csrf })
+        };
+        WithCookie(confirm, cookie);
+        Assert.Equal(HttpStatusCode.Found, (await Client().SendAsync(confirm)).StatusCode);
+        Assert.Contains("sudo:rec-01", store.GetById(created.Agent.Id)!.AllowedResources);
+    }
+
+    [Fact]
+    public async Task Reconcile_apply_without_a_valid_csrf_is_refused()
+    {
+        var (cookie, _) = Admin();
+        var req = new HttpRequestMessage(HttpMethod.Post, "/admin/reconcile/apply")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            { ["agent"] = "whatever", ["confirm"] = "1", ["csrf"] = "forged" })
+        };
+        WithCookie(req, cookie);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Client().SendAsync(req)).StatusCode);
+    }
+
+    [Fact]
     public async Task Decide_without_a_valid_csrf_is_refused()
     {
         var id = await RaiseRequest("203.0.113.41");

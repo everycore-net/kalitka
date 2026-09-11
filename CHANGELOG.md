@@ -7,6 +7,45 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-11
+
+### Added
+
+- **Profile reconciliation — deliberate, audited apply of profile changes to existing
+  agents.** 0.16 snapshots a profile onto an agent at create/enroll and then never
+  touches it; 0.17 adds the missing half without turning profiles into a policy
+  engine. Each profile-managed agent records the profile revision it was last synced
+  to (`AppliedProfileRevision`) and the hostname its templates were expanded with.
+  Reconciliation is a **three-way merge** anchored to that revision: only what the
+  *profile* changed between then and now is applied; anything an admin changed by hand
+  on the agent (added or removed) is preserved. The agent's own snapshot stays the
+  source of truth.
+- **Expansion always needs confirmation.** A change that *grants* the agent a new
+  capability or resource never applies silently — it requires explicit confirmation
+  (upholding the 0.16 no-silent-expansion invariant). Removals and tag changes apply
+  directly; a bulk "apply all safe changes" covers those in one step.
+- **Reconcile console at `/admin/reconcile`.** Previews the pending diff per agent
+  (`+added` / `-removed` capabilities, resources and tags, with the revision move),
+  flags expansions, and applies per agent or in bulk. The agent detail page shows the
+  same drift panel. Every apply writes an `agent.profile_applied` audit event whose
+  note carries the **diff**, not just the fact.
+
+### Fixed
+
+- **File config backend dropped unknown keys.** On the JSON-file backend (the
+  single-instance default), only `lists`/`enforced`/`settings` were persisted, so
+  agent profiles introduced in 0.16 silently vanished; any other key now maps to a
+  `<key>.json` file in the same data directory. SQLite/Postgres were unaffected.
+
+### Notes
+
+- Additive and non-breaking. Profile provenance round-trips in SQLite and Postgres
+  (new `provenance` column); agents not created from a profile are simply unmanaged
+  and never appear in reconcile. Tested: drift detection, the override-preserving
+  delta apply (added and removed), expansion-needs-confirmation, reductions applying
+  without it, deleted-profile safety, the audited diff, and the admin apply flow end
+  to end.
+
 ## [0.16.0] - 2026-09-11
 
 ### Added

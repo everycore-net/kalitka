@@ -89,7 +89,8 @@ public class AgentProfileTests
     {
         var (_, profiles, _, audit) = Fresh();
         await profiles.Save(LinuxServer, "google:admin", default);                 // created
-        await profiles.Save(LinuxServer, "google:admin", default);                 // updated
+        // A real content change — an identical re-save is intentionally a no-op now.
+        await profiles.Save(LinuxServer with { Tags = new[] { "env:prod" } }, "google:admin", default); // updated
         Assert.True(await profiles.Delete("linux-server", "google:admin", default)); // deleted
 
         var events = await audit.Query(new AuditQuery(), default);

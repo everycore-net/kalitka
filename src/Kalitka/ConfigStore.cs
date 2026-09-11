@@ -49,12 +49,15 @@ public sealed class InMemoryConfigStore : IConfigStore
 /// <summary>
 /// The file backend — today's behaviour, preserved for single-instance deployments:
 /// "lists"/"enforced"/"settings" map to <c>ListsPath</c>/<c>EnforcedPath</c>/
-/// <c>SettingsPath</c>, and the blob is the file's text verbatim. Not multi-node
+/// <c>SettingsPath</c>, and the blob is the file's text verbatim. Any other key
+/// (e.g. "agent-profiles") is a <c>&lt;key&gt;.json</c> file in the same data
+/// directory, so new config keys persist without a schema change. Not multi-node
 /// (each instance has its own files); a broken read degrades to null, never throws.
 /// </summary>
 public sealed class JsonFileConfigStore : IConfigStore
 {
     private readonly IReadOnlyDictionary<string, string> _paths;
+    private readonly string _baseDir;
     private readonly ILogger _log;
     private readonly object _lock = new();
 
@@ -66,10 +69,17 @@ public sealed class JsonFileConfigStore : IConfigStore
             ["enforced"] = o.EnforcedPath,
             ["settings"] = o.SettingsPath,
         };
+        // Derive other keys' files next to the settings file (all three default to /data).
+        _baseDir = Path.GetDirectoryName(o.SettingsPath) is { Length: > 0 } d ? d : ".";
         _log = log;
     }
 
-    private string? PathFor(string key) => _paths.TryGetValue(key, out var p) ? p : null;
+    // Known keys keep their exact configured path; anything else is a file in the
+    // data directory. Only sane key names become files (no path separators).
+    private string? PathFor(string key) =>
+        _paths.TryGetValue(key, out var p) ? p
+        : key.IndexOfAny(new[] { '/', '\\', '.' }) < 0 ? Path.Combine(_baseDir, key + ".json")
+        : null;
 
     public string? Get(string key)
     {
