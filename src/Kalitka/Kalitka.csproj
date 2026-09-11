@@ -7,14 +7,17 @@
     <RootNamespace>Kalitka</RootNamespace>
     <AssemblyName>Kalitka</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.11.0</Version>
+    <Version>0.12.0</Version>
     <Copyright>Copyright (C) 2026 everycore</Copyright>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Durable audit store (opt-in via Kalitka__AuditDbPath). The only runtime
-         dependency; a single first-party package, no ORM. -->
+    <!-- Two runtime dependencies, both opt-in and only used when a path is set:
+         MaxMind.GeoIP2 for on-box geolocation (Kalitka__GeoDbPath), and
+         Microsoft.Data.Sqlite for the durable stores (Kalitka__AuditDbPath /
+         Kalitka__StateDbPath). No ORM. -->
+    <PackageReference Include="MaxMind.GeoIP2" Version="6.1.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
   </ItemGroup>
 

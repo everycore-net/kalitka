@@ -7,7 +7,24 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<GateOptions>(builder.Configuration.GetSection("Kalitka"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpClient<ITelegramClient, TelegramClient>();
-builder.Services.AddHttpClient<GeoLookup>();
+builder.Services.AddHttpClient<HttpGeoLookup>();
+// Geolocation provider (notification only, never blocks a request): a local
+// MaxMind database when GeoDbPath is set (no visitor IP leaves the box), else the
+// HTTP provider when GeoUrl is set, else disabled. A configured-but-missing .mmdb
+// falls back rather than downing the gate.
+builder.Services.AddSingleton<IGeoLookup>(sp =>
+{
+    var o = sp.GetRequiredService<IOptions<GateOptions>>().Value;
+    if (!string.IsNullOrWhiteSpace(o.GeoDbPath))
+    {
+        if (File.Exists(o.GeoDbPath))
+            return new MaxMindGeoLookup(o.GeoDbPath, sp.GetRequiredService<ILogger<MaxMindGeoLookup>>());
+        sp.GetRequiredService<ILogger<Program>>().LogWarning(
+            "Kalitka__GeoDbPath is set but {Path} does not exist; falling back.", o.GeoDbPath);
+    }
+    if (!string.IsNullOrWhiteSpace(o.GeoUrl)) return sp.GetRequiredService<HttpGeoLookup>();
+    return new NullGeoLookup();
+});
 builder.Services.AddHttpClient<GoogleAuth>();
 builder.Services.AddSingleton<AccessLists>();
 builder.Services.AddSingleton<GateService>();

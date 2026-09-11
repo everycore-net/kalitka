@@ -71,7 +71,7 @@ public class AccessScopingTests
             EnforcedPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"),
             SettingsPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"),
         });
-        var geo = new GeoLookup(new HttpClient(), opts, NullLogger<GeoLookup>.Instance);
+        var geo = new HttpGeoLookup(new HttpClient(), opts, NullLogger<HttpGeoLookup>.Instance);
         var lists = new AccessLists(opts, NullLogger<AccessLists>.Instance);
         return new GateService(new FakeTelegram(), geo, lists, opts, NullLogger<GateService>.Instance,
             new FakeTimeProvider());

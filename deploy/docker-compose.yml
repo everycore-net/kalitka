@@ -62,6 +62,15 @@ services:
       # sharing the file. Empty keeps this state in memory (single instance, lost
       # on restart).
       Kalitka__StateDbPath: /data/state.db
+      # Tip: point AuditDbPath and StateDbPath at the SAME file to get atomic
+      # state+audit (a decision and its audit event commit together).
+
+      # Optional: geolocation for the notification (informational, never blocks).
+      # The default HTTP lookup (ip-api.com) sends each visitor IP to a third party.
+      # To keep IPs on the box, download a MaxMind GeoLite2 db and set GeoDbPath
+      # (it takes precedence over the HTTP lookup):
+      # Kalitka__GeoDbPath: /data/GeoLite2-City.mmdb
+      # Set Kalitka__GeoUrl to "" to disable geolocation entirely.
 
       # Optional: Google sign-in as the second way in.
       # Authorised redirect URIs at Google: https://<KALITKA_HOST>/oauth2/callback

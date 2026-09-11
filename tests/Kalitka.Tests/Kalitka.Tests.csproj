@@ -19,4 +19,10 @@
     <ProjectReference Include="..\..\src\Kalitka\Kalitka.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- MaxMind's synthetic GeoIP2 City test database (from the Apache-2.0
+         MaxMind-DB repo), so the MaxMind provider is tested against a real .mmdb. -->
+    <Content Include="testdata/GeoIP2-City-Test.mmdb" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

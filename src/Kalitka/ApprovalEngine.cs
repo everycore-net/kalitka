@@ -49,7 +49,7 @@ public sealed record PendingView(
 public sealed class ApprovalEngine
 {
     private readonly TimeProvider _clock;
-    private readonly GeoLookup _geo;
+    private readonly IGeoLookup _geo;
     private readonly AccessLists _lists;
     private readonly GateOptions _options;
     private readonly ILogger _log;
@@ -71,7 +71,7 @@ public sealed class ApprovalEngine
     private int _sessionMinutes;
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
 
-    public ApprovalEngine(GeoLookup geo, AccessLists lists, GateOptions options,
+    public ApprovalEngine(IGeoLookup geo, AccessLists lists, GateOptions options,
         ILogger log, TimeProvider clock, IRequestStore store, IAuditStore audit,
         IAtomicWork? atomic = null)
     {

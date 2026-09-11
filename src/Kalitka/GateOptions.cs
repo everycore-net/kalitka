@@ -180,11 +180,23 @@ public sealed class GateOptions
     // ---- Optional extras ----------------------------------------------------
 
     /// <summary>
-    /// IP geolocation for the notification, <c>{ip}</c> is substituted. Purely
-    /// informational: approving blind is worse than approving slowly. Empty
-    /// disables the lookup.
+    /// HTTP IP geolocation for the notification, <c>{ip}</c> is substituted. Purely
+    /// informational: approving blind is worse than approving slowly. Convenient but
+    /// it sends every visitor's IP to a third party (a GDPR consideration) — set
+    /// <see cref="GeoDbPath"/> to keep the lookup on the box instead. Empty disables
+    /// the HTTP lookup. Ignored when <see cref="GeoDbPath"/> is set.
     /// </summary>
     public string GeoUrl { get; set; } = "http://ip-api.com/json/{ip}?fields=status,country,countryCode,city";
+
+    /// <summary>
+    /// Local MaxMind GeoLite2/GeoIP2 database (.mmdb) for on-box geolocation — no
+    /// visitor IP leaves the machine. When set it takes precedence over
+    /// <see cref="GeoUrl"/>. The database is not shipped: create a free MaxMind
+    /// account, download GeoLite2-City (or -Country), and refresh it periodically,
+    /// e.g. <c>/data/GeoLite2-City.mmdb</c>. Empty falls back to <see cref="GeoUrl"/>,
+    /// and if that is empty too, geolocation is off.
+    /// </summary>
+    public string GeoDbPath { get; set; } = "";
 
     /// <summary>
     /// Google sign-in as a second way in. Empty client id hides the button and

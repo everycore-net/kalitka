@@ -23,7 +23,7 @@ public class CookieTests
             GeoUrl = ""
         };
         var io = Options.Create(opts);
-        var geo = new GeoLookup(new HttpClient(), io, NullLogger<GeoLookup>.Instance);
+        var geo = new HttpGeoLookup(new HttpClient(), io, NullLogger<HttpGeoLookup>.Instance);
         var lists = new AccessLists(io, NullLogger<AccessLists>.Instance);
         return new GateService(new FakeTelegram(), geo, lists, io, NullLogger<GateService>.Instance, clock);
     }
