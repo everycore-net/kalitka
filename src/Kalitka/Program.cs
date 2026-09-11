@@ -81,6 +81,16 @@ else if (!string.IsNullOrWhiteSpace(stateDbPath) &&
 {
     builder.Services.AddSingleton<IAtomicWork>(_ => new SqliteAtomicWork(stateDbPath));
 }
+// Shared config (block/allow lists, armed hosts, runtime settings). Same backend
+// precedence as the stores; the file backend is the single-instance default and
+// keeps existing lists.json / enforced.json / settings.json working.
+builder.Services.AddSingleton<IConfigStore>(sp =>
+{
+    var o = sp.GetRequiredService<IOptions<GateOptions>>().Value;
+    if (!string.IsNullOrWhiteSpace(o.PostgresConnectionString)) return new PgConfigStore(o.PostgresConnectionString);
+    if (!string.IsNullOrWhiteSpace(o.StateDbPath)) return new SqliteConfigStore(o.StateDbPath);
+    return new JsonFileConfigStore(o, sp.GetRequiredService<ILogger<JsonFileConfigStore>>());
+});
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 // A second approval channel beside Telegram. GateService picks up every INotifier.
 builder.Services.AddSingleton<INotifier, EmailNotifier>();

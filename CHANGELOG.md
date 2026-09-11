@@ -7,22 +7,38 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-11
+
 ### Added
 
-- **Postgres backend — true multi-node (0.13, first slice).** Set
-  `PostgresConnectionString` and the durable stores — pending requests, replay,
-  sessions **and** audit — all live in one Postgres database, so several kalitka
-  instances share the same state and their atomic transitions hold across the
-  cluster (state and audit commit in one transaction, since they share the
-  connection). Same seams and guarantees as the SQLite backend, in Postgres SQL
-  (`PgRequestStore` / `PgReplayStore` / `PgSessionStore` / `PgAuditStore` /
-  `PgAtomicWork`). Backend precedence: Postgres > SQLite
-  (`StateDbPath`/`AuditDbPath`) > in-memory. New opt-in dependency `Npgsql`, loaded
-  only on the Postgres path. Tested against real Postgres in CI: resolve / redeem /
-  close once-only, concurrency (one winner), atomic rollback of a redeem's four
-  effects, and a wired end-to-end run on Postgres.
-- Still per-instance, and the remaining slice before "true multi-node" is complete:
-  the enforced-hosts / settings / lists JSON.
+- **Postgres backend — true multi-node.** Set `PostgresConnectionString` and the
+  durable stores — pending requests, replay, sessions **and** audit — all live in
+  one Postgres database, so several kalitka instances share the same state and their
+  atomic transitions hold across the cluster (state and audit commit in one
+  transaction, since they share the connection). Same seams and guarantees as the
+  SQLite backend, in Postgres SQL (`PgRequestStore` / `PgReplayStore` /
+  `PgSessionStore` / `PgAuditStore` / `PgAtomicWork`). New opt-in dependency
+  `Npgsql`, loaded only on the Postgres path.
+- **Shared config across instances.** The block/allow lists, armed hosts and
+  runtime settings moved behind an `IConfigStore` (files / SQLite / Postgres), so
+  config is shared too — not just the live state. Writes are an atomic
+  read-modify-write (SQLite `IMMEDIATE` transaction; Postgres transaction advisory
+  lock), so two instances editing a list at once don't lose each other's entries;
+  reads use a short in-memory cache, so a change propagates cluster-wide within a
+  bounded lag (~10s) rather than instantly. The file backend keeps the existing
+  `lists.json` / `enforced.json` / `settings.json` for single-instance deployments.
+- Backend precedence throughout: `PostgresConnectionString` > `StateDbPath` /
+  `AuditDbPath` (SQLite) > in-memory / files.
+
+### Notes
+
+- With Postgres, kalitka is genuinely multi-node: live state, audit **and** config
+  are shared, and the atomic guarantees hold across instances. Tested against real
+  Postgres in CI (a service container): resolve / redeem / close once-only,
+  concurrency (one winner), atomic rollback of a redeem's four effects, config RMW
+  with no lost updates, and a wired end-to-end run on Postgres.
+- Config propagation is eventually-consistent within the cache TTL (~10s) — fine
+  for allow/block lists and arming; not an instantaneous cluster broadcast.
 
 ## [0.12.0] - 2026-09-11
 

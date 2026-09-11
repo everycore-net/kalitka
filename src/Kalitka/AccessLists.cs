@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Kalitka;
@@ -17,6 +18,12 @@ namespace Kalitka;
 /// web behaviour is preserved, but old allow-lists do not silently become PAM
 /// policy.
 ///
+/// The lists live behind an <see cref="IConfigStore"/> (files, SQLite or Postgres).
+/// Reads use a short-lived in-memory cache; writes are an atomic read-modify-write
+/// on the store, so several instances editing at once do not lose each other's
+/// entries. Config therefore propagates across a cluster with a bounded lag (the
+/// cache TTL), not instantly — fine for allow/block lists.
+///
 /// Country is deliberately not allowed on the allow list: "everyone from this
 /// country walks in" is too coarse to ever be right.
 /// </summary>
@@ -34,56 +41,67 @@ public sealed class AccessLists
         public string Added { get; set; } = "";
     }
 
-    private readonly string _path;
+    private const string Key = "lists";
+    private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(10);
+
+    private readonly IConfigStore _store;
+    private readonly TimeProvider _clock;
     private readonly ILogger<AccessLists> _log;
     private readonly object _lock = new();
     private List<Entry> _entries = new();
+    private DateTimeOffset _loadedAt = DateTimeOffset.MinValue;
 
-    public AccessLists(IOptions<GateOptions> options, ILogger<AccessLists> log)
+    public AccessLists(IOptions<GateOptions> options, ILogger<AccessLists> log,
+        IConfigStore? store = null, TimeProvider? clock = null)
     {
-        _path = options.Value.ListsPath;
         _log = log;
-        Load();
+        _clock = clock ?? TimeProvider.System;
+        _store = store ?? new JsonFileConfigStore(options.Value, log);
+        lock (_lock) Reload();
     }
 
-    private void Load()
+    // Deserialise the stored blob and migrate pre-0.8.1 entries: no resource meant
+    // the web behaviour they were created for, not a domain-wide policy; "input" is
+    // now "subject". A broken blob is read as empty — "ask me about everyone" is the
+    // safe direction and must never keep the gate from starting.
+    private (List<Entry> entries, bool migrated) Parse(string? blob)
     {
-        try
-        {
-            if (!File.Exists(_path)) return;
-            _entries = JsonSerializer.Deserialize<List<Entry>>(File.ReadAllText(_path)) ?? new();
+        if (string.IsNullOrWhiteSpace(blob)) return (new(), false);
+        List<Entry> list;
+        try { list = JsonSerializer.Deserialize<List<Entry>>(blob) ?? new(); }
+        catch (Exception e) { _log.LogWarning("Could not parse access lists: {Message}", e.Message); return (new(), false); }
 
-            // Migrate pre-0.8.1 entries: no resource means the web behaviour they
-            // were created for, not a domain-wide policy; "input" is now "subject".
-            var migrated = false;
-            foreach (var e in _entries)
-            {
-                if (string.IsNullOrEmpty(e.Resource)) { e.Resource = "web:*"; migrated = true; }
-                if (e.Type == "input") { e.Type = "subject"; migrated = true; }
-            }
-            if (migrated) Save();
-        }
-        catch (Exception e)
+        var migrated = false;
+        foreach (var e in list)
         {
-            // A broken list must not keep the gate from starting: an empty list
-            // means "ask me about everyone", which is the safe direction.
-            _log.LogWarning("Could not read {Path}: {Message}", _path, e.Message);
-            _entries = new();
+            if (string.IsNullOrEmpty(e.Resource)) { e.Resource = "web:*"; migrated = true; }
+            if (e.Type == "input") { e.Type = "subject"; migrated = true; }
         }
+        return (list, migrated);
     }
 
-    private void Save()
+    // Caller holds _lock.
+    private void Reload()
     {
-        try
-        {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(_path, JsonSerializer.Serialize(_entries));
-        }
-        catch (Exception e)
-        {
-            _log.LogWarning("Could not write {Path}: {Message}", _path, e.Message);
-        }
+        string? blob;
+        try { blob = _store.Get(Key); }
+        catch (Exception e) { _log.LogWarning("Could not read access lists: {Message}", e.Message); blob = null; }
+
+        var (list, migrated) = Parse(blob);
+        _entries = list;
+        _loadedAt = _clock.GetUtcNow();
+
+        // Persist the migration once, atomically (another instance may have already).
+        if (migrated)
+            try { _store.Mutate(Key, cur => JsonSerializer.Serialize(Parse(cur).entries)); }
+            catch (Exception e) { _log.LogWarning("Could not persist migrated lists: {Message}", e.Message); }
+    }
+
+    // Caller holds _lock. Re-read from the store if the cache has aged out, so a
+    // change made on another instance shows up within the TTL.
+    private void EnsureFresh()
+    {
+        if (_clock.GetUtcNow() - _loadedAt >= Ttl) Reload();
     }
 
     private static string Normalise(string? s) => (s ?? "").Trim().ToLowerInvariant();
@@ -122,12 +140,12 @@ public sealed class AccessLists
 
     public bool IsBlocked(string resource, string ip, string subject, string country)
     {
-        lock (_lock) return Matches("block", resource, ip, subject, country);
+        lock (_lock) { EnsureFresh(); return Matches("block", resource, ip, subject, country); }
     }
 
     public bool IsAllowed(string resource, string ip, string subject)
     {
-        lock (_lock) return Matches("allow", resource, ip, subject, "");
+        lock (_lock) { EnsureFresh(); return Matches("allow", resource, ip, subject, ""); }
     }
 
     public void Add(string list, string resource, string type, string value, string added)
@@ -135,20 +153,24 @@ public sealed class AccessLists
         if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(resource)) return;
         lock (_lock)
         {
-            var exists = _entries.Any(e =>
-                e.List == list && e.Type == type &&
-                string.Equals(e.Resource, resource, StringComparison.OrdinalIgnoreCase) &&
-                Normalise(e.Value) == Normalise(value));
-            if (exists) return;
-
-            _entries.Add(new Entry { List = list, Resource = resource, Type = type, Value = value, Added = added });
-            Save();
+            _store.Mutate(Key, cur =>
+            {
+                var entries = Parse(cur).entries;
+                var exists = entries.Any(e =>
+                    e.List == list && e.Type == type &&
+                    string.Equals(e.Resource, resource, StringComparison.OrdinalIgnoreCase) &&
+                    Normalise(e.Value) == Normalise(value));
+                if (!exists)
+                    entries.Add(new Entry { List = list, Resource = resource, Type = type, Value = value, Added = added });
+                return JsonSerializer.Serialize(entries);
+            });
+            Reload();
         }
     }
 
     public IReadOnlyList<Entry> All(string list)
     {
-        lock (_lock) return _entries.Where(e => e.List == list).ToList();
+        lock (_lock) { EnsureFresh(); return _entries.Where(e => e.List == list).ToList(); }
     }
 
     /// <summary>Removes the n-th entry of that list, counted as <see cref="All"/> returns them.</summary>
@@ -156,10 +178,21 @@ public sealed class AccessLists
     {
         lock (_lock)
         {
+            EnsureFresh();
             var ofList = _entries.Where(e => e.List == list).ToList();
             if (index < 0 || index >= ofList.Count) return false;
-            _entries.Remove(ofList[index]);
-            Save();
+            var target = ofList[index];
+
+            _store.Mutate(Key, cur =>
+            {
+                var entries = Parse(cur).entries;
+                var victim = entries.FirstOrDefault(e =>
+                    e.List == target.List && e.Resource == target.Resource && e.Type == target.Type &&
+                    e.Value == target.Value && e.Added == target.Added);
+                if (victim is not null) entries.Remove(victim);
+                return JsonSerializer.Serialize(entries);
+            });
+            Reload();
             return true;
         }
     }
