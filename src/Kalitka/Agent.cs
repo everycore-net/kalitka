@@ -54,6 +54,11 @@ public sealed record Agent(
     public string ProfileHostname { get; init; } = "";
     public int AppliedProfileRevision { get; init; }
 
+    /// <summary>Registered Ed25519 public keys (0.20). An agent that has any signs its
+    /// requests instead of sending the shared secret; the secret stays valid in
+    /// parallel through the migration window.</summary>
+    public IReadOnlyList<AgentKey> Keys { get; init; } = Array.Empty<AgentKey>();
+
     /// <summary>Stamp profile provenance onto a copy; a null provenance leaves the
     /// agent unmanaged (empty <see cref="ProfileId"/>).</summary>
     internal Agent WithProvenance(AgentProvenance? p) => p is null ? this : this with

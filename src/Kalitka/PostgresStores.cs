@@ -584,12 +584,13 @@ public sealed class PgAgentStore : IAgentStore
               capabilities TEXT NOT NULL, allowed_resources TEXT NOT NULL, metadata TEXT NOT NULL,
               created_at BIGINT NOT NULL, last_seen_at BIGINT, last_ip TEXT NOT NULL DEFAULT '',
               revoked_at BIGINT, tags TEXT NOT NULL DEFAULT '[]',
-              provenance TEXT NOT NULL DEFAULT '{}');
-            -- Columns added after the table first shipped (tags 0.16, provenance 0.17):
-            -- add them idempotently so an agents table from 0.14/0.15 does not make
+              provenance TEXT NOT NULL DEFAULT '{}', keys TEXT NOT NULL DEFAULT '[]');
+            -- Columns added after the table first shipped (tags 0.16, provenance 0.17,
+            -- keys 0.20): add them idempotently so an older agents table does not make
             -- every SELECT fail with "column does not exist".
             ALTER TABLE agents ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '[]';
             ALTER TABLE agents ADD COLUMN IF NOT EXISTS provenance TEXT NOT NULL DEFAULT '{}';
+            ALTER TABLE agents ADD COLUMN IF NOT EXISTS keys TEXT NOT NULL DEFAULT '[]';
             """;
         cmd.ExecuteNonQuery();
     }
@@ -609,13 +610,14 @@ public sealed class PgAgentStore : IAgentStore
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance)
-            VALUES(@id,@dn,@pf,@hn,@st,@sh,@cap,@res,@md,@ca,@ls,@ip,@rv,@tags,@prov)
+            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys)
+            VALUES(@id,@dn,@pf,@hn,@st,@sh,@cap,@res,@md,@ca,@ls,@ip,@rv,@tags,@prov,@keys)
             ON CONFLICT(id) DO UPDATE SET
               display_name=EXCLUDED.display_name,platform=EXCLUDED.platform,hostname=EXCLUDED.hostname,
               status=EXCLUDED.status,secret_hash=EXCLUDED.secret_hash,capabilities=EXCLUDED.capabilities,
               allowed_resources=EXCLUDED.allowed_resources,metadata=EXCLUDED.metadata,created_at=EXCLUDED.created_at,
-              last_seen_at=EXCLUDED.last_seen_at,last_ip=EXCLUDED.last_ip,revoked_at=EXCLUDED.revoked_at,tags=EXCLUDED.tags,provenance=EXCLUDED.provenance;
+              last_seen_at=EXCLUDED.last_seen_at,last_ip=EXCLUDED.last_ip,revoked_at=EXCLUDED.revoked_at,
+              tags=EXCLUDED.tags,provenance=EXCLUDED.provenance,keys=EXCLUDED.keys;
             """;
         cmd.Parameters.AddWithValue("id", a.Id);
         cmd.Parameters.AddWithValue("dn", a.DisplayName);
@@ -632,6 +634,7 @@ public sealed class PgAgentStore : IAgentStore
         cmd.Parameters.AddWithValue("rv", (object?)a.RevokedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("tags", JsonSerializer.Serialize(a.Tags));
         cmd.Parameters.AddWithValue("prov", JsonSerializer.Serialize(new AgentProvenance(a.ProfileId, a.ProfileHostname, a.AppliedProfileRevision)));
+        cmd.Parameters.AddWithValue("keys", JsonSerializer.Serialize(a.Keys));
         cmd.ExecuteNonQuery();
     }
 
@@ -679,7 +682,7 @@ public sealed class PgAgentStore : IAgentStore
     }
 
     private const string Cols =
-        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance";
+        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys";
 
     private static Agent Read(NpgsqlDataReader r)
     {
@@ -697,6 +700,7 @@ public sealed class PgAgentStore : IAgentStore
             ProfileId = prov.ProfileId,
             ProfileHostname = prov.ProfileHostname,
             AppliedProfileRevision = prov.AppliedProfileRevision,
+            Keys = JsonSerializer.Deserialize<AgentKey[]>(r.GetString(15)) ?? Array.Empty<AgentKey>(),
         };
     }
 }

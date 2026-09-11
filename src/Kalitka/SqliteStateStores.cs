@@ -486,16 +486,17 @@ public sealed class SqliteAgentStore : IAgentStore
               capabilities TEXT NOT NULL, allowed_resources TEXT NOT NULL, metadata TEXT NOT NULL,
               created_at INTEGER NOT NULL, last_seen_at INTEGER, last_ip TEXT NOT NULL DEFAULT '',
               revoked_at INTEGER, tags TEXT NOT NULL DEFAULT '[]',
-              provenance TEXT NOT NULL DEFAULT '{}');
+              provenance TEXT NOT NULL DEFAULT '{}', keys TEXT NOT NULL DEFAULT '[]');
             """;
         cmd.ExecuteNonQuery();
 
         // Columns added after the table first shipped (tags in 0.16, provenance in
-        // 0.17). CREATE TABLE IF NOT EXISTS never adds columns to a pre-existing
-        // table, so an agents table created by 0.14/0.15 would otherwise make every
+        // 0.17, keys in 0.20). CREATE TABLE IF NOT EXISTS never adds columns to a
+        // pre-existing table, so an older agents table would otherwise make every
         // SELECT throw "no such column". Add them idempotently.
         EnsureColumn(conn, "tags", "TEXT NOT NULL DEFAULT '[]'");
         EnsureColumn(conn, "provenance", "TEXT NOT NULL DEFAULT '{}'");
+        EnsureColumn(conn, "keys", "TEXT NOT NULL DEFAULT '[]'");
     }
 
     private static void EnsureColumn(Microsoft.Data.Sqlite.SqliteConnection conn, string column, string definition)
@@ -525,12 +526,12 @@ public sealed class SqliteAgentStore : IAgentStore
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance)
-            VALUES($id,$dn,$pf,$hn,$st,$sh,$cap,$res,$md,$ca,$ls,$ip,$rv,$tags,$prov)
+            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys)
+            VALUES($id,$dn,$pf,$hn,$st,$sh,$cap,$res,$md,$ca,$ls,$ip,$rv,$tags,$prov,$keys)
             ON CONFLICT(id) DO UPDATE SET
               display_name=$dn,platform=$pf,hostname=$hn,status=$st,secret_hash=$sh,
               capabilities=$cap,allowed_resources=$res,metadata=$md,created_at=$ca,
-              last_seen_at=$ls,last_ip=$ip,revoked_at=$rv,tags=$tags,provenance=$prov;
+              last_seen_at=$ls,last_ip=$ip,revoked_at=$rv,tags=$tags,provenance=$prov,keys=$keys;
             """;
         cmd.Parameters.AddWithValue("$id", a.Id);
         cmd.Parameters.AddWithValue("$dn", a.DisplayName);
@@ -547,6 +548,7 @@ public sealed class SqliteAgentStore : IAgentStore
         cmd.Parameters.AddWithValue("$rv", (object?)a.RevokedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$tags", JsonSerializer.Serialize(a.Tags));
         cmd.Parameters.AddWithValue("$prov", JsonSerializer.Serialize(new AgentProvenance(a.ProfileId, a.ProfileHostname, a.AppliedProfileRevision)));
+        cmd.Parameters.AddWithValue("$keys", JsonSerializer.Serialize(a.Keys));
         cmd.ExecuteNonQuery();
     }
 
@@ -594,7 +596,7 @@ public sealed class SqliteAgentStore : IAgentStore
     }
 
     private const string Cols =
-        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance";
+        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys";
 
     private static Agent Read(SqliteDataReader r)
     {
@@ -612,6 +614,7 @@ public sealed class SqliteAgentStore : IAgentStore
             ProfileId = prov.ProfileId,
             ProfileHostname = prov.ProfileHostname,
             AppliedProfileRevision = prov.AppliedProfileRevision,
+            Keys = JsonSerializer.Deserialize<AgentKey[]>(r.GetString(15)) ?? Array.Empty<AgentKey>(),
         };
     }
 }

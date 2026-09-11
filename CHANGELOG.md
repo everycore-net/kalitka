@@ -7,6 +7,32 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-09-11
+
+### Added
+
+- **Ed25519 signed-request agent auth (first slice of 0.20).** An agent can register
+  one or more Ed25519 public keys and then authenticate by **signing each request**
+  instead of sending a reusable secret. The signature (`X-Kalitka-Signature`, base64)
+  covers a canonical string binding the scheme version, method, path, body hash,
+  timestamp and a nonce — so it cannot be replayed against a different request; a 5-minute
+  timestamp window plus a single-use nonce (the replay store) stop replay of the same
+  one. Chosen over mTLS because a signed request reaches the app unchanged whatever the
+  reverse proxy does with TLS. Headers: `X-Kalitka-Agent-Id`, `X-Kalitka-Signature`,
+  `X-Kalitka-Timestamp`, `X-Kalitka-Nonce`, optional `X-Kalitka-Key-Id`; scheme
+  `kalitka-agent-sig-v1`.
+- **Register a key** from the agent detail page (`agent.key_added` audited). Keys
+  round-trip in SQLite and Postgres (new `keys` column, added idempotently for
+  upgrades). Ed25519 via BouncyCastle (pure-managed — no native dependency, safe on the
+  Alpine image).
+
+### Notes
+
+- Signed requests are the **preferred** auth path; the per-agent shared secret and the
+  legacy global secret keep working in parallel through the migration window. Key
+  rotation and revocation come in 0.20.2; dropping the shared secret and the `/agent/*`
+  aliases is later, after the window. Non-breaking.
+
 ## [0.19.3] - 2026-09-11
 
 ### Added
