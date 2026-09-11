@@ -45,7 +45,7 @@ rhost="${PAM_RHOST:-}"
 # jq-free JSON field read: {"id":"AB","state":"waiting"} -> value by key.
 field() { sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'; }
 
-resp=$($CURL -X POST "$KALITKA_URL/agent/request" \
+resp=$($CURL -X POST "$KALITKA_URL/agent/v1/requests" \
   $AUTH \
   --data-urlencode "host=$host" \
   --data-urlencode "user=$user" \
@@ -68,12 +68,12 @@ while [ "$i" -lt 100 ]; do
   sleep 3
   i=$((i + 1))
   st=$($CURL $AUTH \
-       "$KALITKA_URL/agent/status?id=$id" 2>/dev/null) || continue
+       "$KALITKA_URL/agent/v1/requests/$id" 2>/dev/null) || continue
   case "$(printf '%s' "$st" | field state)" in
     approved)
       # Approval is not entry: redeem the one-time grant to start a session.
       grant=$(printf '%s' "$st" | field grant)
-      red=$($CURL -X POST "$KALITKA_URL/agent/redeem" \
+      red=$($CURL -X POST "$KALITKA_URL/agent/v1/grants/redeem" \
             $AUTH \
             --data-urlencode "grant=$grant" --data-urlencode "agent=$host" 2>/dev/null) \
         || { echo "kalitka: grant redemption failed." >&2; exit 1; }

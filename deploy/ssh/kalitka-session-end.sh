@@ -38,7 +38,7 @@ sid=$(cat "$state" 2>/dev/null || true)
 [ -n "$sid" ] || { rm -f "$state" 2>/dev/null || true; exit 0; }
 
 # Bounded like the approve hook: a hung gate must not wedge logout.
-curl -fsS --connect-timeout 5 --max-time 10 -X POST "$KALITKA_URL/agent/session/end" \
+curl -fsS --connect-timeout 5 --max-time 10 -X POST "$KALITKA_URL/agent/v1/sessions/end" \
   $AUTH \
   --data-urlencode "session_id=$sid" \
   --data-urlencode "outcome=closed" >/dev/null 2>&1 || true

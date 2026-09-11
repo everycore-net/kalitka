@@ -302,13 +302,32 @@ app.MapPost("/internal/toggle", (HttpContext ctx, GateService gate) =>
 });
 
 // ---------------------------------------------------------------------------
-// Non-HTTP agents (SSH, later DB/RDP), internal-secret guarded. An agent on
+// Non-HTTP agents (SSH, later DB/RDP), guarded by the agent registry. An agent on
 // another host — e.g. an sshd PAM hook — raises an access request for a resource
-// like ssh:<host> and polls its state. Kalitka only decides yes/no; it brokers
-// no credentials and proxies nothing. The human approves through any channel.
+// like ssh:<host> and polls its state. Kalitka only decides yes/no; it brokers no
+// credentials and proxies nothing. The human approves through any channel.
+//
+// The canonical namespace is /agent/v1/* (protocol versioning from the start); the
+// unprefixed /agent/* paths remain as deprecated aliases so already-deployed PAM
+// hooks keep working. Both map to the same handlers; legacy calls get a
+// `Deprecation` response header.
 // ---------------------------------------------------------------------------
-app.MapPost("/agent/request", async (HttpContext ctx, GateService gate, IAgentStore agents) =>
+app.MapPost("/agent/v1/requests", AgentRequest);
+app.MapPost("/agent/request", AgentRequest);
+app.MapGet("/agent/v1/requests/{id}", AgentPoll);
+app.MapGet("/agent/status", AgentPoll);
+app.MapPost("/agent/v1/grants/redeem", AgentRedeem);
+app.MapPost("/agent/redeem", AgentRedeem);
+app.MapPost("/agent/v1/sessions/end", AgentSessionEnd);
+app.MapPost("/agent/session/end", AgentSessionEnd);
+app.MapPost("/agent/v1/enroll", AgentEnroll);
+app.MapPost("/agent/enroll", AgentEnroll);
+app.MapPost("/agent/v1/heartbeat", AgentHeartbeat);
+app.MapPost("/agent/heartbeat", AgentHeartbeat);
+
+static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgentStore agents)
 {
+    MarkAgentVersion(ctx);
     var identity = AuthenticateAgent(ctx, gate, agents);
     if (identity is null) return Results.StatusCode(403);
 
@@ -329,24 +348,28 @@ app.MapPost("/agent/request", async (HttpContext ctx, GateService gate, IAgentSt
 
     var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted);
     return Results.Json(new { id, state });
-});
+}
 
-app.MapGet("/agent/status", async (HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents) =>
+static async Task<IResult> AgentPoll(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents)
 {
+    MarkAgentVersion(ctx);
     var identity = AuthenticateAgent(ctx, gate, agents);
     if (identity is null) return Results.StatusCode(403);
 
-    var id = ctx.Request.Query["id"].ToString();
+    // v1: /agent/v1/requests/{id}; legacy: /agent/status?id=…
+    var id = ctx.Request.RouteValues.TryGetValue("id", out var rv) && rv is string s && s.Length > 0
+        ? s : ctx.Request.Query["id"].ToString();
     var state = gate.StateOf(id) ?? "gone";
     // On approval the agent gets a one-time grant to redeem — approval alone no
     // longer means "in". Issued once; repeated polls return the same grant.
     var grant = state == "approved" ? await grants.IssueGrant(id, identity.Actor, ctx.RequestAborted) : null;
     return Results.Json(new { state, grant });
-});
+}
 
 // Redeem the grant exactly once and start a session (grant.redeemed + session.started).
-app.MapPost("/agent/redeem", async (HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents) =>
+static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents)
 {
+    MarkAgentVersion(ctx);
     var identity = AuthenticateAgent(ctx, gate, agents);
     if (identity is null) return Results.StatusCode(403);
 
@@ -355,23 +378,25 @@ app.MapPost("/agent/redeem", async (HttpContext ctx, GateService gate, GrantServ
     var result = await grants.Redeem(form["grant"].ToString(), identity, form["agent"].ToString(), ctx.RequestAborted);
     if (result.Ok) return Results.Json(new { session_id = result.SessionId });
     return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
-});
+}
 
 // The agent reports the session ended (session.ended).
-app.MapPost("/agent/session/end", async (HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents) =>
+static async Task<IResult> AgentSessionEnd(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents)
 {
+    MarkAgentVersion(ctx);
     var identity = AuthenticateAgent(ctx, gate, agents);
     if (identity is null) return Results.StatusCode(403);
 
     var form = await ctx.Request.ReadFormAsync();
     var ok = await grants.EndSession(form["session_id"].ToString(), form["outcome"].ToString(), ctx.RequestAborted);
     return ok ? Results.Ok() : Results.StatusCode(404);
-});
+}
 
 // Self-enrolment: an agent presents a one-time enrollment token and its own
 // generated secret to become active. The token itself is the authorization here.
-app.MapPost("/agent/enroll", async (HttpContext ctx, AgentService agentsSvc) =>
+static async Task<IResult> AgentEnroll(HttpContext ctx, AgentService agentsSvc)
 {
+    MarkAgentVersion(ctx);
     var form = await ctx.Request.ReadFormAsync();
     var result = await agentsSvc.Enroll(
         form["token"].ToString(), form["secret"].ToString(),
@@ -379,11 +404,21 @@ app.MapPost("/agent/enroll", async (HttpContext ctx, AgentService agentsSvc) =>
     return result.Ok
         ? Results.Json(new { agent_id = result.AgentId })
         : Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 400);
-});
+}
 
 // A liveness ping. last_seen is also updated on any authenticated agent call.
-app.MapPost("/agent/heartbeat", (HttpContext ctx, GateService gate, IAgentStore agents) =>
-    AuthenticateAgent(ctx, gate, agents) is null ? Results.StatusCode(403) : Results.Ok());
+static IResult AgentHeartbeat(HttpContext ctx, GateService gate, IAgentStore agents)
+{
+    MarkAgentVersion(ctx);
+    return AuthenticateAgent(ctx, gate, agents) is null ? Results.StatusCode(403) : Results.Ok();
+}
+
+// Flag the deprecated unprefixed /agent/* aliases so callers can migrate to /agent/v1.
+static void MarkAgentVersion(HttpContext ctx)
+{
+    if (!ctx.Request.Path.StartsWithSegments("/agent/v1"))
+        ctx.Response.Headers["Deprecation"] = "true";
+}
 
 // ---------------------------------------------------------------------------
 // Telegram webhook: secret path plus secret header

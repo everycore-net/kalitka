@@ -7,6 +7,25 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-11
+
+### Added
+
+- **Versioned agent protocol `/agent/v1/*`.** The agent API has a canonical, RESTful
+  namespace: `POST /agent/v1/requests`, `GET /agent/v1/requests/{id}`,
+  `POST /agent/v1/grants/redeem`, `POST /agent/v1/sessions/end`,
+  `POST /agent/v1/enroll`, `POST /agent/v1/heartbeat`. The unprefixed `/agent/*`
+  paths remain as **deprecated aliases** (same handlers) so already-deployed PAM
+  hooks keep working; legacy calls now carry a `Deprecation` response header. The
+  reference PAM hooks (`deploy/ssh/`) use the v1 paths.
+
+### Notes
+
+- Redeeming a grant still starts the session atomically (0.11), so there is no
+  separate `sessions/start` step — `grants/redeem` returns the `session_id`.
+- Still to come on this line: dropping the global `AgentSecret` after the migration
+  window, and agent profiles / tags / admin RBAC / public-key (mTLS) credentials.
+
 ## [0.14.0] - 2026-09-11
 
 ### Added

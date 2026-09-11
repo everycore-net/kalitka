@@ -152,6 +152,57 @@ public class AgentRegistryTests : IClassFixture<GateFactory>
     }
 
     [Fact]
+    public async Task V1_namespace_runs_the_whole_lifecycle()
+    {
+        var store = _f.Services.GetRequiredService<IAgentStore>();
+        store.Create(Agent("v1-agent", "sec-v1", AgentStatus.Active, new[] { "ssh" }, new[] { "ssh:v1-host" }));
+
+        var raise = await Client().SendAsync(Reg(HttpMethod.Post, "/agent/v1/requests", "v1-agent", "sec-v1",
+            new() { ["host"] = "v1-host", ["user"] = "sergej", ["ip"] = "203.0.113.9" }));
+        Assert.Equal(HttpStatusCode.OK, raise.StatusCode);
+        var id = Field(await raise.Content.ReadAsStringAsync(), "id")!;
+
+        var auth = _f.Services.GetRequiredService<AdminAuth>();
+        var who = new AdminIdentity("sub-test", "admin@example.com");
+        var decide = new HttpRequestMessage(HttpMethod.Post, "/admin/requests/decide")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            { ["id"] = id, ["verb"] = "ok", ["csrf"] = auth.IssueCsrf(who.Sub) })
+        };
+        decide.Headers.Add("Cookie", $"{AdminAuth.CookieName}={auth.IssueCookie(who)}");
+        await Client().SendAsync(decide);
+
+        // Poll the RESTful path GET /agent/v1/requests/{id}.
+        var status = await (await Client().SendAsync(Reg(HttpMethod.Get, $"/agent/v1/requests/{id}", "v1-agent", "sec-v1"))).Content.ReadAsStringAsync();
+        var grant = Field(status, "grant")!;
+        Assert.False(string.IsNullOrEmpty(grant));
+
+        var redeem = await Client().SendAsync(Reg(HttpMethod.Post, "/agent/v1/grants/redeem", "v1-agent", "sec-v1",
+            new() { ["grant"] = grant, ["agent"] = "v1-host" }));
+        Assert.Equal(HttpStatusCode.OK, redeem.StatusCode);
+        var sid = Field(await redeem.Content.ReadAsStringAsync(), "session_id")!;
+
+        var end = await Client().SendAsync(Reg(HttpMethod.Post, "/agent/v1/sessions/end", "v1-agent", "sec-v1",
+            new() { ["session_id"] = sid, ["outcome"] = "ok" }));
+        Assert.Equal(HttpStatusCode.OK, end.StatusCode);
+    }
+
+    [Fact]
+    public async Task Legacy_paths_carry_a_deprecation_header_and_v1_does_not()
+    {
+        var store = _f.Services.GetRequiredService<IAgentStore>();
+        store.Create(Agent("dep", "sec-dep", AgentStatus.Active, new[] { "ssh" }, new[] { "ssh:*" }));
+
+        var legacy = await Client().SendAsync(Reg(HttpMethod.Post, "/agent/request", "dep", "sec-dep",
+            new() { ["host"] = "h", ["user"] = "u", ["ip"] = "203.0.113.9" }));
+        Assert.True(legacy.Headers.Contains("Deprecation"));
+
+        var v1 = await Client().SendAsync(Reg(HttpMethod.Post, "/agent/v1/requests", "dep", "sec-dep",
+            new() { ["host"] = "h", ["user"] = "u", ["ip"] = "203.0.113.9" }));
+        Assert.False(v1.Headers.Contains("Deprecation"));
+    }
+
+    [Fact]
     public async Task Enrolled_agent_can_then_authenticate_and_raise()
     {
         var svc = _f.Services.GetRequiredService<AgentService>();
