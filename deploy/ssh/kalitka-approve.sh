@@ -13,13 +13,26 @@
 # Config in /etc/kalitka-approve.conf — this file is sourced by root into a PAM
 # hook, so it is executable input: make it root:root and chmod 600.
 #   KALITKA_URL=https://gate.example.com
-#   KALITKA_AGENT_SECRET=...             # must equal kalitka's Kalitka__AgentSecret
-#                                        # (NOT the administrative Kalitka__InternalSecret)
+#   # Preferred: a registered agent (individually revocable, resource-scoped) from
+#   # the /admin/agents console:
+#   KALITKA_AGENT_ID=...                  # the agent id
+#   KALITKA_AGENT_SECRET=...              # its secret (shown once on create/rotate)
+#   # Deprecated migration path: leave KALITKA_AGENT_ID empty and set
+#   # KALITKA_AGENT_SECRET to kalitka's global Kalitka__AgentSecret.
+#   # Either way this is NOT the administrative Kalitka__InternalSecret.
 set -eu
 
 [ -r /etc/kalitka-approve.conf ] && . /etc/kalitka-approve.conf
 : "${KALITKA_URL:?set KALITKA_URL}"
 : "${KALITKA_AGENT_SECRET:?set KALITKA_AGENT_SECRET}"
+
+# Prefer per-agent credentials (the registry); fall back to the legacy global
+# secret. Values are tokens without spaces, so unquoted $AUTH word-splits cleanly.
+if [ -n "${KALITKA_AGENT_ID:-}" ]; then
+  AUTH="-H X-Kalitka-Agent-Id:$KALITKA_AGENT_ID -H X-Kalitka-Agent-Secret:$KALITKA_AGENT_SECRET"
+else
+  AUTH="-H X-Kalitka-Agent:$KALITKA_AGENT_SECRET"
+fi
 
 # Hard caps so a hung TCP/TLS request cannot hold the SSH login open: this bounds
 # each curl, not just the number of poll iterations.
@@ -33,7 +46,7 @@ rhost="${PAM_RHOST:-}"
 field() { sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'; }
 
 resp=$($CURL -X POST "$KALITKA_URL/agent/request" \
-  -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
+  $AUTH \
   --data-urlencode "host=$host" \
   --data-urlencode "user=$user" \
   --data-urlencode "ip=$rhost" 2>/dev/null) \
@@ -54,14 +67,14 @@ i=0
 while [ "$i" -lt 100 ]; do
   sleep 3
   i=$((i + 1))
-  st=$($CURL -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
+  st=$($CURL $AUTH \
        "$KALITKA_URL/agent/status?id=$id" 2>/dev/null) || continue
   case "$(printf '%s' "$st" | field state)" in
     approved)
       # Approval is not entry: redeem the one-time grant to start a session.
       grant=$(printf '%s' "$st" | field grant)
       red=$($CURL -X POST "$KALITKA_URL/agent/redeem" \
-            -H "X-Kalitka-Agent: $KALITKA_AGENT_SECRET" \
+            $AUTH \
             --data-urlencode "grant=$grant" --data-urlencode "agent=$host" 2>/dev/null) \
         || { echo "kalitka: grant redemption failed." >&2; exit 1; }
       sid=$(printf '%s' "$red" | field session_id)

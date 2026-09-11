@@ -257,6 +257,10 @@ public sealed class GateOptions
 
     /// <summary>Lifetime of a one-time approval link. Short: it is a capability.</summary>
     public int OneTimeMinutes { get; set; } = 15;
+
+    /// <summary>Lifetime of an agent enrollment token. Longer than an approval link:
+    /// an operator may create it, then enrol the machine a while later.</summary>
+    public int EnrollmentTokenMinutes { get; set; } = 60;
 }
 
 /// <summary>How wide a Google-proven identity's session reaches. See
