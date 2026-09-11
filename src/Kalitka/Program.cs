@@ -32,40 +32,51 @@ builder.Services.AddSingleton<TokenSigner>(sp =>
     new TokenSigner(sp.GetRequiredService<IOptions<GateOptions>>().Value.HmacSecret));
 builder.Services.AddTransient<AdminAuth>();
 builder.Services.AddSingleton<OneTimeTokenService>();
+// Backend precedence for the durable stores: Postgres (multi-node) when a
+// connection string is set, else SQLite when a path is set, else in-memory. The
+// seams and atomic guarantees are identical across all three — only the wiring
+// differs. With Postgres, all four stores share the one database, so state and
+// audit commit in one transaction.
+static string? Pg(IServiceProvider sp) =>
+    sp.GetRequiredService<IOptions<GateOptions>>().Value.PostgresConnectionString is { Length: > 0 } cs ? cs : null;
+
 builder.Services.AddSingleton<IAuditStore>(sp =>
 {
+    if (Pg(sp) is { } cs) return new PgAuditStore(cs);
     var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.AuditDbPath;
     return string.IsNullOrWhiteSpace(path) ? new InMemoryAuditStore() : new SqliteAuditStore(path);
 });
-// The live-state stores share one StateDbPath file when set; empty keeps all
-// three in memory (single instance, lost on restart). The atomic transitions the
-// engine and grant flow rely on hold either way — in memory via a lock, in SQLite
-// via a conditional UPDATE / a primary-key insert.
 builder.Services.AddSingleton<IRequestStore>(sp =>
 {
+    if (Pg(sp) is { } cs) return new PgRequestStore(cs);
     var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.StateDbPath;
     return string.IsNullOrWhiteSpace(path) ? new InMemoryRequestStore() : new SqliteRequestStore(path);
 });
 builder.Services.AddSingleton<IReplayStore>(sp =>
 {
+    var clock = sp.GetRequiredService<TimeProvider>();
+    if (Pg(sp) is { } cs) return new PgReplayStore(cs, clock);
     var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.StateDbPath;
-    return string.IsNullOrWhiteSpace(path)
-        ? new InMemoryReplayStore(sp.GetRequiredService<TimeProvider>())
-        : new SqliteReplayStore(path, sp.GetRequiredService<TimeProvider>());
+    return string.IsNullOrWhiteSpace(path) ? new InMemoryReplayStore(clock) : new SqliteReplayStore(path, clock);
 });
 builder.Services.AddSingleton<ISessionStore>(sp =>
 {
+    if (Pg(sp) is { } cs) return new PgSessionStore(cs);
     var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.StateDbPath;
     return string.IsNullOrWhiteSpace(path) ? new InMemorySessionStore() : new SqliteSessionStore(path);
 });
-// When state and audit are the *same* SQLite file, register the unit of work that
-// lets a decision and its audit event commit in one transaction (audit integrity).
-// Absent it — in-memory, or state and audit on separate files — the engine keeps
-// the sequential best-effort append. Registered conditionally so the engine's
-// optional IAtomicWork stays null in every other case.
+// The unit of work that commits a state change and its audit event in one
+// transaction. Always present with Postgres (one database). With SQLite only when
+// state and audit are the *same* file. Absent otherwise — in-memory, or state and
+// audit on separate files — and the engine keeps the sequential best-effort append.
+var pgConn = builder.Configuration["Kalitka:PostgresConnectionString"];
 var stateDbPath = builder.Configuration["Kalitka:StateDbPath"];
 var auditDbPath = builder.Configuration["Kalitka:AuditDbPath"];
-if (!string.IsNullOrWhiteSpace(stateDbPath) &&
+if (!string.IsNullOrWhiteSpace(pgConn))
+{
+    builder.Services.AddSingleton<IAtomicWork>(_ => new PgAtomicWork(pgConn));
+}
+else if (!string.IsNullOrWhiteSpace(stateDbPath) &&
     string.Equals(stateDbPath, auditDbPath, StringComparison.Ordinal))
 {
     builder.Services.AddSingleton<IAtomicWork>(_ => new SqliteAtomicWork(stateDbPath));

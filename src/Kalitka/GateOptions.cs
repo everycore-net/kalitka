@@ -148,11 +148,22 @@ public sealed class GateOptions
     /// behaviour: lost on restart, single instance only). Set a path and the state
     /// survives a restart, and the atomic transitions (resolve-once, redeem-once,
     /// close-once) hold across every process pointed at the same file — the
-    /// single-node durable step. True multi-<i>node</i> is the same seam with a
-    /// Postgres backend (a parallel <c>Sqlite*</c>-shaped store); the atomicity is
-    /// already expressed as conditional SQL updates, so that swap is mechanical.
+    /// single-node durable step. For true multi-<i>node</i> use
+    /// <see cref="PostgresConnectionString"/> instead.
     /// </summary>
     public string StateDbPath { get; set; } = "";
+
+    /// <summary>
+    /// Postgres connection string for the durable stores — the true multi-<i>node</i>
+    /// backend. When set it takes precedence over <see cref="StateDbPath"/> and
+    /// <see cref="AuditDbPath"/>: pending requests, replay, sessions <b>and</b> audit
+    /// all live in the one Postgres database, so several kalitka instances share the
+    /// same state and their atomic transitions hold across the cluster (state and
+    /// audit commit in one transaction, since they share the connection). Empty falls
+    /// back to the SQLite / in-memory selection above. Example:
+    /// <c>Host=db;Username=kalitka;Password=…;Database=kalitka</c>.
+    /// </summary>
+    public string PostgresConnectionString { get; set; } = "";
 
     /// <summary>
     /// Secret for the <c>/internal/*</c> endpoints used to arm or disarm hosts
