@@ -76,6 +76,29 @@ public class AgentRegistryTests : IClassFixture<GateFactory>
         finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(dir, true); }
     }
 
+    [Fact]
+    public void Tags_and_profile_provenance_round_trip_through_sqlite()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "kalitka-agents-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var db = Path.Combine(dir, "state.db");
+            var a = Agent("prov", "s", AgentStatus.Active, new[] { "ssh" }, new[] { "ssh:x" }) with
+            {
+                Tags = new[] { "env:prod", "role:web" },
+                ProfileId = "linux-server", ProfileHostname = "srv-01", AppliedProfileRevision = 4
+            };
+            new SqliteAgentStore(db).Create(a);
+            var got = new SqliteAgentStore(db).GetById("prov")!;
+            Assert.Equal(new[] { "env:prod", "role:web" }, got.Tags);
+            Assert.Equal("linux-server", got.ProfileId);
+            Assert.Equal("srv-01", got.ProfileHostname);
+            Assert.Equal(4, got.AppliedProfileRevision);
+        }
+        finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(dir, true); }
+    }
+
     // ---- HTTP: authentication + authorisation -------------------------------
 
     private HttpClient Client() =>

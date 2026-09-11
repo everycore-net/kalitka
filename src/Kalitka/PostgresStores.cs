@@ -546,7 +546,8 @@ public sealed class PgAgentStore : IAgentStore
               hostname TEXT NOT NULL, status TEXT NOT NULL, secret_hash TEXT NOT NULL,
               capabilities TEXT NOT NULL, allowed_resources TEXT NOT NULL, metadata TEXT NOT NULL,
               created_at BIGINT NOT NULL, last_seen_at BIGINT, last_ip TEXT NOT NULL DEFAULT '',
-              revoked_at BIGINT, tags TEXT NOT NULL DEFAULT '[]');
+              revoked_at BIGINT, tags TEXT NOT NULL DEFAULT '[]',
+              provenance TEXT NOT NULL DEFAULT '{}');
             """;
         cmd.ExecuteNonQuery();
     }
@@ -566,13 +567,13 @@ public sealed class PgAgentStore : IAgentStore
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags)
-            VALUES(@id,@dn,@pf,@hn,@st,@sh,@cap,@res,@md,@ca,@ls,@ip,@rv,@tags)
+            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance)
+            VALUES(@id,@dn,@pf,@hn,@st,@sh,@cap,@res,@md,@ca,@ls,@ip,@rv,@tags,@prov)
             ON CONFLICT(id) DO UPDATE SET
               display_name=EXCLUDED.display_name,platform=EXCLUDED.platform,hostname=EXCLUDED.hostname,
               status=EXCLUDED.status,secret_hash=EXCLUDED.secret_hash,capabilities=EXCLUDED.capabilities,
               allowed_resources=EXCLUDED.allowed_resources,metadata=EXCLUDED.metadata,created_at=EXCLUDED.created_at,
-              last_seen_at=EXCLUDED.last_seen_at,last_ip=EXCLUDED.last_ip,revoked_at=EXCLUDED.revoked_at,tags=EXCLUDED.tags;
+              last_seen_at=EXCLUDED.last_seen_at,last_ip=EXCLUDED.last_ip,revoked_at=EXCLUDED.revoked_at,tags=EXCLUDED.tags,provenance=EXCLUDED.provenance;
             """;
         cmd.Parameters.AddWithValue("id", a.Id);
         cmd.Parameters.AddWithValue("dn", a.DisplayName);
@@ -588,6 +589,7 @@ public sealed class PgAgentStore : IAgentStore
         cmd.Parameters.AddWithValue("ip", a.LastIp);
         cmd.Parameters.AddWithValue("rv", (object?)a.RevokedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("tags", JsonSerializer.Serialize(a.Tags));
+        cmd.Parameters.AddWithValue("prov", JsonSerializer.Serialize(new AgentProvenance(a.ProfileId, a.ProfileHostname, a.AppliedProfileRevision)));
         cmd.ExecuteNonQuery();
     }
 
@@ -635,17 +637,24 @@ public sealed class PgAgentStore : IAgentStore
     }
 
     private const string Cols =
-        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags";
+        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance";
 
-    private static Agent Read(NpgsqlDataReader r) => new(
-        r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3),
-        Enum.Parse<AgentStatus>(r.GetString(4)), r.GetString(5),
-        JsonSerializer.Deserialize<string[]>(r.GetString(6)) ?? Array.Empty<string>(),
-        JsonSerializer.Deserialize<string[]>(r.GetString(7)) ?? Array.Empty<string>(),
-        r.GetString(8), DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(9)),
-        r.IsDBNull(10) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(10)),
-        r.GetString(11), r.IsDBNull(12) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(12)))
+    private static Agent Read(NpgsqlDataReader r)
     {
-        Tags = JsonSerializer.Deserialize<string[]>(r.GetString(13)) ?? Array.Empty<string>()
-    };
+        var prov = JsonSerializer.Deserialize<AgentProvenance>(r.GetString(14)) ?? new("", "", 0);
+        return new Agent(
+            r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3),
+            Enum.Parse<AgentStatus>(r.GetString(4)), r.GetString(5),
+            JsonSerializer.Deserialize<string[]>(r.GetString(6)) ?? Array.Empty<string>(),
+            JsonSerializer.Deserialize<string[]>(r.GetString(7)) ?? Array.Empty<string>(),
+            r.GetString(8), DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(9)),
+            r.IsDBNull(10) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(10)),
+            r.GetString(11), r.IsDBNull(12) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(12)))
+        {
+            Tags = JsonSerializer.Deserialize<string[]>(r.GetString(13)) ?? Array.Empty<string>(),
+            ProfileId = prov.ProfileId,
+            ProfileHostname = prov.ProfileHostname,
+            AppliedProfileRevision = prov.AppliedProfileRevision,
+        };
+    }
 }

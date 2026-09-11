@@ -19,6 +19,18 @@ public sealed record AgentProfile(
     string[] ResourceTemplates,
     string[] Tags)
 {
+    /// <summary>Bumped each time the profile's content changes. An agent stores the
+    /// revision it was last synced to, so drift (template changed) can be told apart
+    /// from a deliberate local override on the agent.</summary>
+    public int Revision { get; init; }
+
+    /// <summary>True if the substantive content (not the revision) is the same.</summary>
+    public bool SameContent(AgentProfile other) =>
+        Platform == other.Platform
+        && Capabilities.SequenceEqual(other.Capabilities)
+        && ResourceTemplates.SequenceEqual(other.ResourceTemplates)
+        && Tags.SequenceEqual(other.Tags);
+
     /// <summary>Expand the resource templates against a hostname (<c>{hostname}</c>).
     /// Capabilities and tags are copied as-is.</summary>
     public (string[] Capabilities, string[] Resources, string[] Tags) Expand(string hostname)
@@ -53,22 +65,33 @@ public sealed class ProfileService
         _clock = clock ?? TimeProvider.System;
     }
 
-    public IReadOnlyList<AgentProfile> All() => Parse(_config.Get(Key));
+    // The stored blob is the append-only revision history. All()/Get() return the
+    // latest revision per name; GetRevision fetches a specific one so a reconcile
+    // diff can be anchored to the revision an agent was last synced to.
+    public IReadOnlyList<AgentProfile> All() =>
+        History().GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                 .Select(Latest).OrderBy(p => p.Name).ToList();
 
     public AgentProfile? Get(string name) =>
-        All().FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+        History().Where(p => Eq(p.Name, name)).OrderByDescending(p => p.Revision).FirstOrDefault();
+
+    public AgentProfile? GetRevision(string name, int revision) =>
+        History().FirstOrDefault(p => Eq(p.Name, name) && p.Revision == revision);
 
     public async Task Save(AgentProfile profile, string actor, CancellationToken ct)
     {
-        var existed = false;
+        string? outcome = null;   // "created" | "updated" | null (no-op)
         _config.Mutate(Key, cur =>
         {
-            var list = Parse(cur);
-            existed = list.RemoveAll(p => string.Equals(p.Name, profile.Name, StringComparison.OrdinalIgnoreCase)) > 0;
-            list.Add(profile);
-            return JsonSerializer.Serialize(list);
+            var hist = Parse(cur);
+            var latest = hist.Where(p => Eq(p.Name, profile.Name)).OrderByDescending(p => p.Revision).FirstOrDefault();
+            if (latest is not null && latest.SameContent(profile)) return JsonSerializer.Serialize(hist);   // unchanged
+            hist.Add(profile with { Revision = (latest?.Revision ?? 0) + 1 });
+            outcome = latest is null ? "created" : "updated";
+            return JsonSerializer.Serialize(hist);
         });
-        await _audit.Append(Ev(existed ? AuditEvents.AgentProfileUpdated : AuditEvents.AgentProfileCreated, actor, profile.Name), ct);
+        if (outcome == "created") await _audit.Append(Ev(AuditEvents.AgentProfileCreated, actor, profile.Name), ct);
+        else if (outcome == "updated") await _audit.Append(Ev(AuditEvents.AgentProfileUpdated, actor, profile.Name), ct);
     }
 
     public async Task<bool> Delete(string name, string actor, CancellationToken ct)
@@ -76,13 +99,18 @@ public sealed class ProfileService
         var removed = false;
         _config.Mutate(Key, cur =>
         {
-            var list = Parse(cur);
-            removed = list.RemoveAll(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)) > 0;
-            return JsonSerializer.Serialize(list);
+            var hist = Parse(cur);
+            removed = hist.RemoveAll(p => Eq(p.Name, name)) > 0;   // drop all revisions; agents keep their snapshot
+            return JsonSerializer.Serialize(hist);
         });
         if (removed) await _audit.Append(Ev(AuditEvents.AgentProfileDeleted, actor, name), ct);
         return removed;
     }
+
+    private List<AgentProfile> History() => Parse(_config.Get(Key));
+
+    private static AgentProfile Latest(IGrouping<string, AgentProfile> g) => g.OrderByDescending(p => p.Revision).First();
+    private static bool Eq(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     private static List<AgentProfile> Parse(string? blob) =>
         string.IsNullOrWhiteSpace(blob) ? new() : (JsonSerializer.Deserialize<List<AgentProfile>>(blob) ?? new());

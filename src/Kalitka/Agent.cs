@@ -7,6 +7,9 @@ namespace Kalitka;
 /// <see cref="Disabled"/> is temporary, <see cref="Revoked"/> is permanent.</summary>
 public enum AgentStatus { Pending, Active, Disabled, Revoked }
 
+/// <summary>Profile provenance persisted as one column (see <see cref="Agent"/>).</summary>
+internal sealed record AgentProvenance(string ProfileId, string ProfileHostname, int AppliedProfileRevision);
+
 /// <summary>Operation capabilities — what an agent may <i>do</i>, distinct from the
 /// resources it may do it to. Profiles express capabilities in this form.</summary>
 public static class AgentCapabilities
@@ -40,6 +43,25 @@ public sealed record Agent(
     /// <summary>Free-form <c>key=value</c> tags (e.g. <c>environment=prod</c>) — grouping
     /// metadata for now; policy semantics (per-group approver rules) come later.</summary>
     public string[] Tags { get; init; } = Array.Empty<string>();
+
+    // ---- Profile provenance -------------------------------------------------
+    // The agent's capabilities/resources/tags above are the source of truth. These
+    // record where they came from so profile drift can be reconciled deliberately:
+    // which profile, the hostname its templates were expanded with, and the profile
+    // revision this agent was last synced to. Empty ProfileId = not profile-managed.
+
+    public string ProfileId { get; init; } = "";
+    public string ProfileHostname { get; init; } = "";
+    public int AppliedProfileRevision { get; init; }
+
+    /// <summary>Stamp profile provenance onto a copy; a null provenance leaves the
+    /// agent unmanaged (empty <see cref="ProfileId"/>).</summary>
+    internal Agent WithProvenance(AgentProvenance? p) => p is null ? this : this with
+    {
+        ProfileId = p.ProfileId,
+        ProfileHostname = p.ProfileHostname,
+        AppliedProfileRevision = p.AppliedProfileRevision,
+    };
 }
 
 /// <summary>
