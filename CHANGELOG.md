@@ -7,6 +7,23 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-09-11
+
+### Added
+
+- **Policy enforcement: grant lifetime (second slice of 0.19).** When an SSH grant is
+  issued, the matching access policies' `GrantTtlMinutes` now applies — the grant is
+  minted with the **shorter** of the global lifetime and the policy's, so a policy can
+  only ever shorten a grant, never extend it past the global `OneTimeMinutes`
+  (restrict-only). Policies are selected by the requesting agent's tags (`AgentIdentity`
+  now carries them). Agents whose tags match no policy, and the legacy global-secret
+  caller, keep the default lifetime.
+
+### Notes
+
+- Still to come in 0.19.3: the approval quorum (`RequiredApprovals`) with the
+  distinct-approver-principal rule. With no policies defined, nothing changes.
+
 ## [0.19.1] - 2026-09-11
 
 ### Added

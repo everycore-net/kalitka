@@ -20,10 +20,11 @@ public sealed class GrantService
     private readonly TimeProvider _clock;
     private readonly int _grantMinutes;
     private readonly IAtomicWork? _atomic;   // present only when state + audit share a transactional backend
+    private readonly PolicyService? _policies;
 
     public GrantService(GateService gate, OneTimeTokenService tokens, IReplayStore replay,
         ISessionStore sessions, IAuditStore audit, IOptions<GateOptions> options,
-        TimeProvider? clock = null, IAtomicWork? atomic = null)
+        TimeProvider? clock = null, IAtomicWork? atomic = null, PolicyService? policies = null)
     {
         _gate = gate;
         _tokens = tokens;
@@ -33,6 +34,7 @@ public sealed class GrantService
         _grantMinutes = options.Value.OneTimeMinutes;
         _clock = clock ?? TimeProvider.System;
         _atomic = atomic;
+        _policies = policies;
     }
 
     /// <summary>The grant for an approved SSH request, issued once. Null if the
@@ -49,7 +51,12 @@ public sealed class GrantService
         if (!agent.MayRepresent(resource, AgentCapabilities.Redeem)) return null;
 
         var subject = _gate.SubjectOf(id) ?? "";
-        var (grant, created) = _gate.EnsureGrant(id, _tokens.MintGrant(resource, id, subject, _grantMinutes));
+        // A matching access policy may only SHORTEN the grant, never extend it beyond
+        // the global lifetime (restrict-only), so the effective TTL is the min.
+        var ttl = _grantMinutes;
+        var policyTtl = _policies?.Effective(resource, agent.Tags).GrantTtlMinutes;
+        if (policyTtl is > 0) ttl = Math.Min(ttl, policyTtl.Value);
+        var (grant, created) = _gate.EnsureGrant(id, _tokens.MintGrant(resource, id, subject, ttl));
         if (created && _tokens.Read(grant) is { } cap)
             await _audit.Append(Event(AuditEvents.GrantCreated, agent.Actor, subject, resource, id, cap.GrantId, ""), ct);
         return grant;
