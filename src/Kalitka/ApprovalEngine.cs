@@ -103,6 +103,7 @@ public sealed class ApprovalEngine
 
     public string InternalSecret => _options.InternalSecret;
     public string AgentSecret => _options.AgentSecret;
+    public string[] AgentResources => _options.AgentResources;   // legacy global-secret binding
 
     /// <summary>May an agent (holding the agent secret) raise this resource? True
     /// when no resource binding is configured, else exact or scheme-wildcard.</summary>
@@ -318,7 +319,7 @@ public sealed class ApprovalEngine
             return ("invalid", "", null);
         }
 
-        return await Raise("web:" + target, target, input, ip, ct);
+        return await Raise("web:" + target, target, input, ip, "-", ct);
     }
 
     /// <summary>
@@ -329,11 +330,11 @@ public sealed class ApprovalEngine
     /// secret). It does not broker any credentials: it only says yes or no.
     /// </summary>
     public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
-        string resource, string subject, string ip, CancellationToken ct)
+        string resource, string subject, string ip, string actor, CancellationToken ct)
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, ct);
+        return await Raise(resource, resource, subject, ip, actor, ct);
     }
 
     /// <summary>
@@ -342,7 +343,7 @@ public sealed class ApprovalEngine
     /// is what the operator sees; <paramref name="resource"/> is the audit identity.
     /// </summary>
     private async Task<(string state, string id, PendingRequest? request)> Raise(
-        string resource, string target, string subject, string ip, CancellationToken ct)
+        string resource, string target, string subject, string ip, string actor, CancellationToken ct)
     {
         var place = await _geo.Locate(ip, ct);
 
@@ -394,7 +395,7 @@ public sealed class ApprovalEngine
 
         Audit.Decision(_log, "asked", target, ip, requestId: id, identity: subject);
         await _audit.Append(Event(AuditEvents.AccessRequested,
-            actor: "-", subject: subject, resource: resource, requestId: id,
+            actor: actor, subject: subject, resource: resource, requestId: id,
             channel: resource.StartsWith("web:", StringComparison.Ordinal) ? "gate" : "agent"), ct);
 
         return ("waiting", id, request);

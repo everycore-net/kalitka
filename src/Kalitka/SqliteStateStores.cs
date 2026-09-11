@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace Kalitka;
@@ -418,4 +419,119 @@ public sealed class SqliteConfigStore : IConfigStore
         }
         tx.Commit();
     }
+}
+
+/// <summary>Durable agent registry in SQLite (see <see cref="IAgentStore"/>).</summary>
+public sealed class SqliteAgentStore : IAgentStore
+{
+    private readonly string _cs;
+
+    public SqliteAgentStore(string path)
+    {
+        _cs = SqliteState.ConnectionString(path);
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS agents(
+              id TEXT PRIMARY KEY, display_name TEXT NOT NULL, platform TEXT NOT NULL,
+              hostname TEXT NOT NULL, status TEXT NOT NULL, secret_hash TEXT NOT NULL,
+              capabilities TEXT NOT NULL, allowed_resources TEXT NOT NULL, metadata TEXT NOT NULL,
+              created_at INTEGER NOT NULL, last_seen_at INTEGER, last_ip TEXT NOT NULL DEFAULT '',
+              revoked_at INTEGER);
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    public Agent? GetById(string id)
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT {Cols} FROM agents WHERE id=$id;";
+        cmd.Parameters.AddWithValue("$id", id);
+        using var r = cmd.ExecuteReader();
+        return r.Read() ? Read(r) : null;
+    }
+
+    public void Create(Agent a)
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at)
+            VALUES($id,$dn,$pf,$hn,$st,$sh,$cap,$res,$md,$ca,$ls,$ip,$rv)
+            ON CONFLICT(id) DO UPDATE SET
+              display_name=$dn,platform=$pf,hostname=$hn,status=$st,secret_hash=$sh,
+              capabilities=$cap,allowed_resources=$res,metadata=$md,created_at=$ca,
+              last_seen_at=$ls,last_ip=$ip,revoked_at=$rv;
+            """;
+        cmd.Parameters.AddWithValue("$id", a.Id);
+        cmd.Parameters.AddWithValue("$dn", a.DisplayName);
+        cmd.Parameters.AddWithValue("$pf", a.Platform);
+        cmd.Parameters.AddWithValue("$hn", a.Hostname);
+        cmd.Parameters.AddWithValue("$st", a.Status.ToString());
+        cmd.Parameters.AddWithValue("$sh", a.SecretHash);
+        cmd.Parameters.AddWithValue("$cap", JsonSerializer.Serialize(a.Capabilities));
+        cmd.Parameters.AddWithValue("$res", JsonSerializer.Serialize(a.AllowedResources));
+        cmd.Parameters.AddWithValue("$md", a.Metadata);
+        cmd.Parameters.AddWithValue("$ca", a.CreatedAt.ToUnixTimeMilliseconds());
+        cmd.Parameters.AddWithValue("$ls", (object?)a.LastSeenAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$ip", a.LastIp);
+        cmd.Parameters.AddWithValue("$rv", (object?)a.RevokedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
+    }
+
+    public bool SetStatus(string id, AgentStatus status, DateTimeOffset at)
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE agents SET status=$st, revoked_at=CASE WHEN $st='Revoked' THEN $at ELSE revoked_at END WHERE id=$id;";
+        cmd.Parameters.AddWithValue("$st", status.ToString());
+        cmd.Parameters.AddWithValue("$at", at.ToUnixTimeMilliseconds());
+        cmd.Parameters.AddWithValue("$id", id);
+        return cmd.ExecuteNonQuery() == 1;
+    }
+
+    public bool RotateSecret(string id, string newHash)
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE agents SET secret_hash=$sh WHERE id=$id;";
+        cmd.Parameters.AddWithValue("$sh", newHash);
+        cmd.Parameters.AddWithValue("$id", id);
+        return cmd.ExecuteNonQuery() == 1;
+    }
+
+    public void TouchLastSeen(string id, DateTimeOffset at, string ip)
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE agents SET last_seen_at=$ls, last_ip=$ip WHERE id=$id;";
+        cmd.Parameters.AddWithValue("$ls", at.ToUnixTimeMilliseconds());
+        cmd.Parameters.AddWithValue("$ip", ip);
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    public IReadOnlyList<Agent> Snapshot()
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT {Cols} FROM agents ORDER BY display_name;";
+        var list = new List<Agent>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) list.Add(Read(r));
+        return list;
+    }
+
+    private const string Cols =
+        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at";
+
+    private static Agent Read(SqliteDataReader r) => new(
+        r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3),
+        Enum.Parse<AgentStatus>(r.GetString(4)), r.GetString(5),
+        JsonSerializer.Deserialize<string[]>(r.GetString(6)) ?? Array.Empty<string>(),
+        JsonSerializer.Deserialize<string[]>(r.GetString(7)) ?? Array.Empty<string>(),
+        r.GetString(8), DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(9)),
+        r.IsDBNull(10) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(10)),
+        r.GetString(11), r.IsDBNull(12) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(12)));
 }

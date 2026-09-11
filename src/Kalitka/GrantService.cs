@@ -37,7 +37,7 @@ public sealed class GrantService
 
     /// <summary>The grant for an approved SSH request, issued once. Null if the
     /// request is not approved or is not an agent resource.</summary>
-    public async Task<string?> IssueGrant(string id, CancellationToken ct)
+    public async Task<string?> IssueGrant(string id, string actor, CancellationToken ct)
     {
         if (_gate.StateOf(id) != "approved") return null;
         var resource = _gate.ResourceOf(id) ?? "";
@@ -46,14 +46,17 @@ public sealed class GrantService
         var subject = _gate.SubjectOf(id) ?? "";
         var (grant, created) = _gate.EnsureGrant(id, _tokens.MintGrant(resource, id, subject, _grantMinutes));
         if (created && _tokens.Read(grant) is { } cap)
-            await _audit.Append(Event(AuditEvents.GrantCreated, subject, resource, id, cap.GrantId, ""), ct);
+            await _audit.Append(Event(AuditEvents.GrantCreated, actor, subject, resource, id, cap.GrantId, ""), ct);
         return grant;
     }
 
     public sealed record RedeemResult(bool Ok, string? SessionId = null, string? Error = null);
 
-    /// <summary>Redeem a grant exactly once and start a session.</summary>
-    public async Task<RedeemResult> Redeem(string token, string agentId, CancellationToken ct)
+    /// <summary>Redeem a grant exactly once and start a session. The redeeming agent
+    /// must itself be allowed to represent the granted resource — a valid grant is not
+    /// enough if this agent is not scoped to it. The canonical <c>agent_id</c> is
+    /// recorded on the session; the self-reported hostname is only metadata.</summary>
+    public async Task<RedeemResult> Redeem(string token, AgentIdentity agent, string reportedHostname, CancellationToken ct)
     {
         var cap = _tokens.Read(token);
         if (cap is null || cap.Purpose != "ssh-grant") return new(false, Error: "invalid");
@@ -62,11 +65,14 @@ public sealed class GrantService
         if (_gate.StateOf(cap.RequestId) != "approved" || _gate.ResourceOf(cap.RequestId) != cap.Resource)
             return new(false, Error: "not-approved");
 
+        // The redeeming agent must be scoped to this resource, valid grant or not.
+        if (!agent.MayRepresent(cap.Resource)) return new(false, Error: "forbidden");
+
         var sessionId = Guid.NewGuid().ToString("N");
         var session = new SessionRecord(sessionId, cap.GrantId, cap.RequestId, cap.Subject,
-            cap.Resource, string.IsNullOrEmpty(agentId) ? "-" : agentId, _clock.GetUtcNow(), null, "", "");
-        var redeemed = Event(AuditEvents.GrantRedeemed, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, "");
-        var started = Event(AuditEvents.SessionStarted, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, sessionId);
+            cap.Resource, agent.IsLegacy ? "-" : agent.AgentId, _clock.GetUtcNow(), null, "", reportedHostname);
+        var redeemed = Event(AuditEvents.GrantRedeemed, agent.Actor, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, "");
+        var started = Event(AuditEvents.SessionStarted, agent.Actor, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, sessionId);
 
         // The invariant: if the grant is consumed, the started session and both
         // audit events exist too. When state and audit share a transactional
@@ -99,7 +105,8 @@ public sealed class GrantService
     {
         var s = _sessions.Get(sessionId);
         if (s is null) return false;
-        var ended = Event(AuditEvents.SessionEnded, s.Subject, s.Resource, s.RequestId, s.GrantId, sessionId, outcome);
+        var actor = string.IsNullOrEmpty(s.AgentId) || s.AgentId == "-" ? "agent" : $"agent:{s.AgentId}";
+        var ended = Event(AuditEvents.SessionEnded, actor, s.Subject, s.Resource, s.RequestId, s.GrantId, sessionId, outcome);
 
         // Close and its event commit together when transactional; otherwise the
         // append is the best-effort second step. A repeat close matches no open row
@@ -119,8 +126,8 @@ public sealed class GrantService
         return true;
     }
 
-    private AuditEvent Event(string type, string subject, string resource, string requestId,
+    private AuditEvent Event(string type, string actor, string subject, string resource, string requestId,
         string grantId, string sessionId, string outcome = "") =>
-        new(Guid.NewGuid().ToString("N"), _clock.GetUtcNow(), type, "agent", subject, resource,
+        new(Guid.NewGuid().ToString("N"), _clock.GetUtcNow(), type, actor, subject, resource,
             requestId, grantId, "ssh", string.IsNullOrEmpty(outcome) ? sessionId : $"{sessionId} {outcome}");
 }

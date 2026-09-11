@@ -26,9 +26,10 @@ public sealed class PostgresStoreTests
         // Ensure the schema exists, then start each test from a clean slate.
         _ = new PgRequestStore(_cs); _ = new PgReplayStore(_cs);
         _ = new PgSessionStore(_cs); _ = new PgAuditStore(_cs); _ = new PgConfigStore(_cs);
+        _ = new PgAgentStore(_cs);
         using var conn = new NpgsqlConnection(_cs); conn.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "TRUNCATE requests, replay, sessions, audit, config;";
+        cmd.CommandText = "TRUNCATE requests, replay, sessions, audit, config, agents;";
         cmd.ExecuteNonQuery();
     }
 
@@ -254,6 +255,27 @@ public sealed class PostgresStoreTests
         });
         var final = JsonSerializer.Deserialize<List<int>>(new PgConfigStore(_cs!).Get("k")!)!;
         Assert.Equal(20, final.Count);   // advisory-locked RMW: no lost updates across writers
+    }
+
+    // ---- Agents -------------------------------------------------------------
+
+    [Fact]
+    public void Agent_persists_and_revoke_is_visible_to_another_instance()
+    {
+        if (Skip) return;
+        var a = new Agent("pg-a", "pg-a", "linux", "h", AgentStatus.Active, AgentSecrets.Hash("s"),
+            new[] { "ssh" }, new[] { "ssh:*" }, "", DateTimeOffset.UtcNow, null, "", null);
+        new PgAgentStore(_cs!).Create(a);
+
+        var got = new PgAgentStore(_cs!).GetById("pg-a")!;
+        Assert.Equal(AgentStatus.Active, got.Status);
+        Assert.True(AgentSecrets.Verify("s", got.SecretHash));
+        Assert.Equal(new[] { "ssh:*" }, got.AllowedResources);
+
+        Assert.True(new PgAgentStore(_cs!).SetStatus("pg-a", AgentStatus.Revoked, DateTimeOffset.UtcNow));
+        var seen = new PgAgentStore(_cs!).GetById("pg-a")!;   // a second node
+        Assert.Equal(AgentStatus.Revoked, seen.Status);
+        Assert.NotNull(seen.RevokedAt);
     }
 
     // ---- Wired app on Postgres ----------------------------------------------
