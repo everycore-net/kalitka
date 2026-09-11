@@ -7,15 +7,29 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-11
+
+### Added
+
+- **Pluggable geolocation with an on-box MaxMind option (privacy).** Geo is now a
+  seam, `IGeoLookup`, with three providers: a local MaxMind GeoLite2/GeoIP2 database
+  (`MaxMindGeoLookup`, set `GeoDbPath`) so **no visitor IP leaves the machine** —
+  the GDPR-friendly answer; the existing HTTP lookup (`HttpGeoLookup`, `GeoUrl`);
+  and none (`NullGeoLookup`). DI picks MaxMind when `GeoDbPath` is set (and the file
+  exists — otherwise it falls back rather than downing the gate), else HTTP when
+  `GeoUrl` is set, else off. Geolocation stays notification-only and never blocks or
+  fails a request. New setting `GeoDbPath`; new opt-in dependency `MaxMind.GeoIP2`,
+  loaded only on the MaxMind path.
+
 ### Changed
 
-- **License: MIT → AGPL-3.0-or-later.** From the next release onward kalitka is
-  licensed under the GNU Affero GPL v3 (see [LICENSE](LICENSE)). This closes the
-  "run a modified copy as a service without giving anything back" gap and is the
-  basis for an optional separate **commercial license**. Contributions are now made
-  under a Contributor License Agreement ([CLA.md](CLA.md), [CONTRIBUTING.md](CONTRIBUTING.md)),
-  which is what keeps dual-licensing possible. **Releases up to and including 0.11.0
-  remain available under the MIT License** — the change is not retroactive.
+- **License: MIT → AGPL-3.0-or-later.** kalitka is now licensed under the GNU Affero
+  GPL v3 (see [LICENSE](LICENSE)). This closes the "run a modified copy as a network
+  service without giving anything back" gap and is the basis for an optional separate
+  **commercial license**. Contributions are made under a Contributor License
+  Agreement ([CLA.md](CLA.md), [CONTRIBUTING.md](CONTRIBUTING.md)), which is what
+  keeps dual-licensing possible. **Releases up to and including 0.11.0 remain
+  available under the MIT License** — the change is not retroactive.
 
 ## [0.11.0] - 2026-09-10
 

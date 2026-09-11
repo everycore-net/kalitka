@@ -24,7 +24,7 @@ public sealed class GateService
     private readonly TelegramNotifier _notifier;
     private readonly IReadOnlyList<INotifier> _extra;
 
-    public GateService(ITelegramClient telegram, GeoLookup geo, AccessLists lists,
+    public GateService(ITelegramClient telegram, IGeoLookup geo, AccessLists lists,
         IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null,
         IEnumerable<INotifier>? extraNotifiers = null, IAuditStore? audit = null,
         IRequestStore? requestStore = null, IAtomicWork? atomic = null)
