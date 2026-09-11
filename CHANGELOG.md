@@ -7,6 +7,25 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-09-11
+
+### Added
+
+- **Key rotation and revocation (second slice of 0.20).** A registered signing key can
+  be **removed** from the agent detail page (`agent.key_removed` audited); the agent's
+  other keys and its shared secret keep working. **Rotation** is add-the-new then
+  remove-the-old: because an agent may hold several keys at once, both are valid during
+  the overlap, so there is no window without a working key.
+- **Enrolment can carry a public key.** A self-enrolling agent may submit its Ed25519
+  public key alongside the token and secret, so it starts key-based immediately (the
+  key is registered and `agent.key_added` audited).
+
+### Notes
+
+- Completes the signing-key lifecycle for signed requests. The per-agent shared secret
+  and the legacy global secret still work in parallel; dropping them (and the `/agent/*`
+  aliases) is later, after the migration window. Non-breaking.
+
 ## [0.20.1] - 2026-09-11
 
 ### Added

@@ -148,5 +148,41 @@ public class AgentSigningTests
             var other = NewKeyPair().priv;   // not the agent's key
             Assert.Equal(HttpStatusCode.Forbidden, (await Client().SendAsync(Signed(id, other, Body("s")))).StatusCode);
         }
+
+        [Fact]
+        public async Task Rotation_overlaps_then_the_removed_key_stops_working()
+        {
+            var svc = _f.Services.GetRequiredService<AgentService>();
+            var (pubA, privA) = NewKeyPair();
+            var (pubB, privB) = NewKeyPair();
+            var id = RegisterWithKey("sig-rotate", pubA);          // key_id "k1"
+            Assert.True(await svc.AddKey(id, pubB, "google:admin", default));
+
+            // Overlap: both keys authenticate.
+            Assert.Equal(HttpStatusCode.OK, (await Client().SendAsync(Signed(id, privA, Body("a")))).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await Client().SendAsync(Signed(id, privB, Body("b")))).StatusCode);
+
+            // Revoke the old key; only it stops working.
+            Assert.True(await svc.RemoveKey(id, "k1", "google:admin", default));
+            Assert.False(await svc.RemoveKey(id, "k1", "google:admin", default));   // already gone
+            Assert.Equal(HttpStatusCode.Forbidden, (await Client().SendAsync(Signed(id, privA, Body("a2")))).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await Client().SendAsync(Signed(id, privB, Body("b2")))).StatusCode);
+        }
+
+        [Fact]
+        public async Task Enrolment_can_carry_a_public_key_so_the_agent_starts_key_based()
+        {
+            var svc = _f.Services.GetRequiredService<AgentService>();
+            var token = await svc.CreateEnrollmentToken("e-keyed", "linux", new[] { "ssh" }, new[] { "ssh:*" }, "google:admin", default);
+            var (pub, priv) = NewKeyPair();
+
+            var res = await svc.Enroll(token, "sixteen-char-secret!", "host-e", "", default, pub);
+            Assert.True(res.Ok);
+            var agent = _f.Services.GetRequiredService<IAgentStore>().GetById(res.AgentId!)!;
+            Assert.Contains(agent.Keys, k => k.PublicKey == pub);
+
+            // The registered key authenticates a signed request end to end.
+            Assert.Equal(HttpStatusCode.OK, (await Client().SendAsync(Signed(res.AgentId!, priv, Body("e")))).StatusCode);
+        }
     }
 }

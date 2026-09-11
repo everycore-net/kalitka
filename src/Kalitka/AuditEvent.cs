@@ -42,6 +42,7 @@ public static class AuditEvents
     public const string AgentRevoked           = "agent.revoked";
     public const string AgentResourceDenied    = "agent.resource_denied";
     public const string AgentKeyAdded          = "agent.key_added";
+    public const string AgentKeyRemoved        = "agent.key_removed";
     public const string AgentProfileCreated    = "agent.profile_created";
     public const string AgentProfileUpdated    = "agent.profile_updated";
     public const string AgentProfileDeleted    = "agent.profile_deleted";
