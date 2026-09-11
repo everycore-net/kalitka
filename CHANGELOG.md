@@ -7,6 +7,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-09-11
+
+### Added
+
+- **Brand mark in the interfaces.** The kalitka logo (the cyan tile with the white
+  glyph) now appears as the favicon on every page and as the mark beside the wordmark
+  in the visitor pages, the admin top bar, and the admin login card. It is inlined as
+  a 64×64 PNG data-URI (`Brand.cs`), so the pages stay self-contained — no asset
+  request, nothing extra to fail. The visitor accent is aligned to the brand cyan
+  (`#11dbea`).
+
 ## [0.17.1] - 2026-09-11
 
 ### Fixed

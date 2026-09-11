@@ -78,5 +78,13 @@ public class LocalizationTests
             var html = await RequestPage(null);
             Assert.Contains("github.com/everycore-net/kalitka", html);   // AGPL §13 source offer
         }
+
+        [Fact]
+        public async Task Pages_carry_the_brand_icon_as_favicon_and_mark()
+        {
+            var html = await RequestPage(null);
+            Assert.Contains("rel=\"icon\"", html);              // favicon
+            Assert.Contains("data:image/png;base64,", html);   // inlined brand mark, no asset request
+        }
     }
 }
