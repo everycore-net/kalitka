@@ -462,3 +462,68 @@ public sealed class PgAtomicWork : IAtomicWork
         public void AppendAudit(AuditEvent e) => PgAuditStore.AppendCore(_conn, _tx, e);
     }
 }
+
+/// <summary>
+/// Durable config (lists / enforced / settings) in Postgres — one
+/// <c>config(key,value)</c> row per blob, shared by every instance. <see cref="Mutate"/>
+/// takes a transaction-scoped advisory lock on the key before its read-modify-write,
+/// so concurrent edits from different nodes serialise instead of clobbering each
+/// other. That is what makes config genuinely multi-node, not just shared storage.
+/// </summary>
+public sealed class PgConfigStore : IConfigStore
+{
+    private readonly string _cs;
+
+    public PgConfigStore(string cs)
+    {
+        _cs = cs;
+        using var conn = PgState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE IF NOT EXISTS config(key TEXT PRIMARY KEY, value TEXT NOT NULL);";
+        cmd.ExecuteNonQuery();
+    }
+
+    public string? Get(string key)
+    {
+        using var conn = PgState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT value FROM config WHERE key=@k;";
+        cmd.Parameters.AddWithValue("k", key);
+        return cmd.ExecuteScalar() as string;
+    }
+
+    public void Mutate(string key, Func<string?, string> update)
+    {
+        using var conn = PgState.Open(_cs);
+        using var tx = conn.BeginTransaction();
+
+        using (var lk = conn.CreateCommand())
+        {
+            lk.Transaction = tx;
+            // Serialise all Mutate for this key across the cluster; released at commit.
+            lk.CommandText = "SELECT pg_advisory_xact_lock(hashtext(@k));";
+            lk.Parameters.AddWithValue("k", key);
+            lk.ExecuteNonQuery();
+        }
+
+        string? cur;
+        using (var read = conn.CreateCommand())
+        {
+            read.Transaction = tx;
+            read.CommandText = "SELECT value FROM config WHERE key=@k;";
+            read.Parameters.AddWithValue("k", key);
+            cur = read.ExecuteScalar() as string;
+        }
+
+        var next = update(cur);
+        using (var up = conn.CreateCommand())
+        {
+            up.Transaction = tx;
+            up.CommandText = "INSERT INTO config(key,value) VALUES(@k,@v) ON CONFLICT(key) DO UPDATE SET value=@v;";
+            up.Parameters.AddWithValue("k", key);
+            up.Parameters.AddWithValue("v", next);
+            up.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+}

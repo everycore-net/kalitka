@@ -366,3 +366,56 @@ public sealed class SqliteSessionStore : ISessionStore
         r.IsDBNull(7) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(7)),
         r.GetString(8), r.GetString(9));
 }
+
+/// <summary>
+/// Durable config (lists / enforced / settings) in SQLite — one <c>config(key,value)</c>
+/// row per blob. <see cref="Mutate"/> runs in an IMMEDIATE transaction so the
+/// read-modify-write is serialised against other writers on the file: no lost list
+/// edits when two processes on the host change a list at once.
+/// </summary>
+public sealed class SqliteConfigStore : IConfigStore
+{
+    private readonly string _cs;
+
+    public SqliteConfigStore(string path)
+    {
+        _cs = SqliteState.ConnectionString(path);
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE IF NOT EXISTS config(key TEXT PRIMARY KEY, value TEXT NOT NULL);";
+        cmd.ExecuteNonQuery();
+    }
+
+    public string? Get(string key)
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT value FROM config WHERE key=$k;";
+        cmd.Parameters.AddWithValue("$k", key);
+        return cmd.ExecuteScalar() as string;
+    }
+
+    public void Mutate(string key, Func<string?, string> update)
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var tx = conn.BeginTransaction(deferred: false);   // IMMEDIATE: take the write lock up front
+        string? cur;
+        using (var read = conn.CreateCommand())
+        {
+            read.Transaction = tx;
+            read.CommandText = "SELECT value FROM config WHERE key=$k;";
+            read.Parameters.AddWithValue("$k", key);
+            cur = read.ExecuteScalar() as string;
+        }
+        var next = update(cur);
+        using (var up = conn.CreateCommand())
+        {
+            up.Transaction = tx;
+            up.CommandText = "INSERT INTO config(key,value) VALUES($k,$v) ON CONFLICT(key) DO UPDATE SET value=$v;";
+            up.Parameters.AddWithValue("$k", key);
+            up.Parameters.AddWithValue("$v", next);
+            up.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+}

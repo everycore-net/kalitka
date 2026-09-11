@@ -25,10 +25,10 @@ public sealed class PostgresStoreTests
         if (string.IsNullOrEmpty(_cs)) return;
         // Ensure the schema exists, then start each test from a clean slate.
         _ = new PgRequestStore(_cs); _ = new PgReplayStore(_cs);
-        _ = new PgSessionStore(_cs); _ = new PgAuditStore(_cs);
+        _ = new PgSessionStore(_cs); _ = new PgAuditStore(_cs); _ = new PgConfigStore(_cs);
         using var conn = new NpgsqlConnection(_cs); conn.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "TRUNCATE requests, replay, sessions, audit;";
+        cmd.CommandText = "TRUNCATE requests, replay, sessions, audit, config;";
         cmd.ExecuteNonQuery();
     }
 
@@ -226,6 +226,34 @@ public sealed class PostgresStoreTests
         var s = new PgSessionStore(_cs!).Get("s1");
         Assert.NotNull(s);
         Assert.Null(s!.EndedAt);
+    }
+
+    // ---- Config -------------------------------------------------------------
+
+    [Fact]
+    public void Config_is_visible_to_another_instance()
+    {
+        if (Skip) return;
+        new PgConfigStore(_cs!).Mutate("enforced", _ => "[\"sage.example.com\"]");
+        Assert.Equal("[\"sage.example.com\"]", new PgConfigStore(_cs!).Get("enforced"));
+    }
+
+    [Fact]
+    public void Config_concurrent_mutate_loses_nothing()
+    {
+        if (Skip) return;
+        new PgConfigStore(_cs!);   // ensure table
+        Parallel.For(0, 20, i =>
+        {
+            new PgConfigStore(_cs!).Mutate("k", cur =>
+            {
+                var list = string.IsNullOrEmpty(cur) ? new List<int>() : JsonSerializer.Deserialize<List<int>>(cur)!;
+                list.Add(i);
+                return JsonSerializer.Serialize(list);
+            });
+        });
+        var final = JsonSerializer.Deserialize<List<int>>(new PgConfigStore(_cs!).Get("k")!)!;
+        Assert.Equal(20, final.Count);   // advisory-locked RMW: no lost updates across writers
     }
 
     // ---- Wired app on Postgres ----------------------------------------------

@@ -57,8 +57,11 @@ public sealed class ApprovalEngine
     private readonly IRequestStore _store;
     private readonly IAuditStore _audit;
     private readonly IAtomicWork? _atomic;   // present only when state + audit share a transactional backend
+    private readonly IConfigStore _config;   // enforced hosts + runtime settings (shared across instances)
     private readonly HashSet<string> _enforced = new(StringComparer.OrdinalIgnoreCase);
-    private readonly object _enforcedLock = new();
+    private readonly object _enforcedLock = new();   // also guards the config cache
+    private static readonly TimeSpan ConfigTtl = TimeSpan.FromSeconds(10);
+    private DateTimeOffset _configLoadedAt = DateTimeOffset.MinValue;
     private readonly SessionService _sessions;
 
     private readonly List<IPNetwork> _trustedProxies;
@@ -73,7 +76,7 @@ public sealed class ApprovalEngine
 
     public ApprovalEngine(IGeoLookup geo, AccessLists lists, GateOptions options,
         ILogger log, TimeProvider clock, IRequestStore store, IAuditStore audit,
-        IAtomicWork? atomic = null)
+        IAtomicWork? atomic = null, IConfigStore? config = null)
     {
         _geo = geo;
         _lists = lists;
@@ -83,6 +86,7 @@ public sealed class ApprovalEngine
         _store = store;
         _audit = audit;
         _atomic = atomic;
+        _config = config ?? new JsonFileConfigStore(options, log);
 
         _sessions = new SessionService(_options.HmacSecret, clock);
         _sessionMinutes = _options.SessionMinutes;
@@ -92,8 +96,7 @@ public sealed class ApprovalEngine
         _bypassNetworks = ClientIp.ParseNetworks(_options.BypassNetworks,
             bad => _log.LogWarning("Ignoring malformed BypassNetworks entry {Entry}", bad));
 
-        LoadEnforced();
-        LoadSettings();
+        lock (_enforcedLock) RefreshConfig();
     }
 
     public IReadOnlyList<IPNetwork> TrustedProxies => _trustedProxies;
@@ -117,75 +120,73 @@ public sealed class ApprovalEngine
 
     public string CookieName => _options.CookieName;
     public string CookieDomain => _options.CookieDomain;
-    public int SessionMinutes => _sessionMinutes;
+    public int SessionMinutes { get { lock (_enforcedLock) { RefreshConfig(); return _sessionMinutes; } } }
     public string GateHost => _options.GateHost;
 
     // ---- Which hosts are armed ---------------------------------------------
 
-    private void LoadEnforced()
+    // Reload enforced hosts and settings from the shared config store if the cache
+    // has aged out, so a change on another instance shows up within the TTL. Caller
+    // holds _enforcedLock.
+    private void RefreshConfig()
+    {
+        if (_clock.GetUtcNow() - _configLoadedAt < ConfigTtl) return;
+        _enforced.Clear();
+        foreach (var h in LoadEnforcedSet()) _enforced.Add(h);
+        _sessionMinutes = LoadSessionMinutes();
+        _configLoadedAt = _clock.GetUtcNow();
+    }
+
+    private IEnumerable<string> LoadEnforcedSet()
     {
         try
         {
-            if (File.Exists(_options.EnforcedPath))
-            {
-                foreach (var h in JsonSerializer.Deserialize<List<string>>(File.ReadAllText(_options.EnforcedPath)) ?? new())
-                    _enforced.Add(h);
-            }
-            else
-            {
-                foreach (var h in _options.EnforcedHosts) _enforced.Add(h);
-            }
+            var blob = _config.Get("enforced");
+            if (blob is not null) return JsonSerializer.Deserialize<List<string>>(blob) ?? new();
         }
         catch (Exception e) { _log.LogWarning("Could not read enforced hosts: {Message}", e.Message); }
+        return _options.EnforcedHosts;   // the configured default until the operator changes it
     }
 
-    private void SaveEnforced()
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(_options.EnforcedPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(_options.EnforcedPath, JsonSerializer.Serialize(_enforced.ToList()));
-        }
-        catch (Exception e) { _log.LogWarning("Could not write enforced hosts: {Message}", e.Message); }
-    }
-
-    public bool IsEnforced(string host) { lock (_enforcedLock) return _enforced.Contains(host); }
+    public bool IsEnforced(string host) { lock (_enforcedLock) { RefreshConfig(); return _enforced.Contains(host); } }
 
     public void SetEnforced(string host, bool on)
     {
         lock (_enforcedLock)
         {
-            if (on) _enforced.Add(host); else _enforced.Remove(host);
-            SaveEnforced();
+            // Atomic read-modify-write on the shared store: base on the persisted set
+            // if any, else the configured default (so disarming a default host sticks).
+            _config.Mutate("enforced", cur =>
+            {
+                var set = cur is not null
+                    ? new HashSet<string>(JsonSerializer.Deserialize<List<string>>(cur) ?? new(), StringComparer.OrdinalIgnoreCase)
+                    : new HashSet<string>(_options.EnforcedHosts, StringComparer.OrdinalIgnoreCase);
+                if (on) set.Add(host); else set.Remove(host);
+                return JsonSerializer.Serialize(set.ToList());
+            });
+            _configLoadedAt = DateTimeOffset.MinValue;   // force the local cache to reload now
+            RefreshConfig();
         }
     }
 
-    public IReadOnlyList<string> EnforcedHosts() { lock (_enforcedLock) return _enforced.ToList(); }
+    public IReadOnlyList<string> EnforcedHosts() { lock (_enforcedLock) { RefreshConfig(); return _enforced.ToList(); } }
 
     // ---- Runtime settings ---------------------------------------------------
 
-    private void LoadSettings()
+    private int LoadSessionMinutes()
     {
         try
         {
-            if (!File.Exists(_options.SettingsPath)) return;
-            using var doc = JsonDocument.Parse(File.ReadAllText(_options.SettingsPath));
-            if (doc.RootElement.TryGetProperty("sessionMinutes", out var s) && s.TryGetInt32(out var m) && m > 0)
-                _sessionMinutes = m;
+            var blob = _config.Get("settings");
+            if (blob is not null)
+            {
+                using var doc = JsonDocument.Parse(blob);
+                if (doc.RootElement.TryGetProperty("sessionMinutes", out var s) && s.TryGetInt32(out var m) && m > 0)
+                    return m;
+            }
         }
         catch (Exception e) { _log.LogWarning("Could not read settings: {Message}", e.Message); }
-    }
-
-    private void SaveSettings()
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(_options.SettingsPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(_options.SettingsPath, JsonSerializer.Serialize(new { sessionMinutes = _sessionMinutes }));
-        }
-        catch (Exception e) { _log.LogWarning("Could not write settings: {Message}", e.Message); }
+        return _options.SessionMinutes;
     }
 
     // ---- Sessions: the signed tokens themselves live in SessionService -----
@@ -569,7 +570,11 @@ public sealed class ApprovalEngine
 
     public void SetSessionMinutes(int minutes)
     {
-        _sessionMinutes = minutes;
-        SaveSettings();
+        lock (_enforcedLock)
+        {
+            _config.Mutate("settings", _ => JsonSerializer.Serialize(new { sessionMinutes = minutes }));
+            _sessionMinutes = minutes;
+            _configLoadedAt = _clock.GetUtcNow();
+        }
     }
 }

@@ -149,18 +149,21 @@ consumed one-time tokens, and sessions — can be kept in SQLite too: set
 `StateDbPath` (e.g. `/data/state.db`). Then that state survives a restart, and its
 atomic transitions (resolve a request once, redeem a grant once, close a session
 once) hold across every process pointed at the same file — the single-node durable
-step. Empty keeps it in memory (single instance, lost on restart). True
-multi-*node* is the same seam with a Postgres backend; the transitions are already
-expressed as conditional SQL, so that is a mechanical swap, not a redesign. What is
-*not* yet shared: the enforced-hosts / settings / lists JSON and the in-memory
-rate-limit and mute windows — per-instance for now.
+step. Empty keeps it in memory (single instance, lost on restart).
 
-**Atomic state + audit.** Point `StateDbPath` and `AuditDbPath` at the *same*
-SQLite file and a decision and its audit event commit in one transaction: if the
-audit write fails, the state change rolls back with it — no access recorded without
-its history. Different files (or in-memory) keep the earlier behaviour, where the
-audit append is a best-effort second step. (Being rolled out per state/audit pair;
-`resolve → access.approved` is the first.)
+**Multi-node (Postgres).** For several kalitka instances behind a load balancer,
+point them all at one Postgres with `PostgresConnectionString` — it takes
+precedence over the SQLite paths and holds requests, replay, sessions, audit **and**
+config, so the cluster shares one state and the atomic transitions hold across it.
+Config (block/allow lists, armed hosts, settings) is shared too, via atomic
+read-modify-write; it propagates between nodes within a short cache window (~10s),
+not instantly. Still per-instance: the in-memory rate-limit and mute windows.
+
+**Atomic state + audit.** With Postgres, or with `StateDbPath` and `AuditDbPath`
+pointed at the *same* SQLite file, a decision and its audit event commit in one
+transaction: if the audit write fails, the state change rolls back with it — no
+access recorded without its history. Separate SQLite files (or in-memory) keep the
+earlier behaviour, where the audit append is a best-effort second step.
 
 **Who may operate it** is a separate allowlist from who may *enter* guarded hosts:
 
