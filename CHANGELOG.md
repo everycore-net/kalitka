@@ -7,6 +7,25 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-09-12
+
+### Added
+
+- **Migration observability (second slice of 0.21).** Each agent now records how it
+  last authenticated — `last_auth_method` (`signature` | `secret`), `last_key_id` (the
+  key that signed), and `last_signed_at` — updated on every authenticated call. The
+  `/admin/agents` list shows an **Auth** badge (green `signature` with the key id, or
+  amber `secret`) and the agent detail page shows the method and last-signed time. So,
+  before removing the shared secrets, it is objective which agents have moved to signed
+  authentication and which still use the fallback.
+
+### Notes
+
+- New `last_auth_method` / `last_key_id` / `last_signed_at` columns on the agents table
+  (SQLite + Postgres, added idempotently for upgrades); the store's `TouchLastSeen` is
+  replaced by `RecordAuth`, which also captures the method. Non-breaking. Server changed
+  — the gate needs a redeploy (schema migration is automatic).
+
 ## [0.21.1] - 2026-09-12
 
 ### Added

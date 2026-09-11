@@ -584,13 +584,18 @@ public sealed class PgAgentStore : IAgentStore
               capabilities TEXT NOT NULL, allowed_resources TEXT NOT NULL, metadata TEXT NOT NULL,
               created_at BIGINT NOT NULL, last_seen_at BIGINT, last_ip TEXT NOT NULL DEFAULT '',
               revoked_at BIGINT, tags TEXT NOT NULL DEFAULT '[]',
-              provenance TEXT NOT NULL DEFAULT '{}', keys TEXT NOT NULL DEFAULT '[]');
+              provenance TEXT NOT NULL DEFAULT '{}', keys TEXT NOT NULL DEFAULT '[]',
+              last_auth_method TEXT NOT NULL DEFAULT '', last_key_id TEXT NOT NULL DEFAULT '',
+              last_signed_at BIGINT);
             -- Columns added after the table first shipped (tags 0.16, provenance 0.17,
-            -- keys 0.20): add them idempotently so an older agents table does not make
-            -- every SELECT fail with "column does not exist".
+            -- keys 0.20, auth observability 0.21.2): add them idempotently so an older
+            -- agents table does not make every SELECT fail with "column does not exist".
             ALTER TABLE agents ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '[]';
             ALTER TABLE agents ADD COLUMN IF NOT EXISTS provenance TEXT NOT NULL DEFAULT '{}';
             ALTER TABLE agents ADD COLUMN IF NOT EXISTS keys TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_auth_method TEXT NOT NULL DEFAULT '';
+            ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_key_id TEXT NOT NULL DEFAULT '';
+            ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_signed_at BIGINT;
             """;
         cmd.ExecuteNonQuery();
     }
@@ -610,14 +615,15 @@ public sealed class PgAgentStore : IAgentStore
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys)
-            VALUES(@id,@dn,@pf,@hn,@st,@sh,@cap,@res,@md,@ca,@ls,@ip,@rv,@tags,@prov,@keys)
+            INSERT INTO agents(id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys,last_auth_method,last_key_id,last_signed_at)
+            VALUES(@id,@dn,@pf,@hn,@st,@sh,@cap,@res,@md,@ca,@ls,@ip,@rv,@tags,@prov,@keys,@lam,@lki,@lsa)
             ON CONFLICT(id) DO UPDATE SET
               display_name=EXCLUDED.display_name,platform=EXCLUDED.platform,hostname=EXCLUDED.hostname,
               status=EXCLUDED.status,secret_hash=EXCLUDED.secret_hash,capabilities=EXCLUDED.capabilities,
               allowed_resources=EXCLUDED.allowed_resources,metadata=EXCLUDED.metadata,created_at=EXCLUDED.created_at,
               last_seen_at=EXCLUDED.last_seen_at,last_ip=EXCLUDED.last_ip,revoked_at=EXCLUDED.revoked_at,
-              tags=EXCLUDED.tags,provenance=EXCLUDED.provenance,keys=EXCLUDED.keys;
+              tags=EXCLUDED.tags,provenance=EXCLUDED.provenance,keys=EXCLUDED.keys,
+              last_auth_method=EXCLUDED.last_auth_method,last_key_id=EXCLUDED.last_key_id,last_signed_at=EXCLUDED.last_signed_at;
             """;
         cmd.Parameters.AddWithValue("id", a.Id);
         cmd.Parameters.AddWithValue("dn", a.DisplayName);
@@ -635,6 +641,9 @@ public sealed class PgAgentStore : IAgentStore
         cmd.Parameters.AddWithValue("tags", JsonSerializer.Serialize(a.Tags));
         cmd.Parameters.AddWithValue("prov", JsonSerializer.Serialize(new AgentProvenance(a.ProfileId, a.ProfileHostname, a.AppliedProfileRevision)));
         cmd.Parameters.AddWithValue("keys", JsonSerializer.Serialize(a.Keys));
+        cmd.Parameters.AddWithValue("lam", a.LastAuthMethod);
+        cmd.Parameters.AddWithValue("lki", a.LastKeyId);
+        cmd.Parameters.AddWithValue("lsa", (object?)a.LastSignedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 
@@ -659,13 +668,19 @@ public sealed class PgAgentStore : IAgentStore
         return cmd.ExecuteNonQuery() == 1;
     }
 
-    public void TouchLastSeen(string id, DateTimeOffset at, string ip)
+    public void RecordAuth(string id, DateTimeOffset at, string ip, string method, string keyId)
     {
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE agents SET last_seen_at=@ls, last_ip=@ip WHERE id=@id;";
+        cmd.CommandText = """
+            UPDATE agents SET last_seen_at=@ls, last_ip=@ip, last_auth_method=@m, last_key_id=@k,
+              last_signed_at=CASE WHEN @m='signature' THEN @ls ELSE last_signed_at END
+            WHERE id=@id;
+            """;
         cmd.Parameters.AddWithValue("ls", at.ToUnixTimeMilliseconds());
         cmd.Parameters.AddWithValue("ip", ip);
+        cmd.Parameters.AddWithValue("m", method);
+        cmd.Parameters.AddWithValue("k", keyId);
         cmd.Parameters.AddWithValue("id", id);
         cmd.ExecuteNonQuery();
     }
@@ -682,7 +697,7 @@ public sealed class PgAgentStore : IAgentStore
     }
 
     private const string Cols =
-        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys";
+        "id,display_name,platform,hostname,status,secret_hash,capabilities,allowed_resources,metadata,created_at,last_seen_at,last_ip,revoked_at,tags,provenance,keys,last_auth_method,last_key_id,last_signed_at";
 
     private static Agent Read(NpgsqlDataReader r)
     {
@@ -701,6 +716,9 @@ public sealed class PgAgentStore : IAgentStore
             ProfileHostname = prov.ProfileHostname,
             AppliedProfileRevision = prov.AppliedProfileRevision,
             Keys = JsonSerializer.Deserialize<AgentKey[]>(r.GetString(15)) ?? Array.Empty<AgentKey>(),
+            LastAuthMethod = r.GetString(16),
+            LastKeyId = r.GetString(17),
+            LastSignedAt = r.IsDBNull(18) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(18)),
         };
     }
 }
