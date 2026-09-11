@@ -73,8 +73,16 @@ public class RbacTests : IClassFixture<GateFactory>
     [Fact]
     public async Task Full_admin_reaches_everything()
     {
-        foreach (var p in new[] { "/admin/requests", "/admin/history", "/admin/agents", "/admin/profiles", "/admin/reconcile" })
+        foreach (var p in new[] { "/admin/requests", "/admin/history", "/admin/agents", "/admin/profiles", "/admin/reconcile", "/admin/policies" })
             Assert.Equal(HttpStatusCode.OK, (await Get("admin@example.com", p)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Policies_are_full_admin_only()
+    {
+        RedirectsTo(await Get("approver@example.com", "/admin/policies"), "/admin/dashboard");
+        RedirectsTo(await Get("agentadmin@example.com", "/admin/policies"), "/admin/dashboard");
+        Assert.Equal(HttpStatusCode.Forbidden, (await Post("agentadmin@example.com", "/admin/policies/create")).StatusCode);
     }
 
     [Fact]

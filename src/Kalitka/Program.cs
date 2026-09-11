@@ -110,6 +110,7 @@ builder.Services.AddSingleton<GrantService>();
 builder.Services.AddSingleton<AgentService>();
 builder.Services.AddSingleton<ProfileService>();
 builder.Services.AddSingleton<ReconcileService>();
+builder.Services.AddSingleton<PolicyService>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -815,6 +816,39 @@ guarded.MapPost("/reconcile/apply-safe", async (HttpContext ctx, AdminAuth auth,
         await reconcile.Apply(p.AgentId, confirmExpansion: false, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/reconcile", false);
 }).RequirePermission(Perm.AgentsManage);
+
+// ---- Access policies (tag-driven, restrict-only) ---------------------------
+
+guarded.MapGet("/policies", (HttpContext ctx, AdminAuth auth, PolicyService policies) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AdminPages.Policies(who, policies.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+}).RequirePermission(Perm.PoliciesRead);
+
+guarded.MapPost("/policies/create", async (HttpContext ctx, AdminAuth auth, PolicyService policies) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var name = form["name"].ToString().Trim();
+    var resource = form["match_resource"].ToString().Trim();
+    if (name.Length == 0 || resource.Length == 0) return Results.BadRequest();
+    int.TryParse(form["required"].ToString(), out var required);
+    int.TryParse(form["grant_ttl"].ToString(), out var ttl);
+    var policy = new AccessPolicy(name, resource, Words(form["match_tags"].ToString()),
+        Math.Max(1, required), Math.Max(0, ttl));
+    await policies.Save(policy, who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/policies", false);
+}).RequirePermission(Perm.PoliciesManage);
+
+guarded.MapPost("/policies/delete", async (HttpContext ctx, AdminAuth auth, PolicyService policies) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await policies.Delete(form["name"].ToString().Trim(), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/policies", false);
+}).RequirePermission(Perm.PoliciesManage);
 
 guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>
 {
