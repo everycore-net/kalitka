@@ -91,6 +91,16 @@ builder.Services.AddSingleton<IConfigStore>(sp =>
     if (!string.IsNullOrWhiteSpace(o.StateDbPath)) return new SqliteConfigStore(o.StateDbPath);
     return new JsonFileConfigStore(o, sp.GetRequiredService<ILogger<JsonFileConfigStore>>());
 });
+// Agent registry: the durable identity/trust model for /agent/* callers. Same
+// backend precedence; in-memory default. Empty until agents are enrolled — the
+// legacy global AgentSecret keeps working alongside during migration.
+builder.Services.AddSingleton<IAgentStore>(sp =>
+{
+    var o = sp.GetRequiredService<IOptions<GateOptions>>().Value;
+    if (!string.IsNullOrWhiteSpace(o.PostgresConnectionString)) return new PgAgentStore(o.PostgresConnectionString);
+    if (!string.IsNullOrWhiteSpace(o.StateDbPath)) return new SqliteAgentStore(o.StateDbPath);
+    return new InMemoryAgentStore();
+});
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 // A second approval channel beside Telegram. GateService picks up every INotifier.
 builder.Services.AddSingleton<INotifier, EmailNotifier>();
@@ -296,10 +306,10 @@ app.MapPost("/internal/toggle", (HttpContext ctx, GateService gate) =>
 // like ssh:<host> and polls its state. Kalitka only decides yes/no; it brokers
 // no credentials and proxies nothing. The human approves through any channel.
 // ---------------------------------------------------------------------------
-app.MapPost("/agent/request", async (HttpContext ctx, GateService gate) =>
+app.MapPost("/agent/request", async (HttpContext ctx, GateService gate, IAgentStore agents) =>
 {
-    var denied = AgentGuard(ctx, gate);
-    if (denied is not null) return denied;
+    var identity = AuthenticateAgent(ctx, gate, agents);
+    if (identity is null) return Results.StatusCode(403);
 
     var form = await ctx.Request.ReadFormAsync();
     var host = form["host"].ToString().Trim();
@@ -311,44 +321,46 @@ app.MapPost("/agent/request", async (HttpContext ctx, GateService gate) =>
     if (host.Length is 0 or > 100 || host.Any(c => !(char.IsLetterOrDigit(c) || c is '.' or '-' or '_')))
         return Results.BadRequest();
 
-    // Resource binding: the agent may only raise what policy allows it to.
+    // The authenticated agent may only raise resources it is scoped to (capability
+    // + allowed resource) — a valid credential is not a licence for any resource.
     var resource = "ssh:" + host;
-    if (!gate.AgentMayRaise(resource)) return Results.StatusCode(403);
+    if (!identity.MayRepresent(resource)) return Results.StatusCode(403);
 
-    var (state, id) = await gate.RaiseAction(resource, user, ip, ctx.RequestAborted);
+    var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted);
     return Results.Json(new { id, state });
 });
 
-app.MapGet("/agent/status", async (HttpContext ctx, GateService gate, GrantService grants) =>
+app.MapGet("/agent/status", async (HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents) =>
 {
-    var denied = AgentGuard(ctx, gate);
-    if (denied is not null) return denied;
+    var identity = AuthenticateAgent(ctx, gate, agents);
+    if (identity is null) return Results.StatusCode(403);
 
     var id = ctx.Request.Query["id"].ToString();
     var state = gate.StateOf(id) ?? "gone";
     // On approval the agent gets a one-time grant to redeem — approval alone no
     // longer means "in". Issued once; repeated polls return the same grant.
-    var grant = state == "approved" ? await grants.IssueGrant(id, ctx.RequestAborted) : null;
+    var grant = state == "approved" ? await grants.IssueGrant(id, identity.Actor, ctx.RequestAborted) : null;
     return Results.Json(new { state, grant });
 });
 
 // Redeem the grant exactly once and start a session (grant.redeemed + session.started).
-app.MapPost("/agent/redeem", async (HttpContext ctx, GateService gate, GrantService grants) =>
+app.MapPost("/agent/redeem", async (HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents) =>
 {
-    var denied = AgentGuard(ctx, gate);
-    if (denied is not null) return denied;
+    var identity = AuthenticateAgent(ctx, gate, agents);
+    if (identity is null) return Results.StatusCode(403);
 
     var form = await ctx.Request.ReadFormAsync();
-    var result = await grants.Redeem(form["grant"].ToString(), form["agent"].ToString(), ctx.RequestAborted);
+    // "agent" is the self-reported hostname (metadata); identity is the canonical one.
+    var result = await grants.Redeem(form["grant"].ToString(), identity, form["agent"].ToString(), ctx.RequestAborted);
     if (result.Ok) return Results.Json(new { session_id = result.SessionId });
     return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
 });
 
 // The agent reports the session ended (session.ended).
-app.MapPost("/agent/session/end", async (HttpContext ctx, GateService gate, GrantService grants) =>
+app.MapPost("/agent/session/end", async (HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents) =>
 {
-    var denied = AgentGuard(ctx, gate);
-    if (denied is not null) return denied;
+    var identity = AuthenticateAgent(ctx, gate, agents);
+    if (identity is null) return Results.StatusCode(403);
 
     var form = await ctx.Request.ReadFormAsync();
     var ok = await grants.EndSession(form["session_id"].ToString(), form["outcome"].ToString(), ctx.RequestAborted);
@@ -730,13 +742,31 @@ static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
         ? Results.StatusCode(403)
         : null;
 
-// Separate secret and header from InternalGuard: an SSH host holds only this one,
-// so its compromise cannot reach the administrative /internal/* endpoints.
-static IResult? AgentGuard(HttpContext ctx, GateService gate) =>
-    string.IsNullOrEmpty(gate.AgentSecret)
-    || ctx.Request.Headers["X-Kalitka-Agent"].ToString() != gate.AgentSecret
-        ? Results.StatusCode(403)
-        : null;
+// Authenticate an /agent/* caller into an AgentIdentity, or null (→ 403). A
+// registered agent (X-Kalitka-Agent-Id + X-Kalitka-Agent-Secret) must be Active and
+// its secret must verify; otherwise the legacy global secret (X-Kalitka-Agent) is
+// accepted for migration. Authorization (capability + resource) is the identity's
+// job, done at each endpoint — never a self-reported value.
+static AgentIdentity? AuthenticateAgent(HttpContext ctx, GateService gate, IAgentStore agents)
+{
+    var id = ctx.Request.Headers["X-Kalitka-Agent-Id"].ToString();
+    var secret = ctx.Request.Headers["X-Kalitka-Agent-Secret"].ToString();
+    if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(secret))
+    {
+        var agent = agents.GetById(id);
+        if (agent is null || agent.Status != AgentStatus.Active) return null;   // unknown/disabled/revoked/pending
+        if (!AgentSecrets.Verify(secret, agent.SecretHash)) return null;
+        agents.TouchLastSeen(id, DateTimeOffset.UtcNow, ResolveIp(ctx, gate));
+        return AgentIdentity.FromAgent(agent);
+    }
+
+    // Legacy global secret — deprecated, kept for one migration window.
+    var legacy = ctx.Request.Headers["X-Kalitka-Agent"].ToString();
+    if (!string.IsNullOrEmpty(gate.AgentSecret) && legacy == gate.AgentSecret)
+        return AgentIdentity.Legacy(gate.AgentResources);
+
+    return null;
+}
 
 // Exposed so integration tests can host the real pipeline via WebApplicationFactory.
 public partial class Program;

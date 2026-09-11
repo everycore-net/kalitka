@@ -69,6 +69,7 @@ public sealed class GateService
     public IReadOnlyList<string> EnforcedHosts() => _engine.EnforcedHosts();
 
     public string AgentSecret => _engine.AgentSecret;
+    public string[] AgentResources => _engine.AgentResources;
     public bool AgentMayRaise(string resource) => _engine.AgentMayRaise(resource);
 
     public bool IsGuardedHost(string host) => _engine.IsGuardedHost(host);
@@ -90,9 +91,9 @@ public sealed class GateService
     /// as <c>ssh:prod-01</c>. Same judging and channels as a visitor request; the
     /// agent then polls <see cref="StateOf"/>.
     /// </summary>
-    public async Task<(string state, string id)> RaiseAction(string resource, string subject, string ip, CancellationToken ct)
+    public async Task<(string state, string id)> RaiseAction(string resource, string subject, string ip, string actor, CancellationToken ct)
     {
-        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, ct);
+        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct);
         await AnnounceAll(request, ct);
         return (state, id);
     }

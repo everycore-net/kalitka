@@ -173,18 +173,20 @@ public sealed class GateOptions
     public string InternalSecret { get; set; } = "";
 
     /// <summary>
-    /// Secret the SSH/PAM agents present on <c>/agent/*</c> — <b>separate</b> from
-    /// <see cref="InternalSecret"/>, so compromising one SSH host does not also
-    /// hand over the administrative endpoints (e.g. disarming a web host). Empty
-    /// disables <c>/agent/*</c>.
+    /// <b>Deprecated</b> (migration only): the single global secret SSH/PAM agents
+    /// present on <c>/agent/*</c> via <c>X-Kalitka-Agent</c>. Superseded by the agent
+    /// registry — per-agent id + secret (<c>X-Kalitka-Agent-Id</c> /
+    /// <c>X-Kalitka-Agent-Secret</c>), individually revocable and resource-scoped.
+    /// Kept working for one migration window; set it empty once every agent is
+    /// enrolled. Still <b>separate</b> from <see cref="InternalSecret"/>.
     /// </summary>
     public string AgentSecret { get; set; } = "";
 
     /// <summary>
-    /// Groundwork for per-agent resource binding: if set, an agent may only raise
-    /// requests for these resources (exact or scheme wildcard, e.g. <c>ssh:prod-01</c>
-    /// or <c>ssh:*</c>). Empty means any — fine for a PoC, but then a shared secret
-    /// can claim any resource; a per-agent credential registry comes later.
+    /// <b>Deprecated</b> (migration only): resource binding for the legacy global
+    /// <see cref="AgentSecret"/> caller (exact or scheme wildcard, e.g.
+    /// <c>ssh:prod-01</c> / <c>ssh:*</c>; empty = any). Registered agents carry their
+    /// own <c>allowed_resources</c> in the registry instead.
     /// </summary>
     public string[] AgentResources { get; set; } = Array.Empty<string>();
 

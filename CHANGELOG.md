@@ -7,6 +7,30 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Agent registry (0.14, first slice) — every agent is an identifiable, revocable,
+  resource-scoped principal.** `/agent/*` callers are now authenticated as a
+  registered `Agent` (`X-Kalitka-Agent-Id` + `X-Kalitka-Agent-Secret`) instead of a
+  single shared secret. An agent has a stable id, a hashed secret (PBKDF2), a status
+  (pending/active/disabled/revoked), a capability list and an allowed-resource list.
+  Authorization requires **both** the capability and a covering resource — a valid
+  credential is never a licence for a resource the agent isn't scoped to. `agent_id`
+  is propagated through the whole chain (`actor=agent:<id>` on
+  access.requested / grant.* / session.*; the session records the canonical id, the
+  self-reported hostname is only metadata).
+  - `IAgentStore` (in-memory / SQLite / Postgres, same backend precedence), separate
+    from the request store; a revoked agent is revoked across every node.
+  - The legacy global `AgentSecret` / `AgentResources` still work for one migration
+    window (now **deprecated**); registry creds take precedence.
+  - Tests: cross-agent credential rejected, disabled/revoked rejected, unauthorized
+    resource/capability denied, rotation invalidates the old secret, two nodes see a
+    revocation, `agent_id` survives request → grant → session → audit, legacy mode
+    still works. Postgres agent store exercised in CI.
+- Still to come in this line (later slices): one-time enrollment tokens, the
+  `/admin/agents` UI, heartbeat, credential-rotation endpoint, and the `/agent/v1/*`
+  namespace.
+
 ## [0.13.0] - 2026-09-11
 
 ### Added
