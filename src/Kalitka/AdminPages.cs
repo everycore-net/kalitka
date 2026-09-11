@@ -411,6 +411,28 @@ public static class AdminPages
               .Append(ApplyForm(drift, csrf));
         }
 
+        // Signing keys (0.20): an agent with a registered key signs its requests
+        // instead of sending the shared secret.
+        sb.Append("<h2>Signing keys</h2>");
+        if (a.Keys.Count == 0)
+            sb.Append("<p class=\"muted\">None — this agent still authenticates with its shared secret.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Key id</th><th>Public key (Ed25519)</th><th>Added</th></tr>");
+            foreach (var k in a.Keys)
+                sb.Append("<tr>")
+                  .Append($"<td><code>{H(k.KeyId)}</code></td>")
+                  .Append($"<td class=\"muted\"><code>{H(k.PublicKey)}</code></td>")
+                  .Append($"<td class=\"muted\">{k.AddedAt:yyyy-MM-dd HH:mm} UTC</td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
+        if (a.Status != AgentStatus.Revoked)
+            sb.Append("<form method=\"post\" action=\"" + $"/admin/agents/{H(a.Id)}/action" + "\" style=\"margin-top:10px\">")
+              .Append($"<input type=\"hidden\" name=\"verb\" value=\"addkey\"><input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+              .Append(In("public_key", "Ed25519 public key (base64, 32 bytes)"))
+              .Append("<div class=\"btns\"><button>Add key</button></div></form>");
+
         sb.Append("<p style=\"margin-top:18px\"><a class=\"row\" href=\"/admin/agents\">← back</a></p>");
         return Shell(who, sb.ToString());
     }

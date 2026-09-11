@@ -148,6 +148,20 @@ public sealed class AgentService
         return secret;
     }
 
+    /// <summary>Register an Ed25519 public key (base64, 32 bytes) for an agent, so it
+    /// can sign its requests instead of sending the shared secret. Add-only here;
+    /// rotation/revocation manage the set later. Idempotent on the same key.</summary>
+    public async Task<bool> AddKey(string id, string publicKeyBase64, string actor, CancellationToken ct)
+    {
+        var agent = _agents.GetById(id);
+        if (agent is null || !AgentSignatures.IsValidPublicKey(publicKeyBase64)) return false;
+        if (agent.Keys.Any(k => k.PublicKey == publicKeyBase64)) return true;   // already registered
+        var key = new AgentKey(AgentSignatures.NewKeyId(), publicKeyBase64, _clock.GetUtcNow());
+        _agents.Create(agent with { Keys = agent.Keys.Append(key).ToArray() });
+        await _audit.Append(Ev(AuditEvents.AgentKeyAdded, actor, id), ct);
+        return true;
+    }
+
     private AuditEvent Ev(string type, string actor, string agentId) =>
         new(Guid.NewGuid().ToString("N"), _clock.GetUtcNow(), type, actor,
             Subject: agentId, Resource: "", RequestId: "", GrantId: agentId, Channel: "agent", Metadata: "");

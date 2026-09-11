@@ -337,10 +337,10 @@ app.MapPost("/agent/enroll", AgentEnroll);
 app.MapPost("/agent/v1/heartbeat", AgentHeartbeat);
 app.MapPost("/agent/heartbeat", AgentHeartbeat);
 
-static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgentStore agents)
+static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgentStore agents, IReplayStore replay)
 {
     MarkAgentVersion(ctx);
-    var identity = AuthenticateAgent(ctx, gate, agents);
+    var identity = await AuthenticateAgent(ctx, gate, agents, replay);
     if (identity is null) return Results.StatusCode(403);
 
     var form = await ctx.Request.ReadFormAsync();
@@ -362,10 +362,10 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     return Results.Json(new { id, state });
 }
 
-static async Task<IResult> AgentPoll(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents)
+static async Task<IResult> AgentPoll(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents, IReplayStore replay)
 {
     MarkAgentVersion(ctx);
-    var identity = AuthenticateAgent(ctx, gate, agents);
+    var identity = await AuthenticateAgent(ctx, gate, agents, replay);
     if (identity is null) return Results.StatusCode(403);
 
     // v1: /agent/v1/requests/{id}; legacy: /agent/status?id=…
@@ -379,10 +379,10 @@ static async Task<IResult> AgentPoll(HttpContext ctx, GateService gate, GrantSer
 }
 
 // Redeem the grant exactly once and start a session (grant.redeemed + session.started).
-static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents)
+static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents, IReplayStore replay)
 {
     MarkAgentVersion(ctx);
-    var identity = AuthenticateAgent(ctx, gate, agents);
+    var identity = await AuthenticateAgent(ctx, gate, agents, replay);
     if (identity is null) return Results.StatusCode(403);
 
     var form = await ctx.Request.ReadFormAsync();
@@ -393,10 +393,10 @@ static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantS
 }
 
 // The agent reports the session ended (session.ended).
-static async Task<IResult> AgentSessionEnd(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents)
+static async Task<IResult> AgentSessionEnd(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents, IReplayStore replay)
 {
     MarkAgentVersion(ctx);
-    var identity = AuthenticateAgent(ctx, gate, agents);
+    var identity = await AuthenticateAgent(ctx, gate, agents, replay);
     if (identity is null) return Results.StatusCode(403);
 
     var form = await ctx.Request.ReadFormAsync();
@@ -419,10 +419,10 @@ static async Task<IResult> AgentEnroll(HttpContext ctx, AgentService agentsSvc)
 }
 
 // A liveness ping. last_seen is also updated on any authenticated agent call.
-static IResult AgentHeartbeat(HttpContext ctx, GateService gate, IAgentStore agents)
+static async Task<IResult> AgentHeartbeat(HttpContext ctx, GateService gate, IAgentStore agents, IReplayStore replay)
 {
     MarkAgentVersion(ctx);
-    return AuthenticateAgent(ctx, gate, agents) is null ? Results.StatusCode(403) : Results.Ok();
+    return await AuthenticateAgent(ctx, gate, agents, replay) is null ? Results.StatusCode(403) : Results.Ok();
 }
 
 // Flag the deprecated unprefixed /agent/* aliases so callers can migrate to /agent/v1.
@@ -869,6 +869,7 @@ guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminA
             return Results.Content(AdminPages.SecretShown(who, "Secret rotated",
                 $"New secret for agent {id}, shown once:", secret,
                 "The old secret no longer works. Update the host now."), "text/html; charset=utf-8");
+        case "addkey": await agentsSvc.AddKey(id, form["public_key"].ToString().Trim(), who.Actor, ctx.RequestAborted); break;
     }
     return Results.Redirect("/admin/agents/" + id, false);
 }).RequirePermission(Perm.AgentsManage);
@@ -1053,14 +1054,21 @@ static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
         ? Results.StatusCode(403)
         : null;
 
-// Authenticate an /agent/* caller into an AgentIdentity, or null (→ 403). A
-// registered agent (X-Kalitka-Agent-Id + X-Kalitka-Agent-Secret) must be Active and
-// its secret must verify; otherwise the legacy global secret (X-Kalitka-Agent) is
-// accepted for migration. Authorization (capability + resource) is the identity's
-// job, done at each endpoint — never a self-reported value.
-static AgentIdentity? AuthenticateAgent(HttpContext ctx, GateService gate, IAgentStore agents)
+// Authenticate an /agent/* caller into an AgentIdentity, or null (→ 403). Three paths,
+// most-preferred first: an Ed25519-signed request (no reusable secret in flight), the
+// registry shared secret (migration window), then the legacy global secret. In every
+// case the caller must be an Active registered agent (or the legacy global caller).
+// Authorization (capability + resource) is the identity's job, done at each endpoint.
+static async Task<AgentIdentity?> AuthenticateAgent(HttpContext ctx, GateService gate, IAgentStore agents, IReplayStore replay)
 {
     var id = ctx.Request.Headers["X-Kalitka-Agent-Id"].ToString();
+
+    // Preferred: a signed request. The agent proves possession of a private key whose
+    // public half is registered; nothing reusable is sent.
+    var sig = ctx.Request.Headers["X-Kalitka-Signature"].ToString();
+    if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(sig))
+        return await AuthenticateSigned(ctx, gate, agents, replay, id, sig);
+
     var secret = ctx.Request.Headers["X-Kalitka-Agent-Secret"].ToString();
     if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(secret))
     {
@@ -1077,6 +1085,48 @@ static AgentIdentity? AuthenticateAgent(HttpContext ctx, GateService gate, IAgen
         return AgentIdentity.Legacy(gate.AgentResources);
 
     return null;
+}
+
+// Verify an Ed25519-signed request against the agent's registered keys, with a
+// timestamp window and a single-use nonce so it cannot be replayed.
+static async Task<AgentIdentity?> AuthenticateSigned(HttpContext ctx, GateService gate, IAgentStore agents,
+    IReplayStore replay, string id, string sig)
+{
+    var agent = agents.GetById(id);
+    if (agent is null || agent.Status != AgentStatus.Active || agent.Keys.Count == 0) return null;
+
+    var tsRaw = ctx.Request.Headers["X-Kalitka-Timestamp"].ToString();
+    var nonce = ctx.Request.Headers["X-Kalitka-Nonce"].ToString();
+    var keyId = ctx.Request.Headers["X-Kalitka-Key-Id"].ToString();
+    if (!long.TryParse(tsRaw, out var ts) || string.IsNullOrEmpty(nonce)) return null;
+    if (Math.Abs(DateTimeOffset.UtcNow.ToUnixTimeSeconds() - ts) > AgentSignatures.MaxSkewSeconds) return null;
+
+    var bodyHash = await BodyHash(ctx.Request);
+    var message = AgentSignatures.CanonicalString(
+        ctx.Request.Method, ctx.Request.Path + ctx.Request.QueryString, bodyHash, tsRaw, nonce);
+
+    // The named key if given, otherwise any of the agent's keys.
+    var candidates = agent.Keys.Where(k => keyId.Length == 0 || k.KeyId == keyId);
+    if (!candidates.Any(k => AgentSignatures.Verify(k.PublicKey, message, sig))) return null;
+
+    // Valid signature — burn the nonce (only now, so a bad signature cannot exhaust
+    // the nonce space) so this exact request cannot be replayed inside the window.
+    var expiry = DateTimeOffset.FromUnixTimeSeconds(ts).AddSeconds(AgentSignatures.MaxSkewSeconds);
+    if (!await replay.TryConsumeAsync($"agentsig:{id}:{nonce}", expiry, ctx.RequestAborted)) return null;
+
+    agents.TouchLastSeen(id, DateTimeOffset.UtcNow, ResolveIp(ctx, gate));
+    return AgentIdentity.FromAgent(agent);
+}
+
+// The sha256 of the request body, leaving the body re-readable for form parsing.
+static async Task<string> BodyHash(HttpRequest req)
+{
+    req.EnableBuffering();
+    req.Body.Position = 0;
+    using var ms = new MemoryStream();
+    await req.Body.CopyToAsync(ms);
+    req.Body.Position = 0;
+    return AgentSignatures.Sha256Hex(ms.ToArray());
 }
 
 // Exposed so integration tests can host the real pipeline via WebApplicationFactory.

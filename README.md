@@ -291,6 +291,34 @@ channel; then the session continues, and it is in `/admin/history` against the
 proxy — it is a *second* factor, never the only one, and it is fail-closed, so
 keep a break-glass path. See [`deploy/ssh/`](deploy/ssh/).
 
+## Agent credentials
+
+An `/agent/*` caller authenticates one of three ways, most-preferred first:
+
+1. **Signed request (Ed25519).** The agent registers a public key (agent detail page)
+   and signs each request, so no reusable secret is ever sent. The signature
+   (`X-Kalitka-Signature`, base64) covers a canonical newline-joined string:
+
+   ```
+   kalitka-agent-sig-v1
+   {METHOD}
+   {path+query}
+   {sha256hex(body)}
+   {unix-timestamp}
+   {nonce}
+   ```
+
+   sent with `X-Kalitka-Agent-Id`, `X-Kalitka-Timestamp`, `X-Kalitka-Nonce` (and an
+   optional `X-Kalitka-Key-Id`). The signature binds the exact request, a 5-minute
+   timestamp window plus a single-use nonce stop replay. (Signed requests over mTLS on
+   purpose: they reach the app unchanged whatever the proxy does with TLS.)
+2. **Per-agent shared secret** (`X-Kalitka-Agent-Id` + `X-Kalitka-Agent-Secret`) —
+   registry credential, kept through the migration window.
+3. **Legacy global secret** (`X-Kalitka-Agent`) — deprecated, one migration window.
+
+Whichever path, authorization is still per-agent (capability + allowed resource); a
+valid credential is never a licence for a resource outside the agent's scope.
+
 ## Configuration
 
 Everything is environment variables prefixed `Kalitka__`. The full list with
