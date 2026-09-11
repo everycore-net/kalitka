@@ -7,6 +7,15 @@ namespace Kalitka;
 /// <see cref="Disabled"/> is temporary, <see cref="Revoked"/> is permanent.</summary>
 public enum AgentStatus { Pending, Active, Disabled, Revoked }
 
+/// <summary>Operation capabilities — what an agent may <i>do</i>, distinct from the
+/// resources it may do it to. Profiles express capabilities in this form.</summary>
+public static class AgentCapabilities
+{
+    public const string Request = "access.request";
+    public const string Redeem = "grant.redeem";
+    public const string SessionEnd = "session.end";
+}
+
 /// <summary>
 /// A registered workload/device identity Kalitka trusts to create and redeem
 /// requests — but only for the capabilities and resources it is scoped to. The
@@ -26,7 +35,12 @@ public sealed record Agent(
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastSeenAt,
     string LastIp,
-    DateTimeOffset? RevokedAt);
+    DateTimeOffset? RevokedAt)
+{
+    /// <summary>Free-form <c>key=value</c> tags (e.g. <c>environment=prod</c>) — grouping
+    /// metadata for now; policy semantics (per-group approver rules) come later.</summary>
+    public string[] Tags { get; init; } = Array.Empty<string>();
+}
 
 /// <summary>
 /// The authenticated caller on an <c>/agent/*</c> endpoint: either a registered
@@ -46,15 +60,21 @@ public sealed record AgentIdentity(
     /// binding means "any" (the pre-registry behaviour).</summary>
     public static AgentIdentity Legacy(string[] resources) => new("", Array.Empty<string>(), resources, true);
 
-    /// <summary>May this caller create/redeem for the resource? Registry agents need
-    /// both the scheme's capability and a covering allowed-resource; the legacy
-    /// caller keeps its resource-only binding.</summary>
-    public bool MayRepresent(string resource)
+    /// <summary>
+    /// May this caller act on the resource? Registry agents need a covering
+    /// allowed-resource AND a capability — either the resource <i>scheme</i>
+    /// (<c>ssh</c>, the pre-0.16 style) or the <i>operation</i> (<c>access.request</c>,
+    /// what profiles use); passing either form keeps both kinds of agent working. The
+    /// legacy global-secret caller keeps its resource-only binding.
+    /// </summary>
+    public bool MayRepresent(string resource, string operation = "")
     {
         if (IsLegacy) return AllowedResources.Count == 0 || Covered(resource);
-        var scheme = SchemeOf(resource);
-        return Capabilities.Any(c => string.Equals(c, scheme, StringComparison.OrdinalIgnoreCase)) && Covered(resource);
+        if (!Covered(resource)) return false;
+        return HasCap(SchemeOf(resource)) || (operation.Length > 0 && HasCap(operation));
     }
+
+    private bool HasCap(string c) => Capabilities.Any(x => string.Equals(x, c, StringComparison.OrdinalIgnoreCase));
 
     private bool Covered(string resource)
     {

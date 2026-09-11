@@ -66,7 +66,7 @@ public sealed class GrantService
             return new(false, Error: "not-approved");
 
         // The redeeming agent must be scoped to this resource, valid grant or not.
-        if (!agent.MayRepresent(cap.Resource)) return new(false, Error: "forbidden");
+        if (!agent.MayRepresent(cap.Resource, AgentCapabilities.Redeem)) return new(false, Error: "forbidden");
 
         var sessionId = Guid.NewGuid().ToString("N");
         var session = new SessionRecord(sessionId, cap.GrantId, cap.RequestId, cap.Subject,

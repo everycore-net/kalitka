@@ -37,12 +37,13 @@ public sealed class AgentService
 
     /// <summary>Create an active agent with a server-generated secret — returned once.</summary>
     public async Task<Created> Create(string displayName, string platform, string[] caps, string[] resources,
-        string actor, CancellationToken ct)
+        string actor, CancellationToken ct, string[]? tags = null)
     {
         var id = NewId();
         var secret = AgentSecrets.NewSecret();
         var agent = new Agent(id, Clean(displayName, id), Clean(platform, "generic"), "", AgentStatus.Active,
-            AgentSecrets.Hash(secret), Norm(caps), Norm(resources), "", _clock.GetUtcNow(), null, "", null);
+            AgentSecrets.Hash(secret), Norm(caps), Norm(resources), "", _clock.GetUtcNow(), null, "", null)
+        { Tags = Norm(tags ?? Array.Empty<string>()) };
         _agents.Create(agent);
         await _audit.Append(Ev(AuditEvents.AgentEnrolled, actor, id), ct);
         return new Created(agent, secret);
@@ -51,15 +52,33 @@ public sealed class AgentService
     /// <summary>Create a pending agent and a single-use enrollment token for it. The
     /// token is returned once; the agent self-enrols to become active.</summary>
     public async Task<string> CreateEnrollmentToken(string displayName, string platform, string[] caps,
-        string[] resources, string actor, CancellationToken ct)
+        string[] resources, string actor, CancellationToken ct, string[]? tags = null)
     {
         var id = NewId();
         var agent = new Agent(id, Clean(displayName, id), Clean(platform, "generic"), "", AgentStatus.Pending,
-            "", Norm(caps), Norm(resources), "", _clock.GetUtcNow(), null, "", null);
+            "", Norm(caps), Norm(resources), "", _clock.GetUtcNow(), null, "", null)
+        { Tags = Norm(tags ?? Array.Empty<string>()) };
         _agents.Create(agent);
         var token = _tokens.Mint("agent-enrollment", id, "", "", _enrollMinutes);
         await _audit.Append(Ev(AuditEvents.AgentEnrollmentCreated, actor, id), ct);
         return token;
+    }
+
+    // Profile-based creation: expand the profile's resource templates against the
+    // hostname ONCE and snapshot the result (capabilities, concrete resources, tags)
+    // onto the agent. The agent then owns those — editing the profile later never
+    // changes an already-created/enrolled agent.
+
+    public Task<Created> CreateFromProfile(AgentProfile p, string hostname, string? displayName, string actor, CancellationToken ct)
+    {
+        var (caps, resources, tags) = p.Expand(hostname);
+        return Create(Clean(displayName, hostname), p.Platform, caps, resources, actor, ct, tags);
+    }
+
+    public Task<string> CreateEnrollmentTokenFromProfile(AgentProfile p, string hostname, string actor, CancellationToken ct)
+    {
+        var (caps, resources, tags) = p.Expand(hostname);
+        return CreateEnrollmentToken(hostname, p.Platform, caps, resources, actor, ct, tags);
     }
 
     public sealed record EnrollResult(bool Ok, string? AgentId = null, string? Error = null);

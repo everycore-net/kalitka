@@ -40,6 +40,9 @@ public static class AuditEvents
     public const string AgentCredentialRotated = "agent.credential_rotated";
     public const string AgentRevoked           = "agent.revoked";
     public const string AgentResourceDenied    = "agent.resource_denied";
+    public const string AgentProfileCreated    = "agent.profile_created";
+    public const string AgentProfileUpdated    = "agent.profile_updated";
+    public const string AgentProfileDeleted    = "agent.profile_deleted";
 }
 
 /// <summary>A narrow query over the audit log: a few filters and a page.</summary>

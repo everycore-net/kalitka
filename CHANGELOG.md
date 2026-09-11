@@ -7,6 +7,36 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-11
+
+### Added
+
+- **Agent profiles — templates + classification, not a policy system.** A profile
+  carries capabilities, resource *templates* (`ssh:{hostname}`, `sudo:{hostname}`)
+  and default tags. Creating or enrolling an agent **from** a profile expands the
+  templates against a concrete hostname and **snapshots** the result onto the agent —
+  whose own capabilities/resources/tags stay the source of truth. Editing a profile
+  afterwards **never silently changes** an already-created agent (an explicit,
+  audited "apply to existing agents" is future work). Profiles are managed at
+  `/admin/profiles` and CRUD is audited
+  (`agent.profile_created` / `updated` / `deleted`).
+- **Tags / groups.** Agents carry `key:value` tags (from a profile or the create
+  form) for inventory and search; the `/admin/agents` list can be filtered by tag.
+  Metadata for now — policy selection ("all `env:prod` need two approvers") comes
+  later.
+- **Operation capabilities.** Capabilities may be operations (`access.request`,
+  `grant.redeem`, `session.end`), as profiles express them, in addition to the
+  pre-0.16 resource-scheme form (`ssh`). Either authorises a matching operation, so
+  agents created before 0.16 keep working.
+
+### Notes
+
+- Additive and non-breaking: the legacy global `AgentSecret` and scheme-capability
+  agents are unchanged. Tags round-trip in SQLite and Postgres; profiles live in the
+  shared config store (files / SQLite / Postgres). Tested: template expansion, the
+  profile snapshot, the **no-silent-expansion** invariant, profile-CRUD audit, and
+  operation-plus-scheme capability authorization.
+
 ## [0.15.0] - 2026-09-11
 
 ### Added
