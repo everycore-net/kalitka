@@ -14,10 +14,12 @@ public static class AdminPages
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
       + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
       + "<meta name=\"robots\" content=\"noindex,nofollow\">"
+      + "<link rel=\"icon\" type=\"image/png\" href=\"" + Brand.IconDataUri + "\">"
       + "<title>kalitka · control plane</title><style>"
       + "body{font-family:system-ui,sans-serif;background:#0f1117;color:#e6e6e6;margin:0}"
       + ".top{display:flex;align-items:center;gap:18px;padding:12px 20px;background:#141821;border-bottom:1px solid #262b36}"
       + ".top b{color:#fff}.top a{color:#9aa4b2;text-decoration:none;font-size:.9rem}.top a:hover{color:#fff}"
+      + ".brand{display:flex;align-items:center;gap:8px}.brand .mark{width:22px;height:22px;display:block}"
       + ".spacer{flex:1}.who{color:#6b7280;font-size:.8rem}"
       + ".wrap{max-width:920px;margin:0 auto;padding:22px 20px}"
       + "h1{font-size:1.2rem;margin:0 0 14px}h2{font-size:1rem;margin:22px 0 10px}"
@@ -45,7 +47,7 @@ public static class AdminPages
 
     private static string Shell(AdminIdentity who, string body) =>
         Head
-        + "<div class=\"top\"><b>kalitka</b>"
+        + $"<div class=\"top\"><span class=\"brand\"><img class=\"mark\" src=\"{Brand.IconDataUri}\" alt=\"\" width=\"22\" height=\"22\"><b>kalitka</b></span>"
         + "<a href=\"/admin/dashboard\">Dashboard</a>"
         + "<a href=\"/admin/requests\">Requests</a>"
         + "<a href=\"/admin/agents\">Agents</a>"
@@ -61,6 +63,7 @@ public static class AdminPages
 
     public static string Login(bool enabled, string? error = null) =>
         Head + "<div class=\"wrap\"><div class=\"card\">"
+        + $"<div class=\"brand\" style=\"margin-bottom:12px\"><img class=\"mark\" src=\"{Brand.IconDataUri}\" alt=\"\" width=\"28\" height=\"28\" style=\"width:28px;height:28px\"><b style=\"color:#fff;font-size:1.1rem\">kalitka</b></div>"
         + "<h1>kalitka · control plane</h1>"
         + (error is null ? "" : $"<p style=\"color:#ff6b6b\">{H(error)}</p>")
         + (enabled

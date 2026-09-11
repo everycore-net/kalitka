@@ -78,6 +78,7 @@ public class AdminPlaneTests : IClassFixture<GateFactory>
         var html = await res.Content.ReadAsStringAsync();
         Assert.Contains("Overview", html);
         Assert.Contains("admin@example.com", html);
+        Assert.Contains("data:image/png;base64,", html);   // brand mark in the top bar
     }
 
     [Fact]
