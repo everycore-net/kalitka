@@ -12,12 +12,13 @@ namespace Kalitka;
 public sealed class InMemoryRequestStore : IRequestStore
 {
     private readonly ConcurrentDictionary<string, PendingRequest> _requests = new();
+    private readonly ConcurrentDictionary<string, HashSet<string>> _approvals = new();
 
     public void Add(PendingRequest request) => _requests[request.Id] = request;
 
     public PendingRequest? Get(string id) => _requests.TryGetValue(id, out var r) ? r : null;
 
-    public void Remove(string id) => _requests.TryRemove(id, out _);
+    public void Remove(string id) { _requests.TryRemove(id, out _); _approvals.TryRemove(id, out _); }
 
     public IReadOnlyList<PendingRequest> Snapshot() => _requests.Values.ToList();
 
@@ -27,8 +28,19 @@ public sealed class InMemoryRequestStore : IRequestStore
     public void DropOlderThan(DateTimeOffset cutoff)
     {
         foreach (var kv in _requests)
-            if (kv.Value.Raised < cutoff) _requests.TryRemove(kv.Key, out _);
+            if (kv.Value.Raised < cutoff) { _requests.TryRemove(kv.Key, out _); _approvals.TryRemove(kv.Key, out _); }
     }
+
+    public int AddApprovalAndCount(string id, string principal)
+    {
+        var set = _approvals.GetOrAdd(id, _ => new HashSet<string>(StringComparer.Ordinal));
+        lock (set) { set.Add(principal); return set.Count; }
+    }
+
+    public int ApprovalCount(string id) =>
+        _approvals.TryGetValue(id, out var set) ? Lock(set) : 0;
+
+    private static int Lock(HashSet<string> set) { lock (set) return set.Count; }
 
     public bool TryResolve(string id, string toState, DateTimeOffset notOlderThan, out PendingRequest? request)
     {

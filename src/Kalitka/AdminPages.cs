@@ -133,10 +133,16 @@ public static class AdminPages
           .Append($"<tr><th>From</th><td>{H(Place(r))}</td></tr>")
           .Append($"<tr><th>Raised</th><td>{r.Raised:yyyy-MM-dd HH:mm:ss}</td></tr>")
           .Append($"<tr><th>State</th><td>{Pill(r.State)}</td></tr>")
+          .Append(r.RequiredApprovals > 1
+              ? $"<tr><th>Approvals</th><td>{r.ApprovalCount} / {r.RequiredApprovals} <span class=\"muted\">(policy quorum; distinct control-plane approvers)</span></td></tr>"
+              : "")
           .Append("</table>");
 
         if (r.State == "waiting")
         {
+            if (r.RequiredApprovals > 1)
+                sb.Append($"<p class=\"muted\">This resource needs {r.RequiredApprovals} distinct approvers. "
+                    + "Your approval counts once; a second person must also approve here.</p>");
             sb.Append("<div class=\"btns\">")
               .Append(Btn(r.Id, csrf, "ok", "Approve", "ok"))
               .Append(Btn(r.Id, csrf, "aip", "Approve + remember IP", ""))

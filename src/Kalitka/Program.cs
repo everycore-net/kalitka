@@ -358,7 +358,7 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     var resource = "ssh:" + host;
     if (!identity.MayRepresent(resource, AgentCapabilities.Request)) return Results.StatusCode(403);
 
-    var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted);
+    var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags);
     return Results.Json(new { id, state });
 }
 
@@ -555,6 +555,8 @@ app.MapPost("/action", async (HttpContext ctx, OneTimeTokenService tokens, IRepl
     {
         CallbackOutcome.Decided        => verb == "ok" ? s.ActionApproved : s.ActionDenied,
         CallbackOutcome.AlreadyHandled => s.ActionAlreadyDecided,
+        // Quorum: recorded but not enough approvers yet. The engine's text carries the count.
+        CallbackOutcome.Pending        => result.Text ?? s.ActionAlreadyDecided,
         _                              => s.ActionNoLongerWaiting
     };
     return Results.Content(Pages.Message(lang, s.DoneTitle, message), "text/html; charset=utf-8");

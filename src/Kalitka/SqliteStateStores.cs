@@ -48,10 +48,27 @@ public sealed class SqliteRequestStore : IRequestStore
             CREATE TABLE IF NOT EXISTS requests(
               id TEXT PRIMARY KEY, target TEXT NOT NULL, input TEXT NOT NULL,
               ip TEXT NOT NULL, resource TEXT NOT NULL, country TEXT, country_code TEXT,
-              city TEXT, raised INTEGER NOT NULL, state TEXT NOT NULL, grant_tok TEXT NOT NULL DEFAULT '');
+              city TEXT, raised INTEGER NOT NULL, state TEXT NOT NULL, grant_tok TEXT NOT NULL DEFAULT '',
+              required_approvals INTEGER NOT NULL DEFAULT 1);
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
+            -- Distinct approvers per request (quorum): (request_id, principal) is unique,
+            -- so an approval is idempotent and the count is a simple COUNT.
+            CREATE TABLE IF NOT EXISTS request_approvals(
+              request_id TEXT NOT NULL, principal TEXT NOT NULL,
+              PRIMARY KEY(request_id, principal));
             """;
         cmd.ExecuteNonQuery();
+
+        // required_approvals added after requests first shipped — add it idempotently
+        // so a database from an earlier version does not break on SELECT.
+        using var check = conn.CreateCommand();
+        check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name='required_approvals';";
+        if (Convert.ToInt64(check.ExecuteScalar()) == 0)
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE requests ADD COLUMN required_approvals INTEGER NOT NULL DEFAULT 1;";
+            alter.ExecuteNonQuery();
+        }
     }
 
     public void Add(PendingRequest r)
@@ -59,11 +76,11 @@ public sealed class SqliteRequestStore : IRequestStore
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok)
-            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals)
+            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant,$req)
             ON CONFLICT(id) DO UPDATE SET
               target=$target,input=$input,ip=$ip,resource=$resource,country=$country,
-              country_code=$cc,city=$city,raised=$raised,state=$state,grant_tok=$grant;
+              country_code=$cc,city=$city,raised=$raised,state=$state,grant_tok=$grant,required_approvals=$req;
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -91,9 +108,36 @@ public sealed class SqliteRequestStore : IRequestStore
     {
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM requests WHERE id=$id;";
+        cmd.CommandText = "DELETE FROM requests WHERE id=$id; DELETE FROM request_approvals WHERE request_id=$id;";
         cmd.Parameters.AddWithValue("$id", id);
         cmd.ExecuteNonQuery();
+    }
+
+    public int AddApprovalAndCount(string id, string principal)
+    {
+        using var conn = SqliteState.Open(_cs);
+        using (var ins = conn.CreateCommand())
+        {
+            ins.CommandText = "INSERT INTO request_approvals(request_id,principal) VALUES($id,$p) ON CONFLICT DO NOTHING;";
+            ins.Parameters.AddWithValue("$id", id);
+            ins.Parameters.AddWithValue("$p", principal);
+            ins.ExecuteNonQuery();
+        }
+        return CountApprovals(conn, id);
+    }
+
+    public int ApprovalCount(string id)
+    {
+        using var conn = SqliteState.Open(_cs);
+        return CountApprovals(conn, id);
+    }
+
+    private static int CountApprovals(SqliteConnection conn, string id)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM request_approvals WHERE request_id=$id;";
+        cmd.Parameters.AddWithValue("$id", id);
+        return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
     public IReadOnlyList<PendingRequest> Snapshot()
@@ -120,7 +164,10 @@ public sealed class SqliteRequestStore : IRequestStore
     {
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM requests WHERE raised<$cutoff;";
+        cmd.CommandText = """
+            DELETE FROM request_approvals WHERE request_id IN (SELECT id FROM requests WHERE raised<$cutoff);
+            DELETE FROM requests WHERE raised<$cutoff;
+            """;
         cmd.Parameters.AddWithValue("$cutoff", cutoff.ToUnixTimeMilliseconds());
         cmd.ExecuteNonQuery();
     }
@@ -173,7 +220,7 @@ public sealed class SqliteRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals";
 
     private static void Bind(SqliteCommand cmd, PendingRequest r)
     {
@@ -188,6 +235,7 @@ public sealed class SqliteRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("$raised", r.Raised.ToUnixTimeMilliseconds());
         cmd.Parameters.AddWithValue("$state", r.State);
         cmd.Parameters.AddWithValue("$grant", r.Grant);
+        cmd.Parameters.AddWithValue("$req", r.RequiredApprovals);
     }
 
     private static PendingRequest Read(SqliteDataReader r) => new()
@@ -195,7 +243,7 @@ public sealed class SqliteRequestStore : IRequestStore
         Id = r.GetString(0), Target = r.GetString(1), Input = r.GetString(2), Ip = r.GetString(3),
         Resource = r.GetString(4), Country = r.GetString(5), CountryCode = r.GetString(6),
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
-        State = r.GetString(9), Grant = r.GetString(10)
+        State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11)
     };
 }
 

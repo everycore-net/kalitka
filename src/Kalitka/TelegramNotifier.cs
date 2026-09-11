@@ -128,6 +128,12 @@ public sealed class TelegramNotifier : INotifier
                     $"{Describe(result.Request!)}\n\n<b>{result.Text}</b>", null, ct);
                 break;
 
+            case CallbackOutcome.Pending:
+                // Recorded, but a policy needs more distinct approvers (and a Telegram
+                // tap does not count toward a quorum > 1). Acknowledge, keep the buttons.
+                await _telegram.AnswerCallback(callbackId, result.Text ?? "recorded", ct);
+                break;
+
             case CallbackOutcome.Ignored:
             default:
                 await _telegram.AnswerCallback(callbackId, null, ct);
