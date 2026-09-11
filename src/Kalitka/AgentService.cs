@@ -96,12 +96,15 @@ public sealed class AgentService
     public sealed record EnrollResult(bool Ok, string? AgentId = null, string? Error = null);
 
     /// <summary>Self-enrolment: the agent presents its token and its own generated
-    /// secret plus metadata. The token is single-use; the pending agent goes active.</summary>
-    public async Task<EnrollResult> Enroll(string token, string secret, string hostname, string metadata, CancellationToken ct)
+    /// secret plus metadata, and may also register an Ed25519 public key so it starts
+    /// key-based straight away. The token is single-use; the pending agent goes active.</summary>
+    public async Task<EnrollResult> Enroll(string token, string secret, string hostname, string metadata,
+        CancellationToken ct, string? publicKey = null)
     {
         var cap = _tokens.Read(token);
         if (cap is null || cap.Purpose != "agent-enrollment") return new(false, Error: "invalid");
         if (string.IsNullOrWhiteSpace(secret) || secret.Length < 16) return new(false, Error: "weak-secret");
+        if (!string.IsNullOrEmpty(publicKey) && !AgentSignatures.IsValidPublicKey(publicKey)) return new(false, Error: "bad-key");
 
         var agent = _agents.GetById(cap.Resource);
         if (agent is null || agent.Status != AgentStatus.Pending) return new(false, Error: "not-pending");
@@ -110,6 +113,10 @@ public sealed class AgentService
         // re-enrol (or overwrite the secret of) an already-active agent.
         if (!await _replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ct)) return new(false, Error: "used");
 
+        var keys = string.IsNullOrEmpty(publicKey)
+            ? agent.Keys
+            : agent.Keys.Append(new AgentKey(AgentSignatures.NewKeyId(), publicKey, _clock.GetUtcNow())).ToArray();
+
         _agents.Create(agent with
         {
             Status = AgentStatus.Active,
@@ -117,8 +124,10 @@ public sealed class AgentService
             Hostname = Clean(hostname, agent.Hostname),
             Metadata = metadata ?? "",
             LastSeenAt = _clock.GetUtcNow(),
+            Keys = keys,
         });
         await _audit.Append(Ev(AuditEvents.AgentEnrolled, $"agent:{agent.Id}", agent.Id), ct);
+        if (keys.Count > agent.Keys.Count) await _audit.Append(Ev(AuditEvents.AgentKeyAdded, $"agent:{agent.Id}", agent.Id), ct);
         return new(true, agent.Id);
     }
 
@@ -159,6 +168,20 @@ public sealed class AgentService
         var key = new AgentKey(AgentSignatures.NewKeyId(), publicKeyBase64, _clock.GetUtcNow());
         _agents.Create(agent with { Keys = agent.Keys.Append(key).ToArray() });
         await _audit.Append(Ev(AuditEvents.AgentKeyAdded, actor, id), ct);
+        return true;
+    }
+
+    /// <summary>Remove (revoke) one registered key by id; the agent's other keys and
+    /// its shared secret keep working. Rotation is add-the-new then remove-the-old —
+    /// both keys are valid in the overlap, so there is no window without a working key.</summary>
+    public async Task<bool> RemoveKey(string id, string keyId, string actor, CancellationToken ct)
+    {
+        var agent = _agents.GetById(id);
+        if (agent is null) return false;
+        var remaining = agent.Keys.Where(k => k.KeyId != keyId).ToArray();
+        if (remaining.Length == agent.Keys.Count) return false;   // no such key
+        _agents.Create(agent with { Keys = remaining });
+        await _audit.Append(Ev(AuditEvents.AgentKeyRemoved, actor, id), ct);
         return true;
     }
 

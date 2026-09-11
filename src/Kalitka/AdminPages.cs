@@ -418,12 +418,16 @@ public static class AdminPages
             sb.Append("<p class=\"muted\">None — this agent still authenticates with its shared secret.</p>");
         else
         {
-            sb.Append("<table><tr><th>Key id</th><th>Public key (Ed25519)</th><th>Added</th></tr>");
+            sb.Append("<table><tr><th>Key id</th><th>Public key (Ed25519)</th><th>Added</th><th></th></tr>");
             foreach (var k in a.Keys)
                 sb.Append("<tr>")
                   .Append($"<td><code>{H(k.KeyId)}</code></td>")
                   .Append($"<td class=\"muted\"><code>{H(k.PublicKey)}</code></td>")
                   .Append($"<td class=\"muted\">{k.AddedAt:yyyy-MM-dd HH:mm} UTC</td>")
+                  .Append(a.Status == AgentStatus.Revoked ? "<td></td>"
+                      : "<td><form class=\"inline\" method=\"post\" action=\"" + $"/admin/agents/{H(a.Id)}/action" + "\">"
+                        + $"<input type=\"hidden\" name=\"verb\" value=\"removekey\"><input type=\"hidden\" name=\"key_id\" value=\"{H(k.KeyId)}\">"
+                        + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\"><button class=\"no\">Remove</button></form></td>")
                   .Append("</tr>");
             sb.Append("</table>");
         }

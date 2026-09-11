@@ -412,7 +412,8 @@ static async Task<IResult> AgentEnroll(HttpContext ctx, AgentService agentsSvc)
     var form = await ctx.Request.ReadFormAsync();
     var result = await agentsSvc.Enroll(
         form["token"].ToString(), form["secret"].ToString(),
-        form["hostname"].ToString(), form["metadata"].ToString(), ctx.RequestAborted);
+        form["hostname"].ToString(), form["metadata"].ToString(), ctx.RequestAborted,
+        form["public_key"].ToString());
     return result.Ok
         ? Results.Json(new { agent_id = result.AgentId })
         : Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 400);
@@ -870,6 +871,7 @@ guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminA
                 $"New secret for agent {id}, shown once:", secret,
                 "The old secret no longer works. Update the host now."), "text/html; charset=utf-8");
         case "addkey": await agentsSvc.AddKey(id, form["public_key"].ToString().Trim(), who.Actor, ctx.RequestAborted); break;
+        case "removekey": await agentsSvc.RemoveKey(id, form["key_id"].ToString().Trim(), who.Actor, ctx.RequestAborted); break;
     }
     return Results.Redirect("/admin/agents/" + id, false);
 }).RequirePermission(Perm.AgentsManage);
