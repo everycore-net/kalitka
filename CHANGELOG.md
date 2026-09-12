@@ -7,6 +7,35 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.3] - 2026-09-12
+
+### Added
+
+- **Reference DB-agent connector for SQL Server (`deploy/db/kalitka-db-agent`),
+  completing 0.23.** The local half of the database-JIT architecture: it runs next to
+  SQL Server, turns an approved kalitka grant into real, time-boxed SQL access, and
+  removes it when the grant ends. Core stays the control plane and holds no DB-admin
+  credential — *kalitka brokers authority, not database credentials.*
+  - Delegates the protocol (raise / poll / redeem / report) to `kalitka-agent`, so
+    every gate call is Ed25519-signed; it only adds the SQL provisioning.
+  - Maps a grant **profile** to a predefined SQL role **locally** (`DB_PROFILE_MAP`);
+    Core only ever sends the profile name, never raw SQL. Two modes: **ephemeral**
+    (default) creates a JIT login+user → role → `DROP`, returning the credential to the
+    operator out of band (Core never sees it); **grant** adds an existing `--login` to
+    the role and removes it after. **Always deprovisions on exit** (Enter, Ctrl-C, TTL,
+    or error) and reports `session.provisioned` / `provision-failed` / `session.ended`.
+  - Ships `roles.sql` (the predefined roles + the agent's **least-privilege**
+    provisioning identity — `ALTER ANY LOGIN`/`ALTER ANY USER` + `ALTER` on the mapped
+    roles, not `db_owner`/`sysadmin`; a **gMSA** with integrated auth on Windows),
+    a config example, and a README. Identifiers are charset-restricted and
+    bracket-quoted before reaching T-SQL.
+
+### Notes
+
+- Pure client-side connector — no `Kalitka.dll` change; the server-side protocol it
+  uses landed in 0.23.2. Next in 0.23: **PostgreSQL** + a general database-connector
+  abstraction.
+
 ## [0.23.2] - 2026-09-12
 
 ### Added

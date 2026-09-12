@@ -1,0 +1,34 @@
+# kalitka-db-agent config — /etc/kalitka/db-agent.conf (root:root, chmod 600).
+#
+# The gate URL and the agent credential are NOT here — they live in the shared
+# kalitka-agent config (/etc/kalitka-approve.conf), which this file's consumer also
+# sources. Enrol this host as a kalitka agent scoped to the db: resources it may
+# provision (capability `db`, e.g. allowed resource db:sql01/*), exactly like an SSH
+# agent — see ../ssh/README.md for keygen/enrol.
+
+# The SQL Server this agent provisions on. Must equal the <server> part of the
+# resource: a request for db:sql01/orders provisions here only if DB_SERVER=sql01.
+DB_SERVER=sql01
+
+# Default provisioning mode when --mode is not given.
+#   ephemeral  create a JIT login+user, drop it when the grant ends (preferred)
+#   grant      add an EXISTING principal (--login) to the role, remove it after
+DB_MODE=ephemeral
+
+# profile -> predefined SQL role. Whitespace-separated "profile:role" tokens. The
+# roles must already exist on the server (see roles.sql). Core only ever sends the
+# profile name; this mapping is entirely local.
+# (user-defined roles — see roles.sql. sql-dba is intentionally NOT mapped by
+# default: a least-privilege agent cannot hand out db_owner. Add it consciously.)
+DB_PROFILE_MAP="sql-readonly:kalitka_readonly sql-writer:kalitka_writer sql-order-correction:kalitka_order_correction"
+
+# How the agent authenticates to SQL Server AS ITS OWN least-privilege identity.
+# Windows / gMSA (preferred): integrated auth, no password anywhere:
+#   SQLCMD="sqlcmd -b -S ${DB_SERVER} -E"
+# Linux test box (SQL auth): a dedicated provisioning login; keep the password ONLY
+# here on the agent host, never in kalitka Core.
+#   SQLCMD="sqlcmd -b -S ${DB_SERVER} -U kalitka_agent -P '...' -C"
+SQLCMD="sqlcmd -b -S ${DB_SERVER} -E"
+
+# Optional: path to kalitka-agent if not the default.
+# KALITKA_AGENT_BIN=/usr/local/bin/kalitka-agent

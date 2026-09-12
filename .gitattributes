@@ -2,3 +2,4 @@
 # silently breaks execution on the Linux/POSIX hosts they run on.
 *.sh text eol=lf
 deploy/kalitka-agent text eol=lf
+deploy/db/kalitka-db-agent text eol=lf
