@@ -16,6 +16,11 @@ public sealed class PendingRequest
     public string State = "waiting";   // waiting | approved | denied
     public string Grant = "";          // the one-time grant token, issued once on approval
     public int RequiredApprovals = 1;  // quorum from policy at raise time; 1 = single approval
+    // Bounded-grant shape (0.23): the server-side profile the DB-agent (or other
+    // connector) applies, and an optional use cap. The grant ends on the first of its
+    // TTL, its uses being spent, or an explicit revoke.
+    public string Profile = "";        // e.g. sql-readonly | sql-writer | ssh (opaque to Core)
+    public int MaxUses = 0;            // 0 = unlimited (session + TTL bounded only)
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.
@@ -326,7 +331,7 @@ public sealed class ApprovalEngine
             return ("invalid", "", null);
         }
 
-        return await Raise("web:" + target, target, input, ip, "-", ct, Array.Empty<string>());
+        return await Raise("web:" + target, target, input, ip, "-", ct, Array.Empty<string>(), "", 0);
     }
 
     /// <summary>
@@ -338,11 +343,11 @@ public sealed class ApprovalEngine
     /// </summary>
     public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
         string resource, string subject, string ip, string actor, CancellationToken ct,
-        IReadOnlyList<string>? agentTags = null)
+        IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0)
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>());
+        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses);
     }
 
     /// <summary>
@@ -352,7 +357,7 @@ public sealed class ApprovalEngine
     /// </summary>
     private async Task<(string state, string id, PendingRequest? request)> Raise(
         string resource, string target, string subject, string ip, string actor, CancellationToken ct,
-        IReadOnlyList<string> agentTags)
+        IReadOnlyList<string> agentTags, string profile, int maxUses)
     {
         var place = await _geo.Locate(ip, ct);
 
@@ -402,7 +407,8 @@ public sealed class ApprovalEngine
         {
             Id = id, Target = target, Resource = resource, Input = subject, Ip = ip,
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
-            Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required
+            Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required,
+            Profile = profile ?? "", MaxUses = Math.Max(0, maxUses)
         };
         _store.Add(request);
 
@@ -429,6 +435,8 @@ public sealed class ApprovalEngine
     public string? TargetOf(string id) => _store.Get(id)?.Target;
     public string? ResourceOf(string id) => _store.Get(id)?.Resource;
     public string? SubjectOf(string id) => _store.Get(id)?.Input;
+    public string ProfileOf(string id) => _store.Get(id)?.Profile ?? "";
+    public int MaxUsesOf(string id) => _store.Get(id)?.MaxUses ?? 0;
 
     /// <summary>
     /// Issue the request's one-time grant exactly once (on first approval read),

@@ -21,9 +21,10 @@
 #   keygen                 create the private key if absent, print the public key
 #   pubkey                 print the public key (base64, for /admin/agents)
 #   enroll --token T [--host H]     enrol: generate a key, register its public key
-#   request --host H --user U [--ip IP]
+#   request --host H --user U [--ip IP] [--profile P] [--max-uses N]
 #   poll --id ID
 #   redeem --grant G [--agent NAME]
+#   use --session-id S       report one use of a bounded (max_uses) grant
 #   session-end --session-id S [--outcome O]
 #   heartbeat
 set -euo pipefail
@@ -125,7 +126,10 @@ case "$cmd" in
     host="$(arg host "$@")"; [ -n "$host" ] || host="$(hostname -s 2>/dev/null || hostname)"
     user="$(arg user "$@")"; [ -n "$user" ] || die "request needs --user"
     ip="$(arg ip "$@")"
-    call POST /agent/v1/requests "host=$(urlenc "$host")&user=$(urlenc "$user")&ip=$(urlenc "$ip")"
+    body="host=$(urlenc "$host")&user=$(urlenc "$user")&ip=$(urlenc "$ip")"
+    prof="$(arg profile "$@")"; [ -n "$prof" ] && body="$body&profile=$(urlenc "$prof")"
+    uses="$(arg max-uses "$@")"; [ -n "$uses" ] && body="$body&max_uses=$(urlenc "$uses")"
+    call POST /agent/v1/requests "$body"
     ;;
 
   poll)
@@ -143,6 +147,11 @@ case "$cmd" in
     sid="$(arg session-id "$@")"; [ -n "$sid" ] || die "session-end needs --session-id"
     out="$(arg outcome "$@")"; [ -n "$out" ] || out="closed"
     call POST /agent/v1/sessions/end "session_id=$(urlenc "$sid")&outcome=$(urlenc "$out")" >/dev/null
+    ;;
+
+  use)
+    sid="$(arg session-id "$@")"; [ -n "$sid" ] || die "use needs --session-id"
+    call POST /agent/v1/sessions/use "session_id=$(urlenc "$sid")"
     ;;
 
   heartbeat) call POST /agent/v1/heartbeat "" >/dev/null ;;

@@ -7,6 +7,35 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-09-12
+
+### Added
+
+- **Universal bounded-grant model (first slice of 0.23, DB-agnostic).** A grant — and
+  the session it starts — now carries a server-side **`profile`** (e.g. `sql-readonly`,
+  `sql-writer`; opaque to Core, the connector knows what it means) and an optional
+  **use budget**. A grant ends on the *first* of: its TTL / session expiry (0.22), its
+  uses being spent, or an explicit revoke. *Kalitka carries the authority (profile +
+  bounds); it never holds database credentials.*
+  - Agents raise a request with `profile` and `max_uses`; on redeem the response
+    returns the `profile` so the connector knows what to provision, and the session is
+    created with the use budget (`remaining_uses`, `-1` = unlimited).
+  - New **`POST /agent/v1/sessions/use`** reports one use of a granted operation:
+    it decrements the budget and, when it reaches zero, closes the session as `spent`
+    (the connector then revokes). An unlimited grant reports `-1` and never spends.
+  - `/admin/sessions` shows the profile and uses-left. `kalitka-agent` gains
+    `request --profile/--max-uses` and a `use --session-id` subcommand.
+
+### Notes
+
+- This is the DB-agnostic Core foundation. The SQL Server resource model + provisioning
+  protocol (0.23.2) and the reference DB-agent connector — existing-principal
+  `GRANT`/`REVOKE` or ephemeral login/role/`DROP`, under a least-privilege service
+  identity — (0.23.3) build on it. Core does not count arbitrary SQL transactions;
+  `max_uses` fits an unambiguous operation (e.g. a pre-approved stored procedure). New
+  columns `requests(profile, max_uses)` and `sessions(profile, remaining_uses)` in
+  SQLite + Postgres, added idempotently for upgrades. Non-breaking.
+
 ## [0.22.0] - 2026-09-12
 
 ### Added

@@ -332,6 +332,7 @@ app.MapPost("/agent/v1/grants/redeem", AgentRedeem);
 app.MapPost("/agent/redeem", AgentRedeem);
 app.MapPost("/agent/v1/sessions/end", AgentSessionEnd);
 app.MapPost("/agent/session/end", AgentSessionEnd);
+app.MapPost("/agent/v1/sessions/use", AgentSessionUse);
 app.MapPost("/agent/v1/enroll", AgentEnroll);
 app.MapPost("/agent/enroll", AgentEnroll);
 app.MapPost("/agent/v1/heartbeat", AgentHeartbeat);
@@ -358,7 +359,8 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     var resource = "ssh:" + host;
     if (!identity.MayRepresent(resource, AgentCapabilities.Request)) return Results.StatusCode(403);
 
-    var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags);
+    var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags,
+        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0);
     return Results.Json(new { id, state });
 }
 
@@ -388,8 +390,22 @@ static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantS
     var form = await ctx.Request.ReadFormAsync();
     // "agent" is the self-reported hostname (metadata); identity is the canonical one.
     var result = await grants.Redeem(form["grant"].ToString(), identity, form["agent"].ToString(), ctx.RequestAborted);
-    if (result.Ok) return Results.Json(new { session_id = result.SessionId });
+    if (result.Ok) return Results.Json(new { session_id = result.SessionId, profile = result.Profile });
     return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
+}
+
+// The connector reports one use of a granted operation (bounded-grant max_uses). When
+// the budget hits zero the session is closed ("spent") and the connector revokes.
+static async Task<IResult> AgentSessionUse(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents, IReplayStore replay)
+{
+    MarkAgentVersion(ctx);
+    var identity = await AuthenticateAgent(ctx, gate, agents, replay);
+    if (identity is null) return Results.StatusCode(403);
+
+    var form = await ctx.Request.ReadFormAsync();
+    var remaining = await grants.ReportUse(form["session_id"].ToString(), identity.Actor, ctx.RequestAborted);
+    if (remaining is null) return Results.Json(new { error = "not-open" }, statusCode: 409);
+    return Results.Json(new { remaining_uses = remaining, spent = remaining == 0 });
 }
 
 // The agent reports the session ended (session.ended).

@@ -36,8 +36,11 @@ public sealed class PgRequestStore : IRequestStore
               id TEXT PRIMARY KEY, target TEXT NOT NULL, input TEXT NOT NULL,
               ip TEXT NOT NULL, resource TEXT NOT NULL, country TEXT, country_code TEXT,
               city TEXT, raised BIGINT NOT NULL, state TEXT NOT NULL, grant_tok TEXT NOT NULL DEFAULT '',
-              required_approvals INT NOT NULL DEFAULT 1);
+              required_approvals INT NOT NULL DEFAULT 1,
+              profile TEXT NOT NULL DEFAULT '', max_uses INT NOT NULL DEFAULT 0);
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS required_approvals INT NOT NULL DEFAULT 1;
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS profile TEXT NOT NULL DEFAULT '';
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS max_uses INT NOT NULL DEFAULT 0;
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
             CREATE TABLE IF NOT EXISTS request_approvals(
               request_id TEXT NOT NULL, principal TEXT NOT NULL,
@@ -51,13 +54,13 @@ public sealed class PgRequestStore : IRequestStore
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals)
-            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses)
+            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses)
             ON CONFLICT(id) DO UPDATE SET
               target=EXCLUDED.target,input=EXCLUDED.input,ip=EXCLUDED.ip,resource=EXCLUDED.resource,
               country=EXCLUDED.country,country_code=EXCLUDED.country_code,city=EXCLUDED.city,
               raised=EXCLUDED.raised,state=EXCLUDED.state,grant_tok=EXCLUDED.grant_tok,
-              required_approvals=EXCLUDED.required_approvals;
+              required_approvals=EXCLUDED.required_approvals,profile=EXCLUDED.profile,max_uses=EXCLUDED.max_uses;
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -191,7 +194,7 @@ public sealed class PgRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses";
 
     private static void Bind(NpgsqlCommand cmd, PendingRequest r)
     {
@@ -207,6 +210,8 @@ public sealed class PgRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("state", r.State);
         cmd.Parameters.AddWithValue("grant", r.Grant);
         cmd.Parameters.AddWithValue("req", r.RequiredApprovals);
+        cmd.Parameters.AddWithValue("profile", r.Profile);
+        cmd.Parameters.AddWithValue("uses", r.MaxUses);
     }
 
     private static PendingRequest Read(NpgsqlDataReader r) => new()
@@ -214,7 +219,8 @@ public sealed class PgRequestStore : IRequestStore
         Id = r.GetString(0), Target = r.GetString(1), Input = r.GetString(2), Ip = r.GetString(3),
         Resource = r.GetString(4), Country = r.GetString(5), CountryCode = r.GetString(6),
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
-        State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11)
+        State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11),
+        Profile = r.GetString(12), MaxUses = r.GetInt32(13)
     };
 }
 
@@ -280,18 +286,22 @@ public sealed class PgSessionStore : ISessionStore
             CREATE TABLE IF NOT EXISTS sessions(
               session_id TEXT PRIMARY KEY, grant_id TEXT, request_id TEXT, subject TEXT,
               resource TEXT, agent_id TEXT, started BIGINT NOT NULL, ended BIGINT,
-              outcome TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '');
+              outcome TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '',
+              profile TEXT NOT NULL DEFAULT '', remaining_uses INT NOT NULL DEFAULT -1);
+            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS profile TEXT NOT NULL DEFAULT '';
+            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS remaining_uses INT NOT NULL DEFAULT -1;
             """;
         cmd.ExecuteNonQuery();
     }
 
     private const string InsertSql = """
-        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata)
-        VALUES(@sid,@grant,@req,@subject,@resource,@agent,@started,@ended,@outcome,@meta)
+        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses)
+        VALUES(@sid,@grant,@req,@subject,@resource,@agent,@started,@ended,@outcome,@meta,@profile,@uses)
         ON CONFLICT(session_id) DO UPDATE SET
           grant_id=EXCLUDED.grant_id,request_id=EXCLUDED.request_id,subject=EXCLUDED.subject,
           resource=EXCLUDED.resource,agent_id=EXCLUDED.agent_id,started=EXCLUDED.started,
-          ended=EXCLUDED.ended,outcome=EXCLUDED.outcome,metadata=EXCLUDED.metadata;
+          ended=EXCLUDED.ended,outcome=EXCLUDED.outcome,metadata=EXCLUDED.metadata,
+          profile=EXCLUDED.profile,remaining_uses=EXCLUDED.remaining_uses;
         """;
 
     private const string CloseSql =
@@ -318,6 +328,8 @@ public sealed class PgSessionStore : ISessionStore
         cmd.Parameters.AddWithValue("ended", (object?)s.EndedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("outcome", s.Outcome);
         cmd.Parameters.AddWithValue("meta", s.Metadata);
+        cmd.Parameters.AddWithValue("profile", s.Profile);
+        cmd.Parameters.AddWithValue("uses", s.RemainingUses);
         cmd.ExecuteNonQuery();
     }
 
@@ -360,14 +372,35 @@ public sealed class PgSessionStore : ISessionStore
         return list;
     }
 
+    public int? TrySpendUse(string sessionId)
+    {
+        using var conn = PgState.Open(_cs);
+        using (var upd = conn.CreateCommand())
+        {
+            upd.CommandText = "UPDATE sessions SET remaining_uses=remaining_uses-1 WHERE session_id=@id AND ended IS NULL AND remaining_uses>0 RETURNING remaining_uses;";
+            upd.Parameters.AddWithValue("id", sessionId);
+            var left = upd.ExecuteScalar();
+            if (left is not null) return Convert.ToInt32(left);
+        }
+        using var q = conn.CreateCommand();
+        q.CommandText = "SELECT remaining_uses FROM sessions WHERE session_id=@id AND ended IS NULL;";
+        q.Parameters.AddWithValue("id", sessionId);
+        var v = q.ExecuteScalar();
+        return v is not null && Convert.ToInt32(v) < 0 ? -1 : null;
+    }
+
     private const string Cols =
-        "session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata";
+        "session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses";
 
     private static SessionRecord Read(NpgsqlDataReader r) => new(
         r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
         DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(6)),
         r.IsDBNull(7) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(7)),
-        r.GetString(8), r.GetString(9));
+        r.GetString(8), r.GetString(9))
+    {
+        Profile = r.GetString(10),
+        RemainingUses = r.GetInt32(11),
+    };
 }
 
 /// <summary>Durable append-only audit in Postgres — the multi-node history.</summary>

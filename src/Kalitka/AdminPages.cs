@@ -340,16 +340,19 @@ public static class AdminPages
         if (sessions.Count == 0)
             return Shell(who, sb.Append("<p class=\"muted\">No sessions.</p>").ToString());
 
-        sb.Append("<table><tr><th>Subject</th><th>Resource</th><th>Agent</th><th>Started (UTC)</th>"
+        sb.Append("<table><tr><th>Subject</th><th>Resource</th><th>Profile</th><th>Agent</th><th>Started (UTC)</th>"
             + "<th>State</th><th>Request</th><th></th></tr>");
         foreach (var s in sessions)
         {
             var open = s.EndedAt is null;
             var state = open ? "<span class=\"pill approved\">open</span>"
                 : $"<span class=\"pill denied\">{H(s.Outcome.Length == 0 ? "closed" : s.Outcome)}</span>";
+            var profile = s.Profile.Length == 0 ? "<span class=\"muted\">—</span>"
+                : $"<code>{H(s.Profile)}</code>" + (s.RemainingUses >= 0 ? $" <span class=\"muted\">{s.RemainingUses} left</span>" : "");
             sb.Append("<tr>")
               .Append($"<td>{H(s.Subject)}</td>")
               .Append($"<td><code>{H(s.Resource)}</code></td>")
+              .Append($"<td>{profile}</td>")
               .Append($"<td class=\"muted\">{H(s.AgentId)}</td>")
               .Append($"<td class=\"muted\">{s.StartedAt:yyyy-MM-dd HH:mm:ss}</td>")
               .Append($"<td>{state}</td>")
