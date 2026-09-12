@@ -7,6 +7,31 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-13
+
+### Added
+
+- **Hardened SSH CA signer boundary.** The CA private key is a serious trust boundary —
+  anyone who can *read* it can mint certificates outside kalitka. The CA-touching step
+  (redeem + sign) is now the `kalitka-ssh sign-redeem` subcommand, meant to run as a
+  dedicated `kalitka-ca` user behind a privilege boundary:
+  - `KALITKA_SSH_SIGN_CMD` (e.g. `sudo -n -u kalitka-ca /usr/local/bin/kalitka-ssh`) makes
+    `connect`/`sign` delegate signing: the public key crosses on **stdin**, the certificate
+    comes back on **stdout**, so the calling operator's process never opens the CA key (no
+    cross-user file access needed). Unset = in-process signing (simple/dev only).
+  - `sign-redeem` takes **nothing** about the cert's contents from the caller — principal,
+    force-command, source-address and expiry all come from Core's redeem — so the boundary
+    protects the key material; cert contents were already bound to the approval (0.25.1/0.26).
+    A tight sudoers rule (`sign-redeem *` only) and an HSM/separate-host signer are the
+    documented next steps; this is the seam for them.
+
+### Notes
+
+- Pure client-side — no `Kalitka.dll` change; reuses redeem/provisioned/session-end. Both
+  paths verified with `ssh-keygen -L`: in-process and delegated (pubkey via stdin, cert via
+  stdout) produce the same cert — correct principal, `force-command` and `source-address`,
+  and no session-id leakage into the cert. Completes the deeper-SSH track (0.25–0.28).
+
 ## [0.27.0] - 2026-09-13
 
 ### Added
