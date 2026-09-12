@@ -416,6 +416,8 @@ public static class AdminPages
         // Signing keys (0.20): an agent with a registered key signs its requests
         // instead of sending the shared secret.
         sb.Append("<h2>Signing keys</h2>");
+        if (string.IsNullOrEmpty(a.SecretHash))
+            sb.Append("<p class=\"muted\">Secretless — this agent has no usable shared secret and can authenticate only by signature.</p>");
         if (a.Keys.Count == 0)
             sb.Append("<p class=\"muted\">None — this agent still authenticates with its shared secret.</p>");
         else

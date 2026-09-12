@@ -69,9 +69,10 @@ next is a decision to make *after* this slice works end to end.
    administrative `InternalSecret` — this host never holds a credential that can
    reach `/internal/*`. Prefer a key; drop the secret once signing works.
 
-   *Key-based enrolment (alternative to create+add-key):* mint an enrollment token in
-   the console, then `kalitka-agent enroll --token <token>` generates the key and
-   registers its public half in one step.
+   *Secretless enrolment (alternative to create+add-key):* mint an enrollment token in
+   the console, then `kalitka-agent enroll --token <token>` generates the key, registers
+   its public half, and sends **no secret** — the agent is created with no usable shared
+   secret at all, so signatures are the only way in.
 4. Add two lines to `/etc/pam.d/sshd`. The approve hook gates entry (after the
    auth/account stack); the session hook closes the session on logout:
    ```

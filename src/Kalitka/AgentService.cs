@@ -95,16 +95,21 @@ public sealed class AgentService
 
     public sealed record EnrollResult(bool Ok, string? AgentId = null, string? Error = null);
 
-    /// <summary>Self-enrolment: the agent presents its token and its own generated
-    /// secret plus metadata, and may also register an Ed25519 public key so it starts
-    /// key-based straight away. The token is single-use; the pending agent goes active.</summary>
+    /// <summary>Self-enrolment: the agent presents its token plus metadata and a
+    /// credential — an Ed25519 public key, a generated secret, or both. **Key-only is
+    /// secretless**: no usable shared secret is stored, so the agent can authenticate
+    /// only by signature. The token is single-use; the pending agent goes active.</summary>
     public async Task<EnrollResult> Enroll(string token, string secret, string hostname, string metadata,
         CancellationToken ct, string? publicKey = null)
     {
         var cap = _tokens.Read(token);
         if (cap is null || cap.Purpose != "agent-enrollment") return new(false, Error: "invalid");
-        if (string.IsNullOrWhiteSpace(secret) || secret.Length < 16) return new(false, Error: "weak-secret");
-        if (!string.IsNullOrEmpty(publicKey) && !AgentSignatures.IsValidPublicKey(publicKey)) return new(false, Error: "bad-key");
+
+        var hasKey = !string.IsNullOrEmpty(publicKey);
+        if (hasKey && !AgentSignatures.IsValidPublicKey(publicKey!)) return new(false, Error: "bad-key");
+        var hasSecret = !string.IsNullOrWhiteSpace(secret);
+        if (hasSecret && secret.Length < 16) return new(false, Error: "weak-secret");
+        if (!hasKey && !hasSecret) return new(false, Error: "no-credential");   // need a key or a secret
 
         var agent = _agents.GetById(cap.Resource);
         if (agent is null || agent.Status != AgentStatus.Pending) return new(false, Error: "not-pending");
@@ -113,21 +118,23 @@ public sealed class AgentService
         // re-enrol (or overwrite the secret of) an already-active agent.
         if (!await _replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ct)) return new(false, Error: "used");
 
-        var keys = string.IsNullOrEmpty(publicKey)
-            ? agent.Keys
-            : agent.Keys.Append(new AgentKey(AgentSignatures.NewKeyId(), publicKey, _clock.GetUtcNow())).ToArray();
+        var keys = hasKey
+            ? agent.Keys.Append(new AgentKey(AgentSignatures.NewKeyId(), publicKey!, _clock.GetUtcNow())).ToArray()
+            : agent.Keys;
 
         _agents.Create(agent with
         {
             Status = AgentStatus.Active,
-            SecretHash = AgentSecrets.Hash(secret),
+            // Secretless when only a key was given: an empty hash never verifies, so the
+            // agent has no usable shared secret — signatures are the only way in.
+            SecretHash = hasSecret ? AgentSecrets.Hash(secret) : "",
             Hostname = Clean(hostname, agent.Hostname),
             Metadata = metadata ?? "",
             LastSeenAt = _clock.GetUtcNow(),
             Keys = keys,
         });
         await _audit.Append(Ev(AuditEvents.AgentEnrolled, $"agent:{agent.Id}", agent.Id), ct);
-        if (keys.Count > agent.Keys.Count) await _audit.Append(Ev(AuditEvents.AgentKeyAdded, $"agent:{agent.Id}", agent.Id), ct);
+        if (hasKey) await _audit.Append(Ev(AuditEvents.AgentKeyAdded, $"agent:{agent.Id}", agent.Id), ct);
         return new(true, agent.Id);
     }
 
