@@ -49,7 +49,8 @@ public sealed class SqliteRequestStore : IRequestStore
               id TEXT PRIMARY KEY, target TEXT NOT NULL, input TEXT NOT NULL,
               ip TEXT NOT NULL, resource TEXT NOT NULL, country TEXT, country_code TEXT,
               city TEXT, raised INTEGER NOT NULL, state TEXT NOT NULL, grant_tok TEXT NOT NULL DEFAULT '',
-              required_approvals INTEGER NOT NULL DEFAULT 1);
+              required_approvals INTEGER NOT NULL DEFAULT 1,
+              profile TEXT NOT NULL DEFAULT '', max_uses INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
             -- Distinct approvers per request (quorum): (request_id, principal) is unique,
             -- so an approval is idempotent and the count is a simple COUNT.
@@ -59,14 +60,16 @@ public sealed class SqliteRequestStore : IRequestStore
             """;
         cmd.ExecuteNonQuery();
 
-        // required_approvals added after requests first shipped — add it idempotently
-        // so a database from an earlier version does not break on SELECT.
-        using var check = conn.CreateCommand();
-        check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name='required_approvals';";
-        if (Convert.ToInt64(check.ExecuteScalar()) == 0)
+        // Columns added after requests first shipped (required_approvals 0.19.3,
+        // profile/max_uses 0.23) — add idempotently so an older DB does not break on SELECT.
+        foreach (var (col, def) in new[] { ("required_approvals", "INTEGER NOT NULL DEFAULT 1"), ("profile", "TEXT NOT NULL DEFAULT ''"), ("max_uses", "INTEGER NOT NULL DEFAULT 0") })
         {
+            using var check = conn.CreateCommand();
+            check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name=$n;";
+            check.Parameters.AddWithValue("$n", col);
+            if (Convert.ToInt64(check.ExecuteScalar()) > 0) continue;
             using var alter = conn.CreateCommand();
-            alter.CommandText = "ALTER TABLE requests ADD COLUMN required_approvals INTEGER NOT NULL DEFAULT 1;";
+            alter.CommandText = $"ALTER TABLE requests ADD COLUMN {col} {def};";
             alter.ExecuteNonQuery();
         }
     }
@@ -76,11 +79,12 @@ public sealed class SqliteRequestStore : IRequestStore
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals)
-            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant,$req)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses)
+            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant,$req,$profile,$uses)
             ON CONFLICT(id) DO UPDATE SET
               target=$target,input=$input,ip=$ip,resource=$resource,country=$country,
-              country_code=$cc,city=$city,raised=$raised,state=$state,grant_tok=$grant,required_approvals=$req;
+              country_code=$cc,city=$city,raised=$raised,state=$state,grant_tok=$grant,required_approvals=$req,
+              profile=$profile,max_uses=$uses;
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -220,7 +224,7 @@ public sealed class SqliteRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses";
 
     private static void Bind(SqliteCommand cmd, PendingRequest r)
     {
@@ -236,6 +240,8 @@ public sealed class SqliteRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("$state", r.State);
         cmd.Parameters.AddWithValue("$grant", r.Grant);
         cmd.Parameters.AddWithValue("$req", r.RequiredApprovals);
+        cmd.Parameters.AddWithValue("$profile", r.Profile);
+        cmd.Parameters.AddWithValue("$uses", r.MaxUses);
     }
 
     private static PendingRequest Read(SqliteDataReader r) => new()
@@ -243,7 +249,8 @@ public sealed class SqliteRequestStore : IRequestStore
         Id = r.GetString(0), Target = r.GetString(1), Input = r.GetString(2), Ip = r.GetString(3),
         Resource = r.GetString(4), Country = r.GetString(5), CountryCode = r.GetString(6),
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
-        State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11)
+        State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11),
+        Profile = r.GetString(12), MaxUses = r.GetInt32(13)
     };
 }
 
@@ -323,17 +330,30 @@ public sealed class SqliteSessionStore : ISessionStore
             CREATE TABLE IF NOT EXISTS sessions(
               session_id TEXT PRIMARY KEY, grant_id TEXT, request_id TEXT, subject TEXT,
               resource TEXT, agent_id TEXT, started INTEGER NOT NULL, ended INTEGER,
-              outcome TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '');
+              outcome TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '',
+              profile TEXT NOT NULL DEFAULT '', remaining_uses INTEGER NOT NULL DEFAULT -1);
             """;
         cmd.ExecuteNonQuery();
+
+        // Bounded-grant columns added in 0.23; add idempotently for upgrades.
+        foreach (var (col, def) in new[] { ("profile", "TEXT NOT NULL DEFAULT ''"), ("remaining_uses", "INTEGER NOT NULL DEFAULT -1") })
+        {
+            using var chk = conn.CreateCommand();
+            chk.CommandText = "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name=$n;";
+            chk.Parameters.AddWithValue("$n", col);
+            if (Convert.ToInt64(chk.ExecuteScalar()) > 0) continue;
+            using var alt = conn.CreateCommand();
+            alt.CommandText = $"ALTER TABLE sessions ADD COLUMN {col} {def};";
+            alt.ExecuteNonQuery();
+        }
     }
 
     private const string InsertSql = """
-        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata)
-        VALUES($sid,$grant,$req,$subject,$resource,$agent,$started,$ended,$outcome,$meta)
+        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses)
+        VALUES($sid,$grant,$req,$subject,$resource,$agent,$started,$ended,$outcome,$meta,$profile,$uses)
         ON CONFLICT(session_id) DO UPDATE SET
           grant_id=$grant,request_id=$req,subject=$subject,resource=$resource,agent_id=$agent,
-          started=$started,ended=$ended,outcome=$outcome,metadata=$meta;
+          started=$started,ended=$ended,outcome=$outcome,metadata=$meta,profile=$profile,remaining_uses=$uses;
         """;
 
     private const string CloseSql =
@@ -361,6 +381,8 @@ public sealed class SqliteSessionStore : ISessionStore
         cmd.Parameters.AddWithValue("$ended", (object?)s.EndedAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$outcome", s.Outcome);
         cmd.Parameters.AddWithValue("$meta", s.Metadata);
+        cmd.Parameters.AddWithValue("$profile", s.Profile);
+        cmd.Parameters.AddWithValue("$uses", s.RemainingUses);
         cmd.ExecuteNonQuery();
     }
 
@@ -406,14 +428,43 @@ public sealed class SqliteSessionStore : ISessionStore
         return list;
     }
 
+    public int? TrySpendUse(string sessionId)
+    {
+        using var conn = SqliteState.Open(_cs);
+        // One guarded UPDATE: only an open session with uses left decrements, so a
+        // concurrent spend cannot take the count below zero or spend a closed session.
+        using (var upd = conn.CreateCommand())
+        {
+            upd.CommandText = "UPDATE sessions SET remaining_uses=remaining_uses-1 WHERE session_id=$id AND ended IS NULL AND remaining_uses>0;";
+            upd.Parameters.AddWithValue("$id", sessionId);
+            if (upd.ExecuteNonQuery() == 1)
+            {
+                using var read = conn.CreateCommand();
+                read.CommandText = "SELECT remaining_uses FROM sessions WHERE session_id=$id;";
+                read.Parameters.AddWithValue("$id", sessionId);
+                return Convert.ToInt32(read.ExecuteScalar());
+            }
+        }
+        // Nothing decremented: unlimited (-1) on an open session, else not spendable.
+        using var q = conn.CreateCommand();
+        q.CommandText = "SELECT remaining_uses FROM sessions WHERE session_id=$id AND ended IS NULL;";
+        q.Parameters.AddWithValue("$id", sessionId);
+        var v = q.ExecuteScalar();
+        return v is not null && Convert.ToInt32(v) < 0 ? -1 : null;
+    }
+
     private const string Cols =
-        "session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata";
+        "session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses";
 
     private static SessionRecord Read(SqliteDataReader r) => new(
         r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
         DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(6)),
         r.IsDBNull(7) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(7)),
-        r.GetString(8), r.GetString(9));
+        r.GetString(8), r.GetString(9))
+    {
+        Profile = r.GetString(10),
+        RemainingUses = r.GetInt32(11),
+    };
 }
 
 /// <summary>

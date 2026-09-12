@@ -62,12 +62,14 @@ public sealed class GrantService
         return grant;
     }
 
-    public sealed record RedeemResult(bool Ok, string? SessionId = null, string? Error = null);
+    public sealed record RedeemResult(bool Ok, string? SessionId = null, string? Error = null, string Profile = "");
 
     /// <summary>Redeem a grant exactly once and start a session. The redeeming agent
     /// must itself be allowed to represent the granted resource — a valid grant is not
     /// enough if this agent is not scoped to it. The canonical <c>agent_id</c> is
-    /// recorded on the session; the self-reported hostname is only metadata.</summary>
+    /// recorded on the session; the self-reported hostname is only metadata. The
+    /// session carries the bounded-grant profile and use budget, and the result returns
+    /// the profile so the connector knows what to provision.</summary>
     public async Task<RedeemResult> Redeem(string token, AgentIdentity agent, string reportedHostname, CancellationToken ct)
     {
         var cap = _tokens.Read(token);
@@ -80,9 +82,12 @@ public sealed class GrantService
         // The redeeming agent must be scoped to this resource, valid grant or not.
         if (!agent.MayRepresent(cap.Resource, AgentCapabilities.Redeem)) return new(false, Error: "forbidden");
 
+        var profile = _gate.ProfileOf(cap.RequestId);
+        var maxUses = _gate.MaxUsesOf(cap.RequestId);
         var sessionId = Guid.NewGuid().ToString("N");
         var session = new SessionRecord(sessionId, cap.GrantId, cap.RequestId, cap.Subject,
-            cap.Resource, agent.IsLegacy ? "-" : agent.AgentId, _clock.GetUtcNow(), null, "", reportedHostname);
+            cap.Resource, agent.IsLegacy ? "-" : agent.AgentId, _clock.GetUtcNow(), null, "", reportedHostname)
+        { Profile = profile, RemainingUses = maxUses > 0 ? maxUses : -1 };
         var redeemed = Event(AuditEvents.GrantRedeemed, agent.Actor, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, "");
         var started = Event(AuditEvents.SessionStarted, agent.Actor, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, sessionId);
 
@@ -102,14 +107,25 @@ public sealed class GrantService
                 scope.AppendAudit(started);
                 return true;
             }, ct);
-            return ok ? new(true, sessionId) : new(false, Error: "used");
+            return ok ? new(true, sessionId, Profile: profile) : new(false, Error: "used");
         }
 
         if (!await _replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ct)) return new(false, Error: "used");
         _sessions.Start(session);
         await _audit.Append(redeemed, ct);
         await _audit.Append(started, ct);
-        return new(true, sessionId);
+        return new(true, sessionId, Profile: profile);
+    }
+
+    /// <summary>Report one use of a granted operation (the bounded-grant `max_uses`).
+    /// Returns the uses left; when it hits 0 the session is closed (`spent`) — the
+    /// connector then revokes provisioning. Unlimited sessions (no `max_uses`) always
+    /// report -1. Null = no such open session (or already spent).</summary>
+    public async Task<int?> ReportUse(string sessionId, string actor, CancellationToken ct)
+    {
+        var remaining = _sessions.TrySpendUse(sessionId);
+        if (remaining is 0) await EndSession(sessionId, "spent", ct, actor);
+        return remaining;
     }
 
     /// <summary>A live, queryable view of sessions (open and recently closed).</summary>
