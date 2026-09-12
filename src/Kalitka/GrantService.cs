@@ -65,7 +65,8 @@ public sealed class GrantService
         return grant;
     }
 
-    public sealed record RedeemResult(bool Ok, string? SessionId = null, string? Error = null, string Profile = "");
+    public sealed record RedeemResult(bool Ok, string? SessionId = null, string? Error = null,
+        string Profile = "", DateTimeOffset? ExpiresAt = null);
 
     /// <summary>Redeem a grant exactly once and start a session. The redeeming agent
     /// must itself be allowed to represent the granted resource — a valid grant is not
@@ -90,7 +91,7 @@ public sealed class GrantService
         var sessionId = Guid.NewGuid().ToString("N");
         var session = new SessionRecord(sessionId, cap.GrantId, cap.RequestId, cap.Subject,
             cap.Resource, agent.IsLegacy ? "-" : agent.AgentId, _clock.GetUtcNow(), null, "", reportedHostname)
-        { Profile = profile, RemainingUses = maxUses > 0 ? maxUses : -1 };
+        { Profile = profile, RemainingUses = maxUses > 0 ? maxUses : -1, ExpiresAt = cap.ExpiresAt };
         var redeemed = Event(AuditEvents.GrantRedeemed, agent.Actor, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, "");
         var started = Event(AuditEvents.SessionStarted, agent.Actor, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, sessionId);
 
@@ -110,14 +111,14 @@ public sealed class GrantService
                 scope.AppendAudit(started);
                 return true;
             }, ct);
-            return ok ? new(true, sessionId, Profile: profile) : new(false, Error: "used");
+            return ok ? new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt) : new(false, Error: "used");
         }
 
         if (!await _replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ct)) return new(false, Error: "used");
         _sessions.Start(session);
         await _audit.Append(redeemed, ct);
         await _audit.Append(started, ct);
-        return new(true, sessionId, Profile: profile);
+        return new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt);
     }
 
     /// <summary>The connector reports the provisioning outcome for a session: applied
@@ -151,6 +152,39 @@ public sealed class GrantService
 
     /// <summary>A live, queryable view of sessions (open and recently closed).</summary>
     public IReadOnlyList<SessionRecord> Sessions() => _sessions.Snapshot();
+
+    /// <summary>One session by id, or null — used to authorize a connector's session
+    /// operations against the session's resource.</summary>
+    public SessionRecord? Session(string sessionId) => _sessions.Get(sessionId);
+
+    /// <summary>Session liveness for a connector's crash-recovery pass: the effective
+    /// state honouring the grant's own <see cref="SessionRecord.ExpiresAt"/> (a session
+    /// past its expiry reads <c>expired</c> even before the sweep closes it), and that
+    /// expiry so the agent can cache it. <c>unknown</c> = no such session.</summary>
+    public (string State, DateTimeOffset? ExpiresAt) Liveness(string sessionId)
+    {
+        var s = _sessions.Get(sessionId);
+        if (s is null) return ("unknown", null);
+        if (s.EndedAt is not null) return (string.IsNullOrEmpty(s.Outcome) ? "ended" : s.Outcome, s.ExpiresAt);
+        if (s.ExpiresAt is { } exp && exp <= _clock.GetUtcNow()) return ("expired", s.ExpiresAt);
+        return ("open", s.ExpiresAt);
+    }
+
+    /// <summary>A connector reports a crash-recovery decision: it revoked provisioned access
+    /// out of band, for <paramref name="reason"/> (<c>core-confirmed</c> | <c>local-expiry</c>
+    /// | <c>orphan-max-age</c>). Always audits <c>session.reconciled</c> — so a cleanup made
+    /// WITHOUT Core confirmation (orphan-max-age) is visible with its reason and the SQL
+    /// principal that was removed — and closes the session if it was still open. Idempotent.</summary>
+    public async Task<bool> ReconcileSession(string sessionId, string reason, string principal, string actor, CancellationToken ct)
+    {
+        var s = _sessions.Get(sessionId);
+        if (s is not null && s.EndedAt is null) await EndSession(sessionId, reason, ct, actor);
+        var meta = string.IsNullOrEmpty(principal) ? $"{sessionId} {reason}" : $"{sessionId} {reason} {principal}";
+        await _audit.Append(new AuditEvent(Guid.NewGuid().ToString("N"), _clock.GetUtcNow(),
+            AuditEvents.SessionReconciled, actor, s?.Subject ?? "", s?.Resource ?? "",
+            s?.RequestId ?? "", s?.GrantId ?? "", "ssh", meta), ct);
+        return true;
+    }
 
     /// <summary>Admin-close an open session out of band (outcome <c>revoked</c>),
     /// attributed to the admin, not the agent.</summary>

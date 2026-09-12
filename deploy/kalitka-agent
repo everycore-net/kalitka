@@ -26,6 +26,8 @@
 #   redeem --grant G [--agent NAME]
 #   use --session-id S       report one use of a bounded (max_uses) grant
 #   provisioned --session-id S [--error MSG]   report provisioning applied / failed
+#   liveness --session-id S  ask a session's state {state, expires_at} (crash recovery)
+#   reconciled --session-id S --reason R [--principal P]   report a crash-recovery cleanup
 #   session-end --session-id S [--outcome O]
 #   heartbeat
 set -euo pipefail
@@ -156,6 +158,22 @@ case "$cmd" in
     call POST /agent/v1/sessions/use "session_id=$(urlenc "$sid")"
     ;;
 
+  liveness)
+    # Crash recovery: ask Core a session's state so a connector can decide whether to
+    # revoke provisioned access. Returns {state, expires_at}.
+    sid="$(arg session-id "$@")"; [ -n "$sid" ] || die "liveness needs --session-id"
+    call GET "/agent/v1/sessions/$(urlenc "$sid")"
+    ;;
+
+  reconciled)
+    # Crash recovery: report that the connector revoked access out of band, with the
+    # reason (core-confirmed | local-expiry | orphan-max-age) — always audited by Core.
+    sid="$(arg session-id "$@")"; [ -n "$sid" ] || die "reconciled needs --session-id"
+    reason="$(arg reason "$@")"; [ -n "$reason" ] || die "reconciled needs --reason"
+    princ="$(arg principal "$@")"
+    call POST /agent/v1/sessions/reconciled "session_id=$(urlenc "$sid")&reason=$(urlenc "$reason")&principal=$(urlenc "$princ")"
+    ;;
+
   provisioned)
     # A DB/connector reports the provisioning outcome for a session: applied, or
     # failed with --error MSG (which closes the session as provision-failed).
@@ -167,6 +185,6 @@ case "$cmd" in
   heartbeat) call POST /agent/v1/heartbeat "" >/dev/null ;;
 
   ""|-h|--help|help)
-    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' ;;
+    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try --help)" ;;
 esac

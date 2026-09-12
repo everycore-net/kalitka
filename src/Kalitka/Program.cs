@@ -334,6 +334,8 @@ app.MapPost("/agent/v1/sessions/end", AgentSessionEnd);
 app.MapPost("/agent/session/end", AgentSessionEnd);
 app.MapPost("/agent/v1/sessions/use", AgentSessionUse);
 app.MapPost("/agent/v1/sessions/provisioned", AgentSessionProvisioned);
+app.MapGet("/agent/v1/sessions/{id}", AgentSessionLiveness);
+app.MapPost("/agent/v1/sessions/reconciled", AgentSessionReconciled);
 app.MapPost("/agent/v1/enroll", AgentEnroll);
 app.MapPost("/agent/enroll", AgentEnroll);
 app.MapPost("/agent/v1/heartbeat", AgentHeartbeat);
@@ -402,7 +404,8 @@ static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantS
     var form = await ctx.Request.ReadFormAsync();
     // "agent" is the self-reported hostname (metadata); identity is the canonical one.
     var result = await grants.Redeem(form["grant"].ToString(), identity, form["agent"].ToString(), ctx.RequestAborted);
-    if (result.Ok) return Results.Json(new { session_id = result.SessionId, profile = result.Profile });
+    if (result.Ok) return Results.Json(new { session_id = result.SessionId, profile = result.Profile,
+        expires_at = result.ExpiresAt?.ToUnixTimeSeconds() });
     return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
 }
 
@@ -431,6 +434,47 @@ static async Task<IResult> AgentSessionProvisioned(HttpContext ctx, GateService 
     var form = await ctx.Request.ReadFormAsync();
     var ok = await grants.ReportProvisioned(form["session_id"].ToString(), form["error"].ToString(), identity.Actor, ctx.RequestAborted);
     return Results.Json(new { provisioned = ok });
+}
+
+// Session liveness for a connector's crash-recovery pass: {state, expires_at}. The
+// connector journals expires_at so it can revoke on a locally-known expiry even while
+// Core is unreachable — a Core outage must never extend access past a time already known.
+static async Task<IResult> AgentSessionLiveness(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents, IReplayStore replay)
+{
+    MarkAgentVersion(ctx);
+    var identity = await AuthenticateAgent(ctx, gate, agents, replay);
+    if (identity is null) return Results.StatusCode(403);
+
+    var id = ctx.Request.RouteValues.TryGetValue("id", out var rv) && rv is string s && s.Length > 0 ? s : "";
+    var rec = grants.Session(id);
+    if (rec is null) return Results.Json(new { state = "unknown", expires_at = (long?)null });
+    // A valid credential is not a licence to probe a session outside the agent's scope.
+    if (!identity.MayRepresent(rec.Resource, AgentCapabilities.SessionEnd)) return Results.StatusCode(403);
+    var (state, exp) = grants.Liveness(id);
+    return Results.Json(new { state, expires_at = exp?.ToUnixTimeSeconds() });
+}
+
+// A connector reports a crash-recovery decision: it revoked provisioned access out of
+// band. Always audited (session.reconciled) with the reason — so a cleanup made WITHOUT
+// Core confirmation (orphan-max-age) is visible — and closes the session if still open.
+static async Task<IResult> AgentSessionReconciled(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents, IReplayStore replay)
+{
+    MarkAgentVersion(ctx);
+    var identity = await AuthenticateAgent(ctx, gate, agents, replay);
+    if (identity is null) return Results.StatusCode(403);
+
+    var form = await ctx.Request.ReadFormAsync();
+    var id = form["session_id"].ToString();
+    var reason = form["reason"].ToString();
+    if (reason is not ("core-confirmed" or "local-expiry" or "orphan-max-age")) return Results.BadRequest();
+    // If Core still knows the session, the agent must be scoped to its resource. If Core
+    // has forgotten it (orphan cleanup of a session Core already closed), there is no
+    // resource to bind to — record the decision anyway; the principal name carries the
+    // provenance that justified it.
+    var rec = grants.Session(id);
+    if (rec is not null && !identity.MayRepresent(rec.Resource, AgentCapabilities.SessionEnd)) return Results.StatusCode(403);
+    await grants.ReconcileSession(id, reason, form["principal"].ToString(), identity.Actor, ctx.RequestAborted);
+    return Results.Ok();
 }
 
 // The agent reports the session ended (session.ended).

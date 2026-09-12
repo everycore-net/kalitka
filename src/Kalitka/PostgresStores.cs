@@ -287,21 +287,23 @@ public sealed class PgSessionStore : ISessionStore
               session_id TEXT PRIMARY KEY, grant_id TEXT, request_id TEXT, subject TEXT,
               resource TEXT, agent_id TEXT, started BIGINT NOT NULL, ended BIGINT,
               outcome TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '',
-              profile TEXT NOT NULL DEFAULT '', remaining_uses INT NOT NULL DEFAULT -1);
+              profile TEXT NOT NULL DEFAULT '', remaining_uses INT NOT NULL DEFAULT -1,
+              expires_at BIGINT);
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS profile TEXT NOT NULL DEFAULT '';
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS remaining_uses INT NOT NULL DEFAULT -1;
+            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at BIGINT;
             """;
         cmd.ExecuteNonQuery();
     }
 
     private const string InsertSql = """
-        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses)
-        VALUES(@sid,@grant,@req,@subject,@resource,@agent,@started,@ended,@outcome,@meta,@profile,@uses)
+        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses,expires_at)
+        VALUES(@sid,@grant,@req,@subject,@resource,@agent,@started,@ended,@outcome,@meta,@profile,@uses,@exp)
         ON CONFLICT(session_id) DO UPDATE SET
           grant_id=EXCLUDED.grant_id,request_id=EXCLUDED.request_id,subject=EXCLUDED.subject,
           resource=EXCLUDED.resource,agent_id=EXCLUDED.agent_id,started=EXCLUDED.started,
           ended=EXCLUDED.ended,outcome=EXCLUDED.outcome,metadata=EXCLUDED.metadata,
-          profile=EXCLUDED.profile,remaining_uses=EXCLUDED.remaining_uses;
+          profile=EXCLUDED.profile,remaining_uses=EXCLUDED.remaining_uses,expires_at=EXCLUDED.expires_at;
         """;
 
     private const string CloseSql =
@@ -330,6 +332,7 @@ public sealed class PgSessionStore : ISessionStore
         cmd.Parameters.AddWithValue("meta", s.Metadata);
         cmd.Parameters.AddWithValue("profile", s.Profile);
         cmd.Parameters.AddWithValue("uses", s.RemainingUses);
+        cmd.Parameters.AddWithValue("exp", (object?)s.ExpiresAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 
@@ -390,7 +393,7 @@ public sealed class PgSessionStore : ISessionStore
     }
 
     private const string Cols =
-        "session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses";
+        "session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses,expires_at";
 
     private static SessionRecord Read(NpgsqlDataReader r) => new(
         r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
@@ -400,6 +403,7 @@ public sealed class PgSessionStore : ISessionStore
     {
         Profile = r.GetString(10),
         RemainingUses = r.GetInt32(11),
+        ExpiresAt = r.IsDBNull(12) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(12)),
     };
 }
 

@@ -1,0 +1,233 @@
+# kalitka-db-lib — shared, engine-agnostic lifecycle for database connectors.
+#
+# Sourced by the kalitka-db-agent entrypoint together with one engine driver
+# (drivers/<engine>). It owns everything that is NOT database-specific: the gate
+# protocol (via kalitka-agent), the durable intent journal, and — the point of this
+# layer — crash-recovery reconciliation. The driver owns only the SQL: provision,
+# deprovision, and the in-database ledger + orphan enumeration.
+#
+# Correctness model for crash recovery (see deploy/db/README.md):
+#   - Durable provenance is written BEFORE provisioning and cleared AFTER a clean
+#     teardown, in two places: a local journal (survives a process crash) and the
+#     driver's in-DB ledger (survives loss of the agent host). Both carry expires_at.
+#   - Core unavailability is NEVER on its own a reason to revoke; a locally-known
+#     expiry always is. Decision order at reconcile:
+#       1. known + locally expired            -> DROP (local-expiry), even offline
+#       2. known + locally valid              -> KEEP (do not drop on Core outage)
+#       3. Core reachable + closed/revoked/spent/expired/unknown -> DROP (core-confirmed)
+#       4. unknown principal, Core unreachable -> KEEP, until the ceiling
+#       5. Kalitka-owned principal older than OrphanAbsoluteMaxAge -> DROP (orphan-max-age)
+#   - The sweep NEVER drops a principal without reliable Kalitka provenance (a ledger
+#     row, or the kalitka_<session-id> name). It never touches a non-Kalitka principal.
+
+# ---- config / dependencies (the entrypoint has already sourced the conf files) -----
+AGENT="${KALITKA_AGENT_BIN:-/usr/local/bin/kalitka-agent}"
+DB_SERVER="${DB_SERVER:-localhost}"
+DB_MODE_DEFAULT="${DB_MODE:-ephemeral}"
+DB_PROFILE_MAP="${DB_PROFILE_MAP:-sql-readonly:kalitka_readonly sql-writer:kalitka_writer sql-order-correction:kalitka_order_correction}"
+STATE="${KALITKA_DB_STATE:-/var/lib/kalitka/db-agent}"
+JOURNAL="$STATE/journal"
+# The absolute ceiling for a provenance-only orphan whose journal AND ledger are gone.
+# Must be >= the max allowed grant TTL + grace; 2x MaxGrantTtl is the default. If longer
+# grants appear, raise this to match (a too-low ceiling could drop a still-valid login
+# whose ledger row was lost; a too-high one just delays a rare safety-net cleanup).
+MaxGrantTtlSec="${MAX_GRANT_TTL_SEC:-3600}"
+OrphanAbsoluteMaxAgeSec="${ORPHAN_ABSOLUTE_MAX_AGE_SEC:-$((MaxGrantTtlSec * 2))}"
+
+lib_die() { echo "kalitka-db-agent: $*" >&2; exit 1; }
+field() { sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'; }
+# numeric JSON field (expires_at is a number, not a quoted string)
+nfield() { sed -n 's/.*"'"$1"'":\([0-9]\{1,\}\).*/\1/p'; }
+arg() { local want="$1"; shift; while [ $# -gt 0 ]; do case "$1" in "--$want") printf '%s' "${2:-}"; return 0 ;; esac; shift; done; }
+safe_ident() { case "$1" in ''|*[!A-Za-z0-9_-]*) return 1 ;; *) return 0 ;; esac; }
+
+role_for() {
+  local p="$1" tok
+  for tok in $DB_PROFILE_MAP; do case "$tok" in "$p:"*) printf '%s' "${tok#*:}"; return 0 ;; esac; done
+  return 1
+}
+
+now() { date +%s; }
+
+# ---- local intent journal (one file per session; key=value lines) ------------------
+journal_put() { # journal_put SID MODE DB ROLE PRINCIPAL CREATED EXPIRES RESOURCE PROFILE
+  mkdir -p "$JOURNAL" 2>/dev/null || lib_die "cannot create journal dir $JOURNAL"
+  local f="$JOURNAL/$1" tmp
+  tmp="$(mktemp "$JOURNAL/.tmp.XXXXXX")"
+  { printf 'mode=%s\ndb=%s\nrole=%s\nprincipal=%s\ncreated_at=%s\nexpires_at=%s\nresource=%s\nprofile=%s\n' \
+      "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"; } > "$tmp"
+  mv -f "$tmp" "$f"
+}
+journal_del() { rm -f "$JOURNAL/$1" 2>/dev/null || true; }
+journal_get() { # journal_get SID KEY
+  [ -r "$JOURNAL/$1" ] && sed -n "s/^$2=//p" "$JOURNAL/$1"
+}
+journal_sessions() { [ -d "$JOURNAL" ] && ls -1 "$JOURNAL" 2>/dev/null | grep -v '^\.tmp\.' || true; }
+
+# ---- the foreground lifecycle ------------------------------------------------------
+db_access() {
+  local db profile user mode login ttl maxuses
+  db="$(arg database "$@")";     [ -n "$db" ]      || lib_die "access needs --database"
+  profile="$(arg profile "$@")"; [ -n "$profile" ] || lib_die "access needs --profile"
+  user="$(arg user "$@")";       [ -n "$user" ]    || lib_die "access needs --user"
+  mode="$(arg mode "$@")";       [ -n "$mode" ]    || mode="$DB_MODE_DEFAULT"
+  login="$(arg login "$@")"
+  ttl="$(arg ttl-min "$@")"
+  maxuses="$(arg max-uses "$@")"
+
+  safe_ident "$db"   || lib_die "invalid --database (allowed: A-Za-z0-9_-)"
+  safe_ident "$user" || lib_die "invalid --user (allowed: A-Za-z0-9_-)"
+  case "$mode" in ephemeral|grant) ;; *) lib_die "invalid --mode: $mode" ;; esac
+  [ "$mode" = grant ] && { [ -n "$login" ] || lib_die "grant mode needs --login"; safe_ident "$login" || lib_die "invalid --login"; }
+
+  local resource="db:${DB_SERVER}/${db}"
+
+  # 1) raise + wait (all gate I/O via kalitka-agent, so it is Ed25519-signed)
+  local req extra=()
+  [ -n "$maxuses" ] && extra+=(--max-uses "$maxuses")
+  req="$("$AGENT" request --resource "$resource" --profile "$profile" --user "$user" "${extra[@]}")" || lib_die "gate unreachable"
+  local id state; id="$(printf '%s' "$req" | field id)"; state="$(printf '%s' "$req" | field state)"
+  [ -n "$id" ] || lib_die "no request id (state=$state)"
+  echo "kalitka-db-agent: request $id for $resource ($profile) — waiting for approval..." >&2
+
+  local i=0 st grant=""
+  while [ "$i" -lt 100 ]; do
+    sleep 3; i=$((i + 1))
+    st="$("$AGENT" poll --id "$id" 2>/dev/null)" || continue
+    case "$(printf '%s' "$st" | field state)" in
+      approved) grant="$(printf '%s' "$st" | field grant)"; break ;;
+      denied) lib_die "denied" ;;
+      gone)   lib_die "request expired" ;;
+    esac
+  done
+  [ -n "$grant" ] || lib_die "timed out waiting for approval"
+
+  # 2) redeem -> session_id, authoritative profile, and expires_at (journalled below)
+  local red sid granted_profile expires
+  red="$("$AGENT" redeem --grant "$grant" --agent "$(hostname -s 2>/dev/null || hostname)")" || lib_die "grant redemption failed"
+  sid="$(printf '%s' "$red" | field session_id)"
+  [ -n "$sid" ] || lib_die "grant not redeemable (already used or expired)"
+  granted_profile="$(printf '%s' "$red" | field profile)"; [ -n "$granted_profile" ] || granted_profile="$profile"
+  expires="$(printf '%s' "$red" | nfield expires_at)"
+
+  local role; role="$(role_for "$granted_profile")" \
+    || { "$AGENT" provisioned --session-id "$sid" --error "unknown profile: $granted_profile" >/dev/null 2>&1 || true; lib_die "no role mapped for profile '$granted_profile'"; }
+
+  local principal
+  if [ "$mode" = ephemeral ]; then principal="kalitka_${sid}"; else principal="$login"; fi
+  local created; created="$(now)"
+
+  # 3) WRITE PROVENANCE BEFORE PROVISIONING — the crux of crash recovery. If the host
+  #    dies right after CREATE LOGIN, the journal (and ledger) already say what to undo
+  #    and when it expires, so reconcile resolves it without guessing.
+  journal_put "$sid" "$mode" "$db" "$role" "$principal" "$created" "$expires" "$resource" "$granted_profile"
+  driver_ledger_put "$sid" "$mode" "$db" "$role" "$principal" "$created" "$expires" "$resource" "$granted_profile" 2>/dev/null || true
+
+  # teardown on ANY exit (Enter, Ctrl-C, TTL, error) — the graceful path
+  local eph_pass=""
+  cleanup() {
+    driver_deprovision "$mode" "$db" "$role" "$principal" >/dev/null 2>&1 \
+      || echo "kalitka-db-agent: WARNING: deprovision of $principal failed — reconcile will retry" >&2
+    driver_ledger_del "$sid" 2>/dev/null || true
+    "$AGENT" session-end --session-id "$sid" --outcome closed >/dev/null 2>&1 || true
+    journal_del "$sid"
+    echo "kalitka-db-agent: access revoked, session $sid closed." >&2
+  }
+  trap cleanup EXIT INT TERM
+
+  # 4) provision
+  if [ "$mode" = ephemeral ]; then
+    eph_pass="$(openssl rand -base64 24)"
+  fi
+  if ! driver_provision "$mode" "$db" "$role" "$principal" "$eph_pass"; then
+    "$AGENT" provisioned --session-id "$sid" --error "provisioning failed" >/dev/null 2>&1 || true
+    lib_die "SQL provisioning failed"   # trap cleans up the partial state
+  fi
+
+  "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
+  echo "kalitka-db-agent: access provisioned (profile=$granted_profile role=$role)." >&2
+  echo "  server:   $DB_SERVER"
+  echo "  database: $db"
+  if [ "$mode" = ephemeral ]; then
+    echo "  login:    $principal"
+    echo "  password: $eph_pass"
+    echo "  (ephemeral — dropped when this session ends; not shown again)"
+  else
+    echo "  login:    $login  (added to role $role for this session)"
+  fi
+
+  # 5) hold for the interactive window; on exit the trap revokes
+  if [ -n "$ttl" ]; then
+    echo "kalitka-db-agent: holding for ${ttl} min, then revoking (Ctrl-C to end now)..." >&2
+    sleep "$((ttl * 60))"
+  else
+    echo "kalitka-db-agent: press Enter (or Ctrl-C) to end the session and revoke access." >&2
+    read -r _ || true
+  fi
+}
+
+# ---- crash recovery ----------------------------------------------------------------
+# Revoke one entry and report it with a reason. Returns 0 on success.
+_reconcile_drop() { # _reconcile_drop SID MODE DB ROLE PRINCIPAL REASON
+  local sid="$1" mode="$2" db="$3" role="$4" principal="$5" reason="$6"
+  driver_deprovision "$mode" "$db" "$role" "$principal" >/dev/null 2>&1 \
+    || { echo "kalitka-db-agent: reconcile: deprovision of $principal failed, will retry" >&2; return 1; }
+  "$AGENT" reconciled --session-id "$sid" --reason "$reason" --principal "$principal" >/dev/null 2>&1 || true
+  driver_ledger_del "$sid" 2>/dev/null || true
+  journal_del "$sid"
+  echo "kalitka-db-agent: reconcile: revoked $principal (session $sid, $reason)" >&2
+}
+
+db_reconcile() {
+  local t; t="$(now)"
+  local sid mode db role principal expires created live
+  declare -A seen=()
+
+  # (a) known entries: the union of the local journal and the in-DB ledger, keyed by
+  #     session. Each carries expires_at, so a locally-known expiry is decided offline.
+  #     Process substitution (not a pipe) keeps the loop — and `seen` — in this shell,
+  #     so dedup carries into pass (b) and the drops actually take effect.
+  while IFS='|' read -r sid mode db role principal expires; do
+    [ -n "$sid" ] && [ -z "${seen[$sid]:-}" ] || continue
+    seen[$sid]=1
+    # 1. locally expired -> DROP even if Core is unreachable
+    if [ -n "$expires" ] && [ "$expires" -lt "$t" ] 2>/dev/null; then
+      _reconcile_drop "$sid" "$mode" "$db" "$role" "$principal" local-expiry; continue
+    fi
+    # locally valid -> ask Core; a Core outage is NOT a reason to drop
+    live="$("$AGENT" liveness --session-id "$sid" 2>/dev/null)" || live=""
+    [ -z "$live" ] && continue                            # unreachable + locally valid -> KEEP
+    case "$(printf '%s' "$live" | field state)" in
+      open) : ;;                                           # still authorised -> KEEP
+      *) _reconcile_drop "$sid" "$mode" "$db" "$role" "$principal" core-confirmed ;;
+    esac
+  done < <(
+    { journal_sessions | while read -r sid; do
+        [ -n "$sid" ] || continue
+        printf '%s|%s|%s|%s|%s|%s\n' "$sid" "$(journal_get "$sid" mode)" "$(journal_get "$sid" db)" \
+          "$(journal_get "$sid" role)" "$(journal_get "$sid" principal)" "$(journal_get "$sid" expires_at)"
+      done
+      driver_ledger_list 2>/dev/null || true
+    } | sort -u )
+
+  # (b) provenance-only orphans: Kalitka-owned principals in the DB with no journal/
+  #     ledger record. Drop only with a session correlation (name) confirming death, or
+  #     past the absolute ceiling; NEVER a principal without Kalitka provenance.
+  while IFS='|' read -r principal created; do
+    [ -n "$principal" ] || continue
+    case "$principal" in kalitka_*) ;; *) continue ;; esac    # provenance gate
+    sid="${principal#kalitka_}"
+    [ -n "${seen[$sid]:-}" ] && continue                      # already handled above
+    live="$("$AGENT" liveness --session-id "$sid" 2>/dev/null)" || live=""
+    if [ -n "$live" ]; then
+      case "$(printf '%s' "$live" | field state)" in
+        open) continue ;;                                     # still authorised -> KEEP
+        *) _reconcile_drop "$sid" ephemeral "" "" "$principal" core-confirmed; continue ;;
+      esac
+    fi
+    # Core unreachable: keep unless older than the absolute ceiling
+    if [ -n "$created" ] && [ "$((t - created))" -gt "$OrphanAbsoluteMaxAgeSec" ] 2>/dev/null; then
+      _reconcile_drop "$sid" ephemeral "" "" "$principal" orphan-max-age
+    fi
+  done < <( driver_enumerate 2>/dev/null )
+}
