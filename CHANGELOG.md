@@ -7,6 +7,26 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-09-12
+
+### Added
+
+- **Policy-bound `source-address` + principal allow-lists (completing 0.26).** Two more
+  restrict-only controls, carried through the grant with the same discipline as `command`
+  (0.26.0) — the signer applies only what Core approved, never a caller argument.
+  - **Source-address.** A request can carry a `source_address` (approved CIDR list); redeem
+    returns it and `kalitka-ssh --source-address` issues a cert pinned to it
+    (`source-address` critical option) — a stolen cert is useless elsewhere. Policy
+    `RequireSourceAddress` forbids an unpinned cert for a resource (`source-required`).
+    New `requests(source_addr)` column (idempotent).
+  - **Principal allow-lists.** Policy `AllowedPrincipals` restricts which logins a request
+    may ask for (e.g. `deploy`/`readonly`, never `root`); a disallowed login is refused up
+    front (`principal-not-allowed`). Several matching policies **intersect** — a login must
+    be permitted by every one. (The cert principal was already bound to the approved subject
+    in 0.25.1.)
+  - Both `source_address` and the two policy flags are shown to the approver (Telegram +
+    web request detail) and settable on the Policies admin page.
+
 ### Changed
 
 - **README brought up to date.** It framed kalitka only as a web doorbell and still

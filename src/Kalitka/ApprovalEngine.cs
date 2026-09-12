@@ -25,6 +25,10 @@ public sealed class PendingRequest
     // set, the human approves THIS command, and an SSH-cert signer must issue a cert with
     // force-command = this — the session can run nothing else. Empty = interactive/open.
     public string Command = "";
+    // Source-address binding (0.26.1): the approved source CIDR(s). When set, an SSH-cert
+    // signer must issue a cert with source-address = this — the cert is usable only from
+    // there, so a stolen cert is worthless elsewhere. Empty = no source restriction.
+    public string SourceAddr = "";
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.
@@ -41,7 +45,7 @@ public sealed record CallbackResult(CallbackOutcome Outcome, PendingRequest? Req
 public sealed record PendingView(
     string Id, string Target, string Input, string Ip,
     string Country, string CountryCode, string City, DateTimeOffset Raised, string State,
-    int RequiredApprovals = 1, int ApprovalCount = 0, string Command = "");
+    int RequiredApprovals = 1, int ApprovalCount = 0, string Command = "", string SourceAddr = "");
 
 /// <summary>
 /// The decision core, with no idea how it is asked or answered. It owns the
@@ -347,11 +351,12 @@ public sealed class ApprovalEngine
     /// </summary>
     public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
         string resource, string subject, string ip, string actor, CancellationToken ct,
-        IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "")
+        IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "",
+        string sourceAddr = "")
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command);
+        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr);
     }
 
     /// <summary>
@@ -361,9 +366,10 @@ public sealed class ApprovalEngine
     /// </summary>
     private async Task<(string state, string id, PendingRequest? request)> Raise(
         string resource, string target, string subject, string ip, string actor, CancellationToken ct,
-        IReadOnlyList<string> agentTags, string profile, int maxUses, string command = "")
+        IReadOnlyList<string> agentTags, string profile, int maxUses, string command = "", string sourceAddr = "")
     {
         command = (command ?? "").Trim();
+        sourceAddr = (sourceAddr ?? "").Trim();
         var place = await _geo.Locate(ip, ct);
 
         // Allow list: straight through, no question asked. Scoped to the resource.
@@ -408,12 +414,24 @@ public sealed class ApprovalEngine
         var decision = _policies?.Effective(resource, agentTags, profile ?? "") ?? PolicyDecision.None;
         var required = decision.RequiredApprovals;
 
-        // Command-required: a matching policy forbids interactive access to this resource;
-        // a request with no command is refused before anyone is asked to approve it.
+        // Restrict-only policy gates, all refused before anyone is asked to approve:
+        //   command-required     — no open-shell access to this resource
+        //   source-required      — access must be pinned to a source address
+        //   principal-not-allowed — the requested login is not on the policy allow-list
         if (decision.RequireCommand && command.Length == 0)
         {
             Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "command-required");
             return ("command-required", "", null);
+        }
+        if (decision.RequireSourceAddress && sourceAddr.Length == 0)
+        {
+            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "source-required");
+            return ("source-required", "", null);
+        }
+        if (!decision.PrincipalAllowed(subject))
+        {
+            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "principal-not-allowed");
+            return ("principal-not-allowed", "", null);
         }
 
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
@@ -422,7 +440,7 @@ public sealed class ApprovalEngine
             Id = id, Target = target, Resource = resource, Input = subject, Ip = ip,
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
             Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required,
-            Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command
+            Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command, SourceAddr = sourceAddr
         };
         _store.Add(request);
 
@@ -453,6 +471,7 @@ public sealed class ApprovalEngine
     public string ProfileOf(string id) => _store.Get(id)?.Profile ?? "";
     public int MaxUsesOf(string id) => _store.Get(id)?.MaxUses ?? 0;
     public string CommandOf(string id) => _store.Get(id)?.Command ?? "";
+    public string SourceAddrOf(string id) => _store.Get(id)?.SourceAddr ?? "";
 
     /// <summary>
     /// Issue the request's one-time grant exactly once (on first approval read),
@@ -485,7 +504,7 @@ public sealed class ApprovalEngine
 
     private PendingView View(PendingRequest r) =>
         new(r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State,
-            r.RequiredApprovals, r.RequiredApprovals > 1 ? _store.ApprovalCount(r.Id) : 0, r.Command);
+            r.RequiredApprovals, r.RequiredApprovals > 1 ? _store.ApprovalCount(r.Id) : 0, r.Command, r.SourceAddr);
 
     private void DropExpired() =>
         _store.DropOlderThan(_clock.GetUtcNow().AddMinutes(-_options.PendingMinutes));

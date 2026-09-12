@@ -28,12 +28,14 @@
 # Subcommands:
 #   keygen                    create the CA keypair if absent, print its public key
 #   ca-pubkey                 print the CA public key (for TrustedUserCAKeys on hosts)
-#   connect --host H [--user U] [--command 'CMD']   the JIT flow, then exec ssh
-#   sign --host H --user U --pubkey FILE [--command 'CMD']   sign only, print the cert path
+#   connect --host H [--user U] [--command 'CMD'] [--source-address CIDR]   JIT, then exec ssh
+#   sign --host H --user U --pubkey FILE [--command 'CMD'] [--source-address CIDR]   sign only
 #
 # --command requests a force-command certificate: the human approves that exact command
-# and the issued cert can run ONLY it (the SSH analogue of a pre-approved stored proc). A
-# policy can require a command (forbid open shells) for a resource.
+# and the issued cert can run ONLY it (the SSH analogue of a pre-approved stored proc).
+# --source-address pins the cert to an approved source CIDR (usable only from there). A
+# policy can require a command or a source address, or restrict which logins are allowed.
+# Both are bound to the approval: the signer applies only what Core returns on redeem.
 #
 # The certificate principal is ALWAYS the identity Core approved (the request's --user),
 # returned on redeem — never a separate caller argument, so an approved request for one
@@ -66,17 +68,17 @@ keygen() {
   cat "$CA_KEY.pub"
 }
 
-# Raise -> approve -> redeem for ssh:<host>; echoes "SID EXPIRES SUBJECT COMMAND". SUBJECT
-# and COMMAND are the Core-approved values — the ONLY principal and force-command the signer
-# is allowed to put in the cert. COMMAND (may contain spaces) is the trailing field.
+# Raise -> approve -> redeem for ssh:<host>; echoes TAB-separated "SID EXP SUBJECT COMMAND
+# SOURCE". SUBJECT/COMMAND/SOURCE are the Core-approved values — the ONLY principal,
+# force-command and source-address the signer may put in the cert. Tab-separated because
+# COMMAND and SOURCE can both contain spaces.
 _grant() {
-  local host="$1" user="$2" command="${3:-}"
+  local host="$1" user="$2" command="${3:-}" source="${4:-}"
   local resp id state
-  if [ -n "$command" ]; then
-    resp="$("$AGENT" request --host "$host" --user "$user" --command "$command")" || die "gate unreachable or request refused"
-  else
-    resp="$("$AGENT" request --host "$host" --user "$user")" || die "gate unreachable or request refused"
-  fi
+  local -a req=(request --host "$host" --user "$user")
+  [ -n "$command" ] && req+=(--command "$command")
+  [ -n "$source" ] && req+=(--source-address "$source")
+  resp="$("$AGENT" "${req[@]}")" || die "gate unreachable or request refused"
   id="$(printf '%s' "$resp" | field id)"; state="$(printf '%s' "$resp" | field state)"
   [ -n "$id" ] || die "no request id (state=$state)"
   echo "kalitka-ssh: request $id for ssh:$host ($user) — waiting for approval..." >&2
@@ -98,8 +100,9 @@ _grant() {
   exp="$(printf '%s' "$red" | nfield expires_at)"
   subj="$(printf '%s' "$red" | field subject)"
   [ -n "$subj" ] || die "redeem returned no approved principal — refusing to sign"
-  local cmd; cmd="$(printf '%s' "$red" | field command)"   # approved force-command (may be empty)
-  printf '%s %s %s %s\n' "$sid" "$exp" "$subj" "$cmd"
+  local cmd src; cmd="$(printf '%s' "$red" | field command)"   # approved force-command (may be empty)
+  src="$(printf '%s' "$red" | field source_address)"           # approved source-address (may be empty)
+  printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$exp" "$subj" "$cmd" "$src"
 }
 
 # Sign a user public key against the granted session. The principal is the Core-APPROVED
@@ -107,10 +110,11 @@ _grant() {
 # the grant's expiry (raw epoch, no rounding), so it cannot outlive the granted authority;
 # a small negative start absorbs clock skew. Key id carries the session id, so sshd's auth
 # log ties straight back to the kalitka audit trail.
-_sign() { # PUBKEY_FILE SID EXPIRES PRINCIPAL [COMMAND] -> writes <base>-cert.pub
-  local pub="$1" sid="$2" exp="$3" principal="$4" command="${5:-}"
+_sign() { # PUBKEY_FILE SID EXPIRES PRINCIPAL [COMMAND] [SOURCE] -> writes <base>-cert.pub
+  local pub="$1" sid="$2" exp="$3" principal="$4" command="${5:-}" source="${6:-}"
   [ -r "$CA_KEY" ] || die "no CA key at $CA_KEY (run 'kalitka-ssh keygen' as the CA host)"
   case "$principal" in ''|*[!A-Za-z0-9_.-]*) die "unsafe approved principal: '$principal'" ;; esac
+  case "$source" in *[!0-9a-fA-F.:/,\ ]*) die "unsafe approved source-address: '$source'" ;; esac
   local now; now="$(date +%s)"
   [ -n "$exp" ] || die "grant has no expiry — refusing to sign"
   [ "$exp" -gt "$now" ] 2>/dev/null || die "grant already expired — refusing to issue a certificate"
@@ -119,9 +123,10 @@ _sign() { # PUBKEY_FILE SID EXPIRES PRINCIPAL [COMMAND] -> writes <base>-cert.pu
   # CERT_OPTS is a set of -O flags; deliberate word-split.
   # shellcheck disable=SC2206
   opts+=($CERT_OPTS)
-  # The approved force-command (if any) is applied as a single, un-split argument — the
-  # session can then run only this command, nothing else.
+  # Approved force-command / source-address (if any) applied as single, un-split args — the
+  # session can then run only this command, and the cert works only from these addresses.
   [ -n "$command" ] && opts+=(-O "force-command=$command")
+  [ -n "$source" ] && opts+=(-O "source-address=$source")
   ssh-keygen "${opts[@]}" "$pub" >&2
 }
 
@@ -134,12 +139,12 @@ case "${1:-}" in
     host="$(arg host "$@")"; [ -n "$host" ] || die "sign needs --host"
     user="$(arg user "$@")"; [ -n "$user" ] || die "sign needs --user"
     pub="$(arg pubkey "$@")"; [ -r "$pub" ] || die "sign needs a readable --pubkey"
-    command="$(arg command "$@")"
-    read -r sid exp principal cmd < <(_grant "$host" "$user" "$command")
-    _sign "$pub" "$sid" "$exp" "$principal" "$cmd"
+    command="$(arg command "$@")"; source="$(arg source-address "$@")"
+    IFS=$'\t' read -r sid exp principal cmd src < <(_grant "$host" "$user" "$command" "$source")
+    _sign "$pub" "$sid" "$exp" "$principal" "$cmd" "$src"
     "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
     cert="${pub%.pub}-cert.pub"
-    echo "kalitka-ssh: issued $cert (principal: $principal${cmd:+, force-command: $cmd})" >&2
+    echo "kalitka-ssh: issued $cert (principal: $principal${cmd:+, force-command: $cmd}${src:+, source: $src})" >&2
     printf '%s\n' "$cert"
     ;;
 
@@ -147,15 +152,16 @@ case "${1:-}" in
     shift
     host="$(arg host "$@")"; [ -n "$host" ] || die "connect needs --host"
     user="$(arg user "$@")"; [ -n "$user" ] || user="$(id -un)"
-    command="$(arg command "$@")"
+    command="$(arg command "$@")"; source="$(arg source-address "$@")"
     need ssh
     dir="$(mktemp -d "${TMPDIR:-/tmp}/kalitka-ssh.XXXXXX")"
     trap 'rm -rf "$dir"' EXIT INT TERM
     ssh-keygen -q -t ed25519 -f "$dir/id" -N '' -C "kalitka-jit"     # ephemeral, dies with $dir
-    read -r sid exp principal cmd < <(_grant "$host" "$user" "$command")
-    _sign "$dir/id.pub" "$sid" "$exp" "$principal" "$cmd"
+    IFS=$'\t' read -r sid exp principal cmd src < <(_grant "$host" "$user" "$command" "$source")
+    _sign "$dir/id.pub" "$sid" "$exp" "$principal" "$cmd" "$src"
     "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
     [ -n "$cmd" ] && echo "kalitka-ssh: this certificate can run only: $cmd" >&2
+    [ -n "$src" ] && echo "kalitka-ssh: this certificate is usable only from: $src" >&2
     echo "kalitka-ssh: connecting to ${principal}@${host} with a short-lived certificate..." >&2
     # The session lives for the ssh connection. Report the true outcome: ssh's 255 is a
     # connection/auth failure, anything else is a session that actually ran (its exit code
@@ -167,6 +173,6 @@ case "${1:-}" in
     exit "$rc"
     ;;
 
-  ""|-h|--help|help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: ${1:-} (try --help)" ;;
 esac

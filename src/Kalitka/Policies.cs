@@ -34,11 +34,24 @@ public sealed record AccessPolicy(
     /// grant one.</summary>
     public bool RequireCommand { get; init; }
 
+    /// <summary>When set, a matching request MUST carry a source address (0.26.1): access
+    /// to this resource is pinned to an approved source CIDR (an SSH cert
+    /// <c>source-address</c>). Restrict-only.</summary>
+    public bool RequireSourceAddress { get; init; }
+
+    /// <summary>Optional allow-list of principals (target logins) a matching request may
+    /// ask for (0.26.1); empty = no constraint. Restrict-only: the requested login must be
+    /// in it, so a policy can permit <c>deploy</c>/<c>readonly</c> but never <c>root</c> for
+    /// a resource. Several matching policies intersect (a login must satisfy every one).</summary>
+    public string[] AllowedPrincipals { get; init; } = Array.Empty<string>();
+
     public bool SameContent(AccessPolicy other) =>
         string.Equals(MatchResource, other.MatchResource, StringComparison.OrdinalIgnoreCase)
         && MatchTags.SequenceEqual(other.MatchTags)
         && string.Equals(MatchProfile, other.MatchProfile, StringComparison.OrdinalIgnoreCase)
         && RequireCommand == other.RequireCommand
+        && RequireSourceAddress == other.RequireSourceAddress
+        && AllowedPrincipals.SequenceEqual(other.AllowedPrincipals)
         && RequiredApprovals == other.RequiredApprovals
         && GrantTtlMinutes == other.GrantTtlMinutes;
 
@@ -69,9 +82,15 @@ public static class ResourceGlob
 /// policy. Empty/default (<see cref="RequiredApprovals"/> = 1, no TTL override) when
 /// nothing matches.</summary>
 public sealed record PolicyDecision(int RequiredApprovals, int? GrantTtlMinutes, string[] MatchedPolicies,
-    bool RequireCommand = false)
+    bool RequireCommand = false, bool RequireSourceAddress = false, string[]? AllowedPrincipals = null)
 {
     public static readonly PolicyDecision None = new(1, null, Array.Empty<string>());
+
+    /// <summary>Effective principal allow-list (intersection across matching policies);
+    /// null/empty = no constraint. A requested login must be in it (case-insensitive).</summary>
+    public bool PrincipalAllowed(string login) =>
+        AllowedPrincipals is not { Length: > 0 } allow
+        || allow.Any(p => string.Equals(p, login, StringComparison.OrdinalIgnoreCase));
 }
 
 /// <summary>
@@ -118,7 +137,20 @@ public sealed class PolicyService
         var ttls = matched.Where(p => p.GrantTtlMinutes > 0).Select(p => p.GrantTtlMinutes).ToList();
         int? ttl = ttls.Count > 0 ? ttls.Min() : null;
         var requireCommand = matched.Any(p => p.RequireCommand);   // most-restrictive: any wins
-        return new PolicyDecision(required, ttl, matched.Select(p => p.Name).OrderBy(n => n).ToArray(), requireCommand);
+        var requireSource = matched.Any(p => p.RequireSourceAddress);
+        // Principal allow-lists intersect: a login must be permitted by EVERY constraining
+        // policy (those that set one). Policies with no list impose no constraint.
+        var constraints = matched.Where(p => p.AllowedPrincipals.Length > 0)
+            .Select(p => (ISet<string>)new HashSet<string>(p.AllowedPrincipals, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        string[]? allowed = null;
+        if (constraints.Count > 0)
+        {
+            var inter = constraints.Aggregate((a, b) => { a.IntersectWith(b); return a; });
+            allowed = inter.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+        return new PolicyDecision(required, ttl, matched.Select(p => p.Name).OrderBy(n => n).ToArray(),
+            requireCommand, requireSource, allowed);
     }
 
     public async Task Save(AccessPolicy policy, string actor, CancellationToken ct)

@@ -238,19 +238,22 @@ match:
   tags: { env: prod }
   profile: "sql-dba"   # optional: match only this grant profile (glob), e.g. DDL vs read-only
 approval:
-  required: 2          # distinct approvers before it is approved
-  grant_ttl: 15m       # shorten the one-time grant
-  require_command: true  # forbid an open shell — only a specific, approved command
+  required: 2               # distinct approvers before it is approved
+  grant_ttl: 15m            # shorten the one-time grant
+  require_command: true     # forbid an open shell — only a specific, approved command
+  require_source: true      # pin the SSH cert to an approved source address
+  allowed_principals: [deploy, readonly]   # which logins may be requested (never root)
 ```
 
-A policy **only ever restricts** — it can require more approvals, shorten the grant, or
-forbid an open shell, never grant a capability or resource an agent does not already have
-(the agent's own authority is checked first). Several matching policies combine the
-strictest way: most approvals (`max`), shortest grant (`min`), require-command if **any**
-matches — there is no rule ordering. `match.profile` lets the bar differ per operation
-class (a `sql-dba` grant needing four eyes while `sql-readonly` stays single); a request
-that violates `require_command` (no command given) is refused up front as `command-required`,
-before anyone is asked.
+A policy **only ever restricts** — it can require more approvals, shorten the grant, forbid
+an open shell, require a source binding, or allow-list the logins that may be requested,
+never grant a capability or resource an agent does not already have (the agent's own
+authority is checked first). Several matching policies combine the strictest way: most
+approvals (`max`), shortest grant (`min`), require-command / require-source if **any**
+matches, allowed-principals **intersected** — there is no rule ordering. `match.profile`
+lets the bar differ per operation class (a `sql-dba` grant needing four eyes while
+`sql-readonly` stays single). A request that violates a restriction is refused up front
+(`command-required` / `source-required` / `principal-not-allowed`), before anyone is asked.
 
 Two things worth knowing about `required: 2`:
 
@@ -327,9 +330,11 @@ shapes that compose. Both run through a registered agent on the far host and lan
   grant's expiry — then `exec`s `ssh`. The cert self-expires: nothing to revoke, no orphan.
   Core never holds the CA key. Add `--command 'systemctl restart nginx'` for a
   **force-command** certificate: the human approves that exact command and the session can
-  run *only* it (the SSH analogue of a pre-approved stored procedure); a policy can
-  `require_command` to forbid open shells for a resource. The cert's key-id is
-  `kalitka:<session-id>`, so sshd's auth log ties back to the audit trail.
+  run *only* it (the SSH analogue of a pre-approved stored procedure). Add
+  `--source-address CIDR` to pin the cert to an approved source (useless if stolen). A
+  policy can `require_command`, `require_source`, or allow-list which logins may be
+  requested — the signer applies only what Core approved, never a caller argument. The
+  cert's key-id is `kalitka:<session-id>`, so sshd's auth log ties back to the audit trail.
 
 ## Database just-in-time access
 

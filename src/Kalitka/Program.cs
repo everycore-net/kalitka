@@ -379,11 +379,19 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     var command = form["command"].ToString().Trim();
     if (command.Length > 4000) return Results.BadRequest();
 
+    // Optional source-address (0.26.1): an approved CIDR list the SSH cert is pinned to.
+    // Kept to IP/CIDR-list characters (it becomes a cert value, never local shell).
+    var sourceAddr = form["source_address"].ToString().Trim();
+    if (sourceAddr.Length > 400 || sourceAddr.Any(c => !(char.IsAsciiHexDigit(c) || c is '.' or ':' or '/' or ',' or ' ')))
+        return Results.BadRequest();
+
     var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags,
-        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0, command);
-    // A policy can forbid open-shell access to a resource: a request with no command is
-    // refused up front (409), so no one is asked to approve access that policy disallows.
-    if (state == "command-required") return Results.Json(new { id, state }, statusCode: 409);
+        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0, command, sourceAddr);
+    // A policy can restrict access up front — forbid an open shell, require a source
+    // binding, or disallow the requested login. All are refused (409) before anyone is
+    // asked to approve access that policy disallows.
+    if (state is "command-required" or "source-required" or "principal-not-allowed")
+        return Results.Json(new { id, state }, statusCode: 409);
     return Results.Json(new { id, state });
 }
 
@@ -417,7 +425,8 @@ static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantS
     // derives the certificate principal from this, never from an unvalidated caller
     // argument, so the approved identity and the cert principal stay cryptographically bound.
     if (result.Ok) return Results.Json(new { session_id = result.SessionId, profile = result.Profile,
-        expires_at = result.ExpiresAt?.ToUnixTimeSeconds(), subject = result.Subject, command = result.Command });
+        expires_at = result.ExpiresAt?.ToUnixTimeSeconds(), subject = result.Subject, command = result.Command,
+        source_address = result.SourceAddress });
     return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
 }
 
@@ -959,6 +968,8 @@ guarded.MapPost("/policies/create", async (HttpContext ctx, AdminAuth auth, Poli
     {
         MatchProfile = form["match_profile"].ToString().Trim(),
         RequireCommand = form["require_command"].ToString() is "on" or "true" or "1",
+        RequireSourceAddress = form["require_source"].ToString() is "on" or "true" or "1",
+        AllowedPrincipals = Words(form["allowed_principals"].ToString()),
     };
     await policies.Save(policy, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/policies", false);
