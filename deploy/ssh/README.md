@@ -103,7 +103,7 @@ front (`source-required` / `principal-not-allowed`).
    `/etc/kalitka-approve.conf`. Optionally set `/etc/kalitka/ssh-ca.conf`
    (`KALITKA_SSH_CA_KEY`, `KALITKA_SSH_CERT_OPTS`).
 4. Create the CA and print its public key: `kalitka-ssh keygen`. The CA **private** key
-   stays here (`root:root`, `0600`); nothing else ever sees it.
+   stays here, `0600`; harden who owns it — see below.
 5. On every **target** host, trust the CA and require a matching principal:
    ```
    # /etc/ssh/sshd_config
@@ -116,6 +116,39 @@ front (`source-required` / `principal-not-allowed`).
 Certificates default to conservative options (`permit-pty` only — no agent/port/X11
 forwarding); override with `KALITKA_SSH_CERT_OPTS`. `kalitka-ssh sign --pubkey FILE` is
 the lower-level path when the user's key lives elsewhere and only the cert comes back.
+
+### Hardened signer boundary (recommended)
+
+The CA private key is a serious trust boundary: anyone who can **read** it can mint
+certificates outside kalitka entirely. So put it behind a privilege boundary — the calling
+operator should never be able to read it. The CA-touching step (redeem + sign) is the
+`sign-redeem` subcommand, meant to run as a dedicated user:
+
+```
+# a dedicated, login-less CA owner
+useradd --system --shell /usr/sbin/nologin kalitka-ca
+install -d -m 0700 -o kalitka-ca -g kalitka-ca /etc/kalitka
+sudo -u kalitka-ca env KALITKA_SSH_CA_KEY=/etc/kalitka/ssh_ca kalitka-ssh keygen   # key is 0600, owned by kalitka-ca
+
+# let operators run ONLY the signer as that user, no password
+cat >/etc/sudoers.d/kalitka-ssh <<'EOF'
+%kalitka-ops ALL=(kalitka-ca) NOPASSWD: /usr/local/bin/kalitka-ssh sign-redeem *
+EOF
+
+# operators' config points the signing step at that boundary
+echo 'KALITKA_SSH_SIGN_CMD="sudo -n -u kalitka-ca /usr/local/bin/kalitka-ssh"' >> /etc/kalitka/ssh-ca.conf
+```
+
+Now `kalitka-ssh connect` (run by an operator) does the raise/approve/poll, but delegates
+redeem + sign to `sign-redeem` as `kalitka-ca`: the public key crosses on stdin, the cert
+comes back on stdout, and the operator's process never opens the CA key. The signer takes
+**nothing** about the cert's contents from the caller — principal, force-command,
+source-address and expiry all come from Core's redeem — so this boundary is about the key
+material, not the cert contents (those were already bound to the approval). Leave
+`KALITKA_SSH_SIGN_CMD` unset only for a simple/dev setup where the runner may read the key.
+
+For the strongest form, keep the CA key in an HSM / PKCS#11 token or a separate signing
+host and point `sign-redeem` at it; the split above is the seam for that.
 
 ## Install (on the SSH host)
 

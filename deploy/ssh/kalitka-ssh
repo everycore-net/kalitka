@@ -14,11 +14,21 @@
 # leak — the certificate IS the time-boxed authority. *kalitka brokers authority, not
 # credentials.*
 #
-# The CA private key stays here; target hosts trust its public half:
+# Target hosts trust the CA's public half:
 #   # /etc/ssh/sshd_config on every target
 #   TrustedUserCAKeys /etc/ssh/kalitka_ca.pub
 # and the login name must be an allowed principal (it is, by default: the cert is issued
 # for the requested --user).
+#
+# HARDENED SIGNER BOUNDARY (0.28). The CA private key is a serious trust boundary: anyone
+# who can read it can mint certificates outside kalitka. So the CA-touching step (redeem +
+# sign) is split out as the `sign-redeem` subcommand, meant to run as a dedicated CA owner
+# (kalitka-ca, key mode 0600) behind a privilege boundary. Set:
+#   KALITKA_SSH_SIGN_CMD="sudo -n -u kalitka-ca /usr/local/bin/kalitka-ssh"
+# and `connect`/`sign` delegate signing to it — the public key crosses on stdin, the cert
+# comes back on stdout, so the calling user never reads the CA key and cannot influence the
+# cert's contents (principal/command/source/expiry all come from Core's redeem). Leaving
+# KALITKA_SSH_SIGN_CMD unset signs in-process (simple/dev; the runner can read the CA key).
 #
 # All gate I/O goes through kalitka-agent (Ed25519-signed). Enrol this host as a kalitka
 # agent with capability `ssh` and the resources it may reach (e.g. ssh:*), exactly like
@@ -26,10 +36,11 @@
 # plus the shared /etc/kalitka-approve.conf.
 #
 # Subcommands:
-#   keygen                    create the CA keypair if absent, print its public key
+#   keygen                    create the CA keypair if absent, print its public key (as kalitka-ca)
 #   ca-pubkey                 print the CA public key (for TrustedUserCAKeys on hosts)
 #   connect --host H [--user U] [--command 'CMD'] [--source-address CIDR]   JIT, then exec ssh
 #   sign --host H --user U --pubkey FILE [--command 'CMD'] [--source-address CIDR]   sign only
+#   sign-redeem --grant G     privileged: redeem + sign a pubkey from stdin (run as kalitka-ca)
 #
 # --command requests a force-command certificate: the human approves that exact command
 # and the issued cert can run ONLY it (the SSH analogue of a pre-approved stored proc).
@@ -51,6 +62,11 @@ AGENT="${KALITKA_AGENT_BIN:-/usr/local/bin/kalitka-agent}"
 CA_KEY="${KALITKA_SSH_CA_KEY:-/etc/kalitka/ssh_ca}"
 # Conservative certificate options by default; override in the conf if you need more.
 CERT_OPTS="${KALITKA_SSH_CERT_OPTS:--O clear -O permit-pty -O no-agent-forwarding -O no-port-forwarding -O no-x11-forwarding}"
+# Hardened signer boundary (0.28): when set, the CA-touching step (redeem + sign) is
+# delegated to a privileged helper so the calling user never reads the CA key — e.g.
+#   KALITKA_SSH_SIGN_CMD="sudo -n -u kalitka-ca /usr/local/bin/kalitka-ssh"
+# Unset = sign in-process (simple/dev; the runner can read the CA key — NOT hardened).
+SIGN_CMD="${KALITKA_SSH_SIGN_CMD:-}"
 
 die() { echo "kalitka-ssh: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
@@ -68,11 +84,10 @@ keygen() {
   cat "$CA_KEY.pub"
 }
 
-# Raise -> approve -> redeem for ssh:<host>; echoes TAB-separated "SID EXP SUBJECT COMMAND
-# SOURCE". SUBJECT/COMMAND/SOURCE are the Core-approved values — the ONLY principal,
-# force-command and source-address the signer may put in the cert. Tab-separated because
-# COMMAND and SOURCE can both contain spaces.
-_grant() {
+# Raise -> approve for ssh:<host>; echoes the one-time GRANT token. This is the
+# UNPRIVILEGED half: it needs no CA key. Redemption and signing happen behind the
+# (optionally privileged) signer boundary in _redeem_and_sign.
+_raise_wait() {
   local host="$1" user="$2" command="${3:-}" source="${4:-}"
   local resp id state
   local -a req=(request --host "$host" --user "$user")
@@ -93,16 +108,36 @@ _grant() {
     esac
   done
   [ -n "$grant" ] || die "timed out waiting for approval"
-  local red sid exp subj
+  printf '%s\n' "$grant"
+}
+
+# The PRIVILEGED half: redeem the grant and sign a certificate. Reads the CA key, so it
+# runs as the CA owner (kalitka-ca) when a signer boundary is configured, or in-process
+# otherwise. It takes only the grant and the public key to sign — the principal,
+# force-command, source-address and expiry all come from Core's redeem, never the caller,
+# so an operator can neither forge the cert's contents nor read the CA key. Reads the
+# public key from $1 (path) or, if "-", from stdin (so it crosses a sudo boundary without
+# needing cross-user file access). Echoes "SID" then the certificate line.
+_redeem_and_sign() { # GRANT PUBKEY_PATH|-
+  local grant="$1" pubsrc="$2"
+  local red sid exp subj cmd src
   red="$("$AGENT" redeem --grant "$grant" --agent "$(hostname -s 2>/dev/null || hostname)")" || die "grant redemption failed"
   sid="$(printf '%s' "$red" | field session_id)"
   [ -n "$sid" ] || die "grant not redeemable (already used or expired)"
   exp="$(printf '%s' "$red" | nfield expires_at)"
   subj="$(printf '%s' "$red" | field subject)"
   [ -n "$subj" ] || die "redeem returned no approved principal — refusing to sign"
-  local cmd src; cmd="$(printf '%s' "$red" | field command)"   # approved force-command (may be empty)
-  src="$(printf '%s' "$red" | field source_address)"           # approved source-address (may be empty)
-  printf '%s\t%s\t%s\t%s\t%s\n' "$sid" "$exp" "$subj" "$cmd" "$src"
+  cmd="$(printf '%s' "$red" | field command)"          # approved force-command (may be empty)
+  src="$(printf '%s' "$red" | field source_address)"   # approved source-address (may be empty)
+
+  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/kalitka-sign.XXXXXX")"
+  # trap-free cleanup: this function is short and we rm explicitly on both paths.
+  if [ "$pubsrc" = "-" ]; then cat > "$d/id.pub"; else cat "$pubsrc" > "$d/id.pub"; fi
+  if ! _sign "$d/id.pub" "$sid" "$exp" "$subj" "$cmd" "$src"; then rm -rf "$d"; die "signing failed"; fi
+  "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
+  printf '%s\n' "$sid"
+  cat "$d/id-cert.pub"
+  rm -rf "$d"
 }
 
 # Sign a user public key against the granted session. The principal is the Core-APPROVED
@@ -130,9 +165,31 @@ _sign() { # PUBKEY_FILE SID EXPIRES PRINCIPAL [COMMAND] [SOURCE] -> writes <base
   ssh-keygen "${opts[@]}" "$pub" >&2
 }
 
+# Redeem + sign, across the (optional) signer boundary. In: grant + a public-key file.
+# Out: "SID\n<cert-line>". Delegated: the pubkey goes over stdin and the cert comes back
+# over stdout, so no cross-user file access is needed and the CA key stays with kalitka-ca.
+_sign_via() { # GRANT PUBKEY_PATH
+  local grant="$1" pub="$2"
+  if [ -n "$SIGN_CMD" ]; then
+    # shellcheck disable=SC2086
+    $SIGN_CMD sign-redeem --grant "$grant" < "$pub"
+  else
+    _redeem_and_sign "$grant" "$pub"
+  fi
+}
+
 case "${1:-}" in
   keygen) keygen ;;
   ca-pubkey) [ -r "$CA_KEY.pub" ] || die "no CA key at $CA_KEY"; cat "$CA_KEY.pub" ;;
+
+  # Privileged step, run behind the signer boundary (e.g. sudo -u kalitka-ca): redeem the
+  # grant and sign the public key read from stdin. Takes NOTHING about the cert's contents
+  # from the caller — principal/command/source/expiry all come from Core's redeem.
+  sign-redeem)
+    shift
+    grant="$(arg grant "$@")"; [ -n "$grant" ] || die "sign-redeem needs --grant"
+    _redeem_and_sign "$grant" -
+    ;;
 
   sign)
     shift
@@ -140,11 +197,12 @@ case "${1:-}" in
     user="$(arg user "$@")"; [ -n "$user" ] || die "sign needs --user"
     pub="$(arg pubkey "$@")"; [ -r "$pub" ] || die "sign needs a readable --pubkey"
     command="$(arg command "$@")"; source="$(arg source-address "$@")"
-    IFS=$'\t' read -r sid exp principal cmd src < <(_grant "$host" "$user" "$command" "$source")
-    _sign "$pub" "$sid" "$exp" "$principal" "$cmd" "$src"
-    "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
+    grant="$(_raise_wait "$host" "$user" "$command" "$source")"
+    out="$(_sign_via "$grant" "$pub")"
+    sid="$(printf '%s' "$out" | head -1)"
     cert="${pub%.pub}-cert.pub"
-    echo "kalitka-ssh: issued $cert (principal: $principal${cmd:+, force-command: $cmd}${src:+, source: $src})" >&2
+    printf '%s' "$out" | tail -n +2 > "$cert"
+    echo "kalitka-ssh: issued $cert (session $sid)" >&2
     printf '%s\n' "$cert"
     ;;
 
@@ -157,11 +215,15 @@ case "${1:-}" in
     dir="$(mktemp -d "${TMPDIR:-/tmp}/kalitka-ssh.XXXXXX")"
     trap 'rm -rf "$dir"' EXIT INT TERM
     ssh-keygen -q -t ed25519 -f "$dir/id" -N '' -C "kalitka-jit"     # ephemeral, dies with $dir
-    IFS=$'\t' read -r sid exp principal cmd src < <(_grant "$host" "$user" "$command" "$source")
-    _sign "$dir/id.pub" "$sid" "$exp" "$principal" "$cmd" "$src"
-    "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
-    [ -n "$cmd" ] && echo "kalitka-ssh: this certificate can run only: $cmd" >&2
-    [ -n "$src" ] && echo "kalitka-ssh: this certificate is usable only from: $src" >&2
+    grant="$(_raise_wait "$host" "$user" "$command" "$source")"
+    out="$(_sign_via "$grant" "$dir/id.pub")"
+    sid="$(printf '%s' "$out" | head -1)"
+    printf '%s' "$out" | tail -n +2 > "$dir/id-cert.pub"
+    # The approved principal / restrictions are inside the signed cert — read them back
+    # for the login name and to tell the operator exactly what they got.
+    principal="$(ssh-keygen -L -f "$dir/id-cert.pub" | awk '/Principals:/{getline; print $1; exit}')"
+    [ -n "$principal" ] || principal="$user"
+    ssh-keygen -L -f "$dir/id-cert.pub" | grep -iE 'force-command|source-address' | sed 's/^ */kalitka-ssh: cert restriction: /' >&2 || true
     echo "kalitka-ssh: connecting to ${principal}@${host} with a short-lived certificate..." >&2
     # The session lives for the ssh connection. Report the true outcome: ssh's 255 is a
     # connection/auth failure, anything else is a session that actually ran (its exit code
@@ -173,6 +235,6 @@ case "${1:-}" in
     exit "$rc"
     ;;
 
-  ""|-h|--help|help) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: ${1:-} (try --help)" ;;
 esac
