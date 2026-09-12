@@ -7,6 +7,33 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-12
+
+### Added
+
+- **JIT SSH access via short-lived certificates (`deploy/ssh/kalitka-ssh`).** The
+  certificate analogue of the DB connector, same architecture: Core → signed grant →
+  local tool that **holds the SSH CA key** → target host. Core never holds the CA key; it
+  only decides yes/no.
+  - `kalitka-ssh connect --host H [--user U]` on a bastion mints an **ephemeral** keypair,
+    raises an access request, waits for approval, signs a **short-lived OpenSSH user
+    certificate** (principals from the request, validity from the grant's `expires_at`, so
+    it reflects any access policy and cannot outlive the granted authority), then `exec`s
+    `ssh`. The certificate **self-expires** — nothing to revoke, no orphan, and a crash
+    leaves no standing access.
+  - The cert's key-id is `kalitka:<session-id>`, tying sshd's auth log to the kalitka
+    audit trail; conservative cert options by default (`permit-pty` only — no agent/port/X11
+    forwarding), overridable. `kalitka-ssh keygen` creates the CA and prints the public key
+    for hosts' `TrustedUserCAKeys`; `sign --pubkey FILE` is the lower-level path.
+
+### Notes
+
+- Pure client-side — no `Kalitka.dll` change; reuses request/poll/redeem/provisioned/
+  session-end and the `expires_at` from 0.23.4. Certificate issuance verified with
+  `ssh-keygen -L` (correct principal, `kalitka:<session>` key-id, ~grant-TTL validity,
+  restricted extensions). Complements the PAM approval gate; next SSH steps: sudo-aware
+  approvals and certificate source-address/force-command from policy.
+
 ## [0.24.0] - 2026-09-12
 
 ### Added
