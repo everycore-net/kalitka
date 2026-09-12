@@ -108,13 +108,16 @@ case "$cmd" in
   pubkey)  [ -r "$KEY" ] || die "no key at $KEY"; pubkey_b64; echo ;;
 
   enroll)
+    # Secretless enrolment: generate a key and register only its public half, so the
+    # agent is created with no usable shared secret at all — signatures are the only
+    # way in. (The server also accepts a secret for the migration path; this client
+    # does not send one.)
     : "${KALITKA_URL:?set KALITKA_URL}"
     tok="$(arg token "$@")"; [ -n "$tok" ] || die "enroll needs --token"
     host="$(arg host "$@")"; [ -n "$host" ] || host="$(hostname -s 2>/dev/null || hostname)"
     keygen >/dev/null
     pub="$(pubkey_b64)"
-    secret="$(openssl rand -hex 24)"   # satisfies the enrol secret requirement; not kept — the key is the credential
-    body="token=$(urlenc "$tok")&secret=$(urlenc "$secret")&hostname=$(urlenc "$host")&public_key=$(urlenc "$pub")"
+    body="token=$(urlenc "$tok")&hostname=$(urlenc "$host")&public_key=$(urlenc "$pub")"
     curl $CURL_OPTS -X POST --data "$body" -H "Content-Type: application/x-www-form-urlencoded" "$KALITKA_URL/agent/v1/enroll"
     ;;
 

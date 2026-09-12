@@ -228,5 +228,37 @@ public class AgentSigningTests
             // The registered key authenticates a signed request end to end.
             Assert.Equal(HttpStatusCode.OK, (await Client().SendAsync(Signed(res.AgentId!, priv, Body("e")))).StatusCode);
         }
+
+        [Fact]
+        public async Task Secretless_enrolment_creates_an_agent_with_no_usable_shared_secret()
+        {
+            var svc = _f.Services.GetRequiredService<AgentService>();
+            var token = await svc.CreateEnrollmentToken("e-secretless", "linux", new[] { "ssh" }, new[] { "ssh:*" }, "google:admin", default);
+            var (pub, priv) = NewKeyPair();
+
+            var res = await svc.Enroll(token, "", "host-sl", "", default, pub);   // key only, no secret
+            Assert.True(res.Ok);
+            var agent = _f.Services.GetRequiredService<IAgentStore>().GetById(res.AgentId!)!;
+            Assert.Equal("", agent.SecretHash);                       // no usable shared secret
+            Assert.Contains(agent.Keys, k => k.PublicKey == pub);
+
+            // Signature works; any secret is rejected (there is nothing to match).
+            Assert.Equal(HttpStatusCode.OK, (await Client().SendAsync(Signed(res.AgentId!, priv, Body("sl")))).StatusCode);
+            var bySecret = new HttpRequestMessage(HttpMethod.Post, "/agent/request")
+            { Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["host"] = "s", ["user"] = "u", ["ip"] = "1.2.3.4" }) };
+            bySecret.Headers.Add("X-Kalitka-Agent-Id", res.AgentId!);
+            bySecret.Headers.Add("X-Kalitka-Agent-Secret", "anything-at-all");
+            Assert.Equal(HttpStatusCode.Forbidden, (await Client().SendAsync(bySecret)).StatusCode);
+        }
+
+        [Fact]
+        public async Task Enrolment_with_neither_key_nor_secret_is_refused()
+        {
+            var svc = _f.Services.GetRequiredService<AgentService>();
+            var token = await svc.CreateEnrollmentToken("e-nocred", "linux", new[] { "ssh" }, new[] { "ssh:*" }, "google:admin", default);
+            var res = await svc.Enroll(token, "", "h", "", default, null);
+            Assert.False(res.Ok);
+            Assert.Equal("no-credential", res.Error);
+        }
     }
 }

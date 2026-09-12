@@ -7,6 +7,27 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-09-12
+
+### Added
+
+- **Secretless enrolment (final slice of 0.21).** An agent can now enrol with **only**
+  a token and a generated public key — no usable shared secret is ever created. The
+  server accepts key-only (secretless), secret-only (the migration path), or both; for
+  key-only it stores an empty, non-verifiable secret hash, so the agent can authenticate
+  *only* by signature. `kalitka-agent enroll` is secretless by default (generates the
+  key, registers its public half, sends no secret). Enrolment with neither a key nor a
+  secret is refused (`no-credential`). The agent detail page shows **Secretless** when
+  an agent has no usable shared secret.
+
+### Notes
+
+- This completes 0.21: the reference client (0.21.1), migration observability (0.21.2)
+  and secretless enrolment (0.21.3). With new agents key-only and the Auth badges
+  showing who still uses the fallback, the migration window can be closed on schedule —
+  after which the per-agent and global shared secrets, the legacy `/agent/*` aliases and
+  the associated code can be removed. Non-breaking.
+
 ## [0.21.2] - 2026-09-12
 
 ### Added
