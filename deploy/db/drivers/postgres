@@ -1,0 +1,73 @@
+# kalitka-db-agent driver: PostgreSQL.
+#
+# The second engine on the 0.23.4 contract — the shared lifecycle (kalitka-db-lib) and
+# crash-recovery reconcile are reused unchanged; only the SQL differs. All SQL runs as
+# the agent's own least-privilege role via $PSQL (a CREATEROLE, NOINHERIT role with
+# ADMIN on the kalitka_* group roles — NOT a superuser). See roles-postgres.sql.
+#
+# PostgreSQL has no separate login/user: a role with LOGIN is the "user". So the profile
+# roles are NOLOGIN group roles carrying the privileges, and an ephemeral principal is a
+# LOGIN role that is a MEMBER of the group and inherits it. Because its privileges come
+# via membership (not direct grants on the role itself), the ephemeral role has no
+# per-database ACLs of its own and DROP ROLE removes it cluster-wide and cleanly.
+
+PSQL="${PSQL:-psql -v ON_ERROR_STOP=1 -qtAX}"
+DB_LEDGER_DB="${DB_LEDGER_DB:-kalitka_agent}"
+
+# Quoted identifier ("" escaped) — on top of the lib's charset guard. Literal ('' escaped).
+_qi() { printf '"%s"' "${1//\"/\"\"}"; }
+_lit() { printf "'%s'" "${1//\'/\'\'}"; }
+_pg() { $PSQL -d "$1" -c "$2"; }              # run SQL in database $1
+
+driver_provision() { # MODE DB ROLE PRINCIPAL PASSWORD
+  local mode="$1" db="$2" role="$3" principal="$4" password="$5" t; t="$(date +%s)"
+  if [ "$mode" = ephemeral ]; then
+    # A LOGIN role, member of the group role (inherits CONNECT + table privileges). The
+    # comment stamps provenance + creation time so the orphan sweep can act on the role
+    # alone even if the ledger row is lost (pg_roles has no create timestamp).
+    _pg "$db" "CREATE ROLE $(_qi "$principal") LOGIN PASSWORD $(_lit "$password") IN ROLE $(_qi "$role");
+COMMENT ON ROLE $(_qi "$principal") IS 'kalitka:created=$t';" >&2
+  else
+    _pg "$db" "GRANT $(_qi "$role") TO $(_qi "$principal");" >&2
+  fi
+}
+
+driver_deprovision() { # MODE DB ROLE PRINCIPAL  (db/role may be empty for an orphan sweep)
+  local mode="$1" db="$2" role="$3" principal="$4"
+  if [ "$mode" = grant ] && [ -n "$role" ]; then
+    _pg "${db:-$DB_LEDGER_DB}" "REVOKE $(_qi "$role") FROM $(_qi "$principal");" >&2
+    return
+  fi
+  # ephemeral / orphan: kill the ability to authenticate FIRST (so even if DROP later
+  # fails on leftover owned objects, the principal can no longer connect), drop what it
+  # owns in the known database, then drop the role (cluster-wide, from any connection).
+  _pg "$DB_LEDGER_DB" "ALTER ROLE $(_qi "$principal") NOLOGIN;" >&2 2>/dev/null || true
+  [ -n "$db" ] && { _pg "$db" "DROP OWNED BY $(_qi "$principal");" >&2 2>/dev/null || true; }
+  _pg "$DB_LEDGER_DB" "DROP ROLE IF EXISTS $(_qi "$principal");" >&2
+}
+
+# ---- ledger (durable provenance; survives loss of the agent host) -------------------
+driver_ledger_put() { # SID MODE DB ROLE PRINCIPAL CREATED EXPIRES RESOURCE PROFILE
+  local sid="$1" mode="$2" db="$3" role="$4" principal="$5" created="$6" expires="$7" resource="$8" profile="$9"
+  local exp="${expires:-NULL}"
+  _pg "$DB_LEDGER_DB" "INSERT INTO kalitka_provisioned_principals
+      (session_id,mode,db_name,role_name,principal,created_at,expires_at,resource,profile)
+    VALUES($(_lit "$sid"),$(_lit "$mode"),$(_lit "$db"),$(_lit "$role"),$(_lit "$principal"),$created,$exp,$(_lit "$resource"),$(_lit "$profile"))
+    ON CONFLICT(session_id) DO UPDATE SET mode=EXCLUDED.mode,db_name=EXCLUDED.db_name,role_name=EXCLUDED.role_name,
+      principal=EXCLUDED.principal,created_at=EXCLUDED.created_at,expires_at=EXCLUDED.expires_at,
+      resource=EXCLUDED.resource,profile=EXCLUDED.profile;" >&2
+}
+
+driver_ledger_del() { _pg "$DB_LEDGER_DB" "DELETE FROM kalitka_provisioned_principals WHERE session_id=$(_lit "$1");" >&2; }
+
+# One line per ledger row: sid|mode|db|role|principal|expires  (matches the lib).
+driver_ledger_list() {
+  _pg "$DB_LEDGER_DB" "SELECT session_id||'|'||mode||'|'||db_name||'|'||role_name||'|'||principal||'|'||COALESCE(expires_at::text,'')
+    FROM kalitka_provisioned_principals;" | sed '/^$/d'
+}
+
+# One line per Kalitka-owned role: principal|created_at(unix seconds, from its comment).
+driver_enumerate() {
+  _pg "$DB_LEDGER_DB" "SELECT r.rolname||'|'||COALESCE(substring(shobj_description(r.oid,'pg_authid') from 'kalitka:created=([0-9]+)'),'')
+    FROM pg_roles r WHERE r.rolname LIKE 'kalitka\_%';" | sed '/^$/d'
+}

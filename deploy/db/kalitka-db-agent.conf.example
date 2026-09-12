@@ -6,7 +6,7 @@
 # provision (capability `db`, e.g. allowed resource db:sql01/*), exactly like an SSH
 # agent — see ../ssh/README.md for keygen/enrol.
 
-# Which engine driver to load (drivers/<engine>). Default: sqlserver.
+# Which engine driver to load (drivers/<engine>). sqlserver | postgres.
 DB_ENGINE=sqlserver
 
 # The SQL Server this agent provisions on. Must equal the <server> part of the
@@ -45,6 +45,13 @@ DB_PROFILE_MAP="sql-readonly:kalitka_readonly sql-writer:kalitka_writer sql-orde
 # here on the agent host, never in kalitka Core.
 #   SQLCMD="sqlcmd -b -S ${DB_SERVER} -U kalitka_agent -P '...' -C"
 SQLCMD="sqlcmd -b -S ${DB_SERVER} -E"
+
+# --- PostgreSQL (DB_ENGINE=postgres) ---
+# How the agent talks to Postgres as its own least-privilege role (see roles-postgres.sql).
+# Prefer a .pgpass / peer / SCRAM setup so no password sits on a command line; keep any
+# password ONLY here on the agent host, never in kalitka Core.
+#   PSQL="psql -v ON_ERROR_STOP=1 -qtAX -h ${DB_SERVER} -U kalitka_agent"
+#   PGPASSWORD=...        # or use ~/.pgpass
 
 # Optional: path to kalitka-agent if not the default.
 # KALITKA_AGENT_BIN=/usr/local/bin/kalitka-agent
