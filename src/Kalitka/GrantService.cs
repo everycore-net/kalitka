@@ -66,7 +66,7 @@ public sealed class GrantService
     }
 
     public sealed record RedeemResult(bool Ok, string? SessionId = null, string? Error = null,
-        string Profile = "", DateTimeOffset? ExpiresAt = null);
+        string Profile = "", DateTimeOffset? ExpiresAt = null, string Subject = "");
 
     /// <summary>Redeem a grant exactly once and start a session. The redeeming agent
     /// must itself be allowed to represent the granted resource — a valid grant is not
@@ -111,14 +111,14 @@ public sealed class GrantService
                 scope.AppendAudit(started);
                 return true;
             }, ct);
-            return ok ? new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt) : new(false, Error: "used");
+            return ok ? new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt, Subject: cap.Subject) : new(false, Error: "used");
         }
 
         if (!await _replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ct)) return new(false, Error: "used");
         _sessions.Start(session);
         await _audit.Append(redeemed, ct);
         await _audit.Append(started, ct);
-        return new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt);
+        return new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt, Subject: cap.Subject);
     }
 
     /// <summary>The connector reports the provisioning outcome for a session: applied
