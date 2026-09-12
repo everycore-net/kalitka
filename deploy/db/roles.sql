@@ -28,10 +28,11 @@ GO
 GRANT SELECT TO [kalitka_readonly];
 -- Writer: read + write, no schema/permission changes.
 GRANT SELECT, INSERT, UPDATE, DELETE TO [kalitka_writer];
--- Order-correction: ONLY the vetted procedure — this is where a profile becomes as
--- narrow as you like, far tighter than any built-in.
-GRANT EXECUTE ON [dbo].[usp_CorrectOrder] TO [kalitka_order_correction];
 GO
+
+GO
+-- Action-mode profile (sql-order-correction) is set up in section 2a (the agent needs
+-- EXECUTE, and its user must exist first).
 
 -- === 2. The agent's least-privilege provisioning identity ===================
 -- The agent must be able to: create/drop ephemeral logins+users, and add/remove
@@ -62,7 +63,16 @@ GRANT ALTER ANY USER TO [kalitka_agent];
 -- ALTER on each user-defined role lets the agent ADD/DROP MEMBER without owning it.
 GRANT ALTER ON ROLE::[kalitka_readonly]         TO [kalitka_agent];
 GRANT ALTER ON ROLE::[kalitka_writer]           TO [kalitka_agent];
-GRANT ALTER ON ROLE::[kalitka_order_correction] TO [kalitka_agent];
+GO
+
+-- 2a. Action-mode procedures (sql-order-correction). No login is handed out — the agent
+-- runs a DBA-vetted procedure once per approval and counts it as exactly one use
+-- (DB_ACTION_MAP). The procedure body is the WHOLE security boundary — keep it as narrow
+-- as the operation (correct one order and nothing else). Define it, then grant the AGENT
+-- execute:
+--   CREATE PROCEDURE dbo.usp_CorrectOrder @OrderId INT, @Reason NVARCHAR(200) AS
+--   BEGIN ... END;
+GRANT EXECUTE ON [dbo].[usp_CorrectOrder] TO [kalitka_agent];
 GO
 
 -- === 3. The provisioning ledger (durable crash-recovery provenance) ==========

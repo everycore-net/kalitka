@@ -36,6 +36,17 @@ CREATE ROLE kalitka_agent LOGIN CREATEROLE NOINHERIT PASSWORD 'CHANGE-ME-on-the-
 GRANT kalitka_readonly TO kalitka_agent WITH ADMIN OPTION;
 GRANT kalitka_writer   TO kalitka_agent WITH ADMIN OPTION;
 
+-- Action-mode profile (sql-order-correction): NO login is handed out — the agent CALLs a
+-- DBA-vetted PROCEDURE once per approval and counts it as exactly one use (DB_ACTION_MAP).
+-- The procedure body is the whole security boundary — keep it narrow. It must be
+-- SECURITY DEFINER (PostgreSQL runs procedures as the INVOKER by default), so it runs as
+-- its owner and the agent needs only EXECUTE, not table rights:
+--   CREATE PROCEDURE public.usp_correct_order(OrderId int, Reason text)
+--     LANGUAGE sql SECURITY DEFINER AS $$ ... $$;
+\connect orders
+GRANT CONNECT ON DATABASE orders TO kalitka_agent;
+GRANT EXECUTE ON PROCEDURE public.usp_correct_order(int, text) TO kalitka_agent;
+
 -- === 3. The provisioning ledger (durable crash-recovery provenance) =========
 -- Its own database, owned by the agent; the agent records every principal it provisions
 -- here (with expiry) before creating it, and deletes the row after a clean teardown.

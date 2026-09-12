@@ -7,6 +7,35 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-12
+
+### Added
+
+- **Usage-controlled database actions (`kalitka-db-agent action`).** For an unambiguous,
+  pre-approved operation, handing out an interactive login is the wrong shape and counting
+  "uses" of an interactive session is meaningless. Action mode is the honest alternative:
+  **no login is handed out** — the profile designates a DBA-vetted stored procedure, and
+  on approval the connector runs it **once** and reports **exactly one use**
+  (`POST /agent/v1/sessions/use`). One approval, one call, one honest use — the only place
+  `max_uses` is meaningful.
+  - The **procedure name and parameter set are trusted config** (`DB_ACTION_MAP`); the
+    caller supplies only parameter **values**, bound as literals — nothing caller-supplied
+    is ever SQL. The procedure body is the whole security boundary.
+  - The connector executes the procedure as the agent's own least-privilege identity
+    (`EXECUTE` on exactly these procedures — see `roles.sql`; on PostgreSQL the procedure
+    is `SECURITY DEFINER` so `EXECUTE` alone suffices), only ever after Kalitka approves. A
+    use is spent **only on success**; a failed action counts as none (`provision-failed`).
+    An access policy can raise the bar per action profile as for role profiles.
+  - Works on both engines (`driver_run_action`): SQL Server `EXEC`, PostgreSQL `CALL`.
+
+### Notes
+
+- Pure client-side — no `Kalitka.dll` change (`max_uses`/`use` shipped in 0.23.1). Verified
+  against **SQL Server 2022** and **PostgreSQL 16**: the vetted procedure executes, an
+  injection attempt in a parameter value is stored as inert literal data (the table is left
+  intact), and the `EXECUTE`-only agent cannot touch the table directly. Completes the 0.23
+  database axis; SSH deepening (JIT certificates, sudo-aware) is next.
+
 ## [0.23.5] - 2026-09-12
 
 ### Added

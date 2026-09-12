@@ -29,6 +29,17 @@ ALTER ROLE $(_brk "$role") ADD MEMBER $(_brk "$principal");" >&2
   fi
 }
 
+# Run a DBA-vetted stored procedure once (action mode). The proc name is trusted config;
+# parameter NAMES are validated identifiers; VALUES are bound as literals (SQL Server
+# implicitly casts to each parameter's declared type), so nothing caller-supplied is ever
+# SQL. Output goes to stdout for the operator.
+driver_run_action() { # DB PROC [NAME VALUE]...
+  local db="$1" proc="$2"; shift 2
+  local set="" n v
+  while [ $# -ge 2 ]; do n="$1"; v="$2"; shift 2; set="${set:+$set, }@${n} = $(_lit "$v")"; done
+  printf '%s\n' "USE $(_brk "$db"); EXEC ${proc}${set:+ $set};" | $SQLCMD
+}
+
 driver_deprovision() { # MODE DB ROLE PRINCIPAL  (db/role may be empty for an orphan sweep)
   local mode="$1" db="$2" role="$3" principal="$4"
   if [ "$mode" = grant ] && [ -n "$db" ] && [ -n "$role" ]; then
