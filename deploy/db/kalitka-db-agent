@@ -23,11 +23,12 @@
 # Usage:
 #   kalitka-db-agent access --database DB --profile P --user U \
 #       [--mode ephemeral|grant] [--login EXISTING_LOGIN] [--ttl-min N] [--max-uses N]
+#   kalitka-db-agent action --database DB --profile P --user U [--param NAME=VALUE]...
 #   kalitka-db-agent reconcile      # crash recovery: revoke orphaned access (cron/timer)
 #
-# `access` runs the whole lifecycle in the foreground and deprovisions on a graceful
-# exit; `reconcile` cleans up what an ungraceful death left behind. Run `reconcile` on a
-# timer AND at boot.
+# `access` provisions interactive, time-boxed access (deprovisioned on a graceful exit);
+# `action` hands out NO login — it runs one DBA-vetted stored procedure and counts it as
+# exactly one use; `reconcile` cleans up what an ungraceful death left behind (timer + boot).
 set -euo pipefail
 
 DB_CONF="${KALITKA_DB_CONF:-/etc/kalitka/db-agent.conf}"
@@ -68,7 +69,8 @@ command -v curl    >/dev/null 2>&1 || { echo "kalitka-db-agent: missing dependen
 cmd="${1:-}"; shift || true
 case "$cmd" in
   access)    db_access "$@" ;;
+  action)    db_action "$@" ;;
   reconcile) db_reconcile ;;
-  ""|-h|--help|help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "kalitka-db-agent: unknown command: $cmd (try --help)" >&2; exit 1 ;;
 esac

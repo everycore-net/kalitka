@@ -32,6 +32,16 @@ COMMENT ON ROLE $(_qi "$principal") IS 'kalitka:created=$t';" >&2
   fi
 }
 
+# Run a DBA-vetted stored PROCEDURE once (action mode). Proc name is trusted config;
+# parameter NAMES are validated identifiers; VALUES are bound as literals via named args,
+# so nothing caller-supplied is ever SQL. Output goes to stdout for the operator.
+driver_run_action() { # DB PROC [NAME VALUE]...
+  local db="$1" proc="$2"; shift 2
+  local set="" n v
+  while [ $# -ge 2 ]; do n="$1"; v="$2"; shift 2; set="${set:+$set, }${n} => $(_lit "$v")"; done
+  $PSQL -d "$db" -c "CALL ${proc}(${set});"
+}
+
 driver_deprovision() { # MODE DB ROLE PRINCIPAL  (db/role may be empty for an orphan sweep)
   local mode="$1" db="$2" role="$3" principal="$4"
   if [ "$mode" = grant ] && [ -n "$role" ]; then

@@ -47,6 +47,14 @@ role_for() {
   return 1
 }
 
+# profile -> a vetted stored procedure (action mode). "profile=schema.proc" tokens.
+DB_ACTION_MAP="${DB_ACTION_MAP:-}"
+action_proc_for() {
+  local p="$1" tok
+  for tok in $DB_ACTION_MAP; do case "$tok" in "$p="*) printf '%s' "${tok#*=}"; return 0 ;; esac; done
+  return 1
+}
+
 now() { date +%s; }
 
 # ---- local intent journal (one file per session; key=value lines) ------------------
@@ -164,6 +172,75 @@ db_access() {
     echo "kalitka-db-agent: press Enter (or Ctrl-C) to end the session and revoke access." >&2
     read -r _ || true
   fi
+}
+
+# ---- controlled-action mode --------------------------------------------------------
+# No interactive login is ever handed out. The profile designates a DBA-vetted stored
+# procedure; the connector runs it ONCE, with caller-supplied parameter VALUES bound as
+# literals (the proc name and parameter set are trusted config, never caller SQL), and
+# reports exactly one use. This is the only place counting a use is honest — one
+# unambiguous, pre-approved operation per approval — so max_uses is 1.
+db_action() {
+  local db profile user
+  db="$(arg database "$@")";     [ -n "$db" ]      || lib_die "action needs --database"
+  profile="$(arg profile "$@")"; [ -n "$profile" ] || lib_die "action needs --profile"
+  user="$(arg user "$@")";       [ -n "$user" ]    || lib_die "action needs --user"
+  safe_ident "$db"   || lib_die "invalid --database (allowed: A-Za-z0-9_-)"
+  safe_ident "$user" || lib_die "invalid --user (allowed: A-Za-z0-9_-)"
+
+  local proc; proc="$(action_proc_for "$profile")" \
+    || lib_die "no action mapped for profile '$profile' (set DB_ACTION_MAP)"
+  case "$proc" in ''|*[!A-Za-z0-9_.]*) lib_die "invalid action proc in config: $proc" ;; esac
+
+  # Collect --param NAME=VALUE pairs. Names are validated identifiers (they name the
+  # proc's parameters); values are opaque and get bound as literals by the driver.
+  local -a pargs=(); local pv name
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --param) pv="${2:-}"; shift 2 || shift
+        name="${pv%%=*}"; safe_ident "$name" || lib_die "invalid param name: $name"
+        pargs+=("$name" "${pv#*=}") ;;
+      *) shift ;;
+    esac
+  done
+
+  local resource="db:${DB_SERVER}/${db}"
+
+  # Raise with max_uses=1 (one approval authorises exactly one execution), wait, redeem.
+  local req id state
+  req="$("$AGENT" request --resource "$resource" --profile "$profile" --user "$user" --max-uses 1)" || lib_die "gate unreachable"
+  id="$(printf '%s' "$req" | field id)"; state="$(printf '%s' "$req" | field state)"
+  [ -n "$id" ] || lib_die "no request id (state=$state)"
+  echo "kalitka-db-agent: action request $id for $proc ($profile) — waiting for approval..." >&2
+
+  local i=0 st grant=""
+  while [ "$i" -lt 100 ]; do
+    sleep 3; i=$((i + 1))
+    st="$("$AGENT" poll --id "$id" 2>/dev/null)" || continue
+    case "$(printf '%s' "$st" | field state)" in
+      approved) grant="$(printf '%s' "$st" | field grant)"; break ;;
+      denied) lib_die "denied" ;;
+      gone)   lib_die "request expired" ;;
+    esac
+  done
+  [ -n "$grant" ] || lib_die "timed out waiting for approval"
+
+  local red sid
+  red="$("$AGENT" redeem --grant "$grant" --agent "$(hostname -s 2>/dev/null || hostname)")" || lib_die "grant redemption failed"
+  sid="$(printf '%s' "$red" | field session_id)"
+  [ -n "$sid" ] || lib_die "grant not redeemable (already used or expired)"
+
+  # Execute the action. A use is spent only on success — a failed action counts as none
+  # and closes the session as provision-failed (access was never really exercised).
+  local out
+  if ! out="$(driver_run_action "$db" "$proc" "${pargs[@]}")"; then
+    "$AGENT" provisioned --session-id "$sid" --error "action failed: $proc" >/dev/null 2>&1 || true
+    lib_die "action failed: $proc"
+  fi
+  "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true   # audit: the action ran
+  [ -n "$out" ] && printf '%s\n' "$out"
+  "$AGENT" use --session-id "$sid" >/dev/null 2>&1 || true           # one call = one honest use (session -> spent)
+  echo "kalitka-db-agent: action '$proc' executed and counted (1 use)." >&2
 }
 
 # ---- crash recovery ----------------------------------------------------------------

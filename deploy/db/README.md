@@ -67,6 +67,34 @@ Either way the agent deprovisions on a **graceful** exit — Enter, Ctrl-C, the
 `--ttl-min` window, or an error mid-flight all run the same teardown. An *ungraceful*
 death (OOM/SIGKILL/host panic) is handled by reconcile, below.
 
+## Controlled actions (`kalitka-db-agent action`)
+
+For an **unambiguous, pre-approved operation** — "correct this order" — handing out an
+interactive login is the wrong shape, and counting "uses" of an interactive session is
+meaningless (one connection runs arbitrarily many statements). Action mode is the honest
+alternative: **no login is handed out at all**. The profile designates a DBA-vetted
+stored procedure; on approval the connector runs it **once** and reports **exactly one
+use** (`/agent/v1/sessions/use`) — one approval, one call, one honest use.
+
+```
+kalitka-db-agent action --database orders --profile sql-order-correction \
+    --user sergej --param OrderId=4711 --param Reason='duplicate charge'
+```
+
+- The **procedure name and its parameter set are trusted config** (`DB_ACTION_MAP`),
+  never caller input. The caller supplies only parameter **values**, which are bound as
+  literals — nothing caller-supplied is ever SQL. The procedure's body is the whole
+  security boundary; keep it as narrow as the operation.
+- The connector executes the procedure as the agent's own least-privilege identity
+  (which holds `EXECUTE` on exactly these procedures — see `roles.sql`), only ever after
+  Kalitka approves. A use is spent **only on success**; a failed action counts as none
+  and closes the session `provision-failed`.
+- An access **policy** can raise the bar per action profile (e.g. four-eyes for
+  `sql-order-correction`), exactly as for the role profiles.
+
+This is the only place `max_uses` is meaningful — do **not** try to stretch it onto an
+interactive session. Repeated actions are repeated approvals.
+
 ## Crash recovery (`kalitka-db-agent reconcile`)
 
 "Deprovisions on exit" only holds for a graceful exit. If the process or host dies

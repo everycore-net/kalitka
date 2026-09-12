@@ -36,7 +36,13 @@ DB_MODE=ephemeral
 # profile name; this mapping is entirely local.
 # (user-defined roles — see roles.sql. sql-dba is intentionally NOT mapped by
 # default: a least-privilege agent cannot hand out db_owner. Add it consciously.)
-DB_PROFILE_MAP="sql-readonly:kalitka_readonly sql-writer:kalitka_writer sql-order-correction:kalitka_order_correction"
+DB_PROFILE_MAP="sql-readonly:kalitka_readonly sql-writer:kalitka_writer"
+
+# profile -> a DBA-vetted stored procedure, for `action` mode (no login handed out; the
+# connector runs the proc once and counts it as exactly one use). "profile=schema.proc"
+# tokens. The agent needs EXECUTE on each proc (see roles.sql). Only unambiguous,
+# pre-approved operations belong here — never a way to run arbitrary SQL.
+DB_ACTION_MAP="sql-order-correction=dbo.usp_CorrectOrder"
 
 # How the agent authenticates to SQL Server AS ITS OWN least-privilege identity.
 # Windows / gMSA (preferred): integrated auth, no password anywhere:
