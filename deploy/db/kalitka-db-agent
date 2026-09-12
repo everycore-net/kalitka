@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# kalitka-db-agent — the reference database connector for SQL Server.
+#
+# It runs NEXT TO SQL Server and turns an approved kalitka grant into real,
+# time-boxed SQL access — then removes it the moment the grant ends. This is the
+# local half of the 0.23 architecture:
+#
+#   kalitka Core  --signed grant-->  kalitka-db-agent  -->  SQL Server
+#
+# Core is the control plane: it decides who / to what / with which profile / under
+# what conditions, and records it. It NEVER holds a DB-admin credential and never
+# issues raw SQL permissions — a grant carries only a server-side PROFILE
+# (sql-readonly, sql-writer, sql-dba, sql-order-correction, …) that this connector
+# maps, locally, to a predefined SQL role. *kalitka brokers authority, not database
+# credentials.*
+#
+# The protocol half (raise/poll/redeem/report) is delegated to kalitka-agent, so
+# the strong Ed25519-signed credential model is used automatically; this connector
+# only adds the SQL provisioning. Two modes:
+#   ephemeral (default, preferred)  create a JIT login+user -> add to the role ->
+#                                   DROP when the grant ends. Returns the credential
+#                                   to YOU, out of band; Core never sees it.
+#   grant                           an EXISTING principal (--login) -> ALTER ROLE ADD
+#                                   MEMBER -> DROP MEMBER when the grant ends.
+#
+# The agent authenticates to SQL Server as its OWN least-privilege identity via the
+# configured $SQLCMD (on Windows, integrated auth under a gMSA: `sqlcmd -E`; never a
+# SQL-admin password in Core). See roles.sql for the minimal rights it needs.
+#
+# Config is sourced from $KALITKA_DB_CONF (default /etc/kalitka/db-agent.conf); it
+# also sources the kalitka-agent config for KALITKA_URL and the agent credential.
+# See kalitka-db-agent.conf.example.
+#
+# Usage:
+#   kalitka-db-agent access --database DB --profile P --user U \
+#       [--mode ephemeral|grant] [--login EXISTING_LOGIN] [--ttl-min N] [--max-uses N]
+#
+# `access` runs the whole lifecycle in the foreground and ALWAYS deprovisions on
+# exit (Enter, Ctrl-C, TTL, or error) — the JIT guarantee. Run one per session.
+set -euo pipefail
+
+DB_CONF="${KALITKA_DB_CONF:-/etc/kalitka/db-agent.conf}"
+[ -r "$DB_CONF" ] && . "$DB_CONF"
+# The agent credential + URL live in the shared kalitka-agent config; source it too
+# so KALITKA_URL / KALITKA_AGENT_ID / key are available to kalitka-agent below.
+AGENT_CONF="${KALITKA_CONF:-/etc/kalitka-approve.conf}"
+[ -r "$AGENT_CONF" ] && . "$AGENT_CONF"
+
+AGENT="${KALITKA_AGENT_BIN:-/usr/local/bin/kalitka-agent}"
+DB_SERVER="${DB_SERVER:-localhost}"
+DB_MODE_DEFAULT="${DB_MODE:-ephemeral}"
+# profile -> SQL role map, one "profile:role" per whitespace token. Roles must be
+# predefined on the server (see roles.sql); the profile is opaque to Core.
+DB_PROFILE_MAP="${DB_PROFILE_MAP:-sql-readonly:kalitka_readonly sql-writer:kalitka_writer sql-order-correction:kalitka_order_correction}"
+# How the agent talks to SQL as its own identity. gMSA/integrated: "sqlcmd -b -S $DB_SERVER -E".
+SQLCMD="${SQLCMD:-sqlcmd -b -S ${DB_SERVER} -E}"
+
+die() { echo "kalitka-db-agent: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+
+# jq-free JSON scalar read: {"session_id":"AB",...} -> value by key.
+field() { sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'; }
+
+arg() { local want="$1"; shift; while [ $# -gt 0 ]; do case "$1" in "--$want") printf '%s' "${2:-}"; return 0 ;; esac; shift; done; }
+
+# A SQL identifier is bracket-quoted with ] doubled; but we ALSO refuse anything
+# outside a strict charset up front, so a hostile database/user/login/role name can
+# never reach the T-SQL at all (defence in depth, not just quoting).
+safe_ident() { case "$1" in ''|*[!A-Za-z0-9_-]*) return 1 ;; *) return 0 ;; esac; }
+brk() { printf '[%s]' "${1//]/]]}"; }   # [name] with ] escaped
+
+role_for() {
+  local p="$1" tok
+  for tok in $DB_PROFILE_MAP; do
+    case "$tok" in "$p:"*) printf '%s' "${tok#*:}"; return 0 ;; esac
+  done
+  return 1
+}
+
+# Run a batch as the agent's own SQL identity. Prints sqlcmd's output; non-zero on error.
+sql() { printf '%s\n' "$1" | $SQLCMD -h -1 -W 2>&1; }
+
+access() {
+  need sed
+  local db profile user mode login ttl maxuses
+  db="$(arg database "$@")";  [ -n "$db" ]      || die "access needs --database"
+  profile="$(arg profile "$@")"; [ -n "$profile" ] || die "access needs --profile"
+  user="$(arg user "$@")";    [ -n "$user" ]    || die "access needs --user"
+  mode="$(arg mode "$@")";    [ -n "$mode" ]    || mode="$DB_MODE_DEFAULT"
+  login="$(arg login "$@")"
+  ttl="$(arg ttl-min "$@")"
+  maxuses="$(arg max-uses "$@")"
+
+  safe_ident "$db"   || die "invalid --database (allowed: A-Za-z0-9_-)"
+  safe_ident "$user" || die "invalid --user (allowed: A-Za-z0-9_-)"
+  case "$mode" in ephemeral|grant) ;; *) die "invalid --mode: $mode (ephemeral|grant)" ;; esac
+  [ "$mode" = grant ] && { [ -n "$login" ] || die "grant mode needs --login"; safe_ident "$login" || die "invalid --login"; }
+
+  local resource="db:${DB_SERVER}/${db}"
+
+  # 1) Raise the request and wait for a human. All gate I/O via kalitka-agent, so
+  #    it is Ed25519-signed. Core, not us, applies any policy (quorum, shorter TTL).
+  local req extra=()
+  [ -n "$maxuses" ] && extra+=(--max-uses "$maxuses")
+  req="$("$AGENT" request --resource "$resource" --profile "$profile" --user "$user" "${extra[@]}")" \
+    || die "gate unreachable"
+  local id state; id="$(printf '%s' "$req" | field id)"; state="$(printf '%s' "$req" | field state)"
+  [ -n "$id" ] || die "no request id (state=$state)"
+  echo "kalitka-db-agent: request $id for $resource ($profile) — waiting for approval..." >&2
+
+  local i=0 st grant=""
+  while [ "$i" -lt 100 ]; do
+    sleep 3; i=$((i + 1))
+    st="$("$AGENT" poll --id "$id" 2>/dev/null)" || continue
+    case "$(printf '%s' "$st" | field state)" in
+      approved) grant="$(printf '%s' "$st" | field grant)"; break ;;
+      denied) die "denied" ;;
+      gone)   die "request expired" ;;
+    esac
+  done
+  [ -n "$grant" ] || die "timed out waiting for approval"
+
+  # 2) Redeem the one-time grant to start a session. The server returns the
+  #    authoritative profile — provision THAT, not the requested one.
+  local red sid granted_profile
+  red="$("$AGENT" redeem --grant "$grant" --agent "$(hostname -s 2>/dev/null || hostname)")" \
+    || die "grant redemption failed"
+  sid="$(printf '%s' "$red" | field session_id)"
+  [ -n "$sid" ] || die "grant not redeemable (already used or expired)"
+  granted_profile="$(printf '%s' "$red" | field profile)"; [ -n "$granted_profile" ] || granted_profile="$profile"
+
+  local role; role="$(role_for "$granted_profile")" \
+    || { "$AGENT" provisioned --session-id "$sid" --error "unknown profile: $granted_profile" >/dev/null 2>&1 || true; die "no role mapped for profile '$granted_profile'"; }
+
+  # 3) Provision. Whatever we create, arrange to tear it down on ANY exit BEFORE we
+  #    create it, so a failure midway still deprovisions and reports the session end.
+  local eph_login="" eph_pass=""
+  cleanup() {
+    local tsql
+    if [ "$mode" = ephemeral ] && [ -n "$eph_login" ]; then
+      tsql="USE $(brk "$db"); IF DATABASE_PRINCIPAL_ID(N'${eph_login}') IS NOT NULL DROP USER $(brk "$eph_login"); "
+      tsql+="IF SUSER_ID(N'${eph_login}') IS NOT NULL DROP LOGIN $(brk "$eph_login");"
+      sql "$tsql" >/dev/null 2>&1 || echo "kalitka-db-agent: WARNING: could not drop $eph_login — check manually" >&2
+    elif [ "$mode" = grant ]; then
+      sql "USE $(brk "$db"); ALTER ROLE $(brk "$role") DROP MEMBER $(brk "$login");" >/dev/null 2>&1 || true
+    fi
+    "$AGENT" session-end --session-id "$sid" --outcome closed >/dev/null 2>&1 || true
+    echo "kalitka-db-agent: access revoked, session $sid closed." >&2
+  }
+  trap cleanup EXIT INT TERM
+
+  local perr=""
+  if [ "$mode" = ephemeral ]; then
+    eph_login="kalitka_${user}_$(openssl rand -hex 4)"
+    eph_pass="$(openssl rand -base64 24)"
+    # base64 can contain ]; keep the password out of an identifier — it only ever
+    # goes in a PASSWORD literal, single-quoted with ' doubled.
+    local pass_lit="${eph_pass//\'/\'\'}"
+    perr="$(sql "CREATE LOGIN $(brk "$eph_login") WITH PASSWORD = N'${pass_lit}';
+USE $(brk "$db"); CREATE USER $(brk "$eph_login") FOR LOGIN $(brk "$eph_login");
+ALTER ROLE $(brk "$role") ADD MEMBER $(brk "$eph_login");")" \
+      || { "$AGENT" provisioned --session-id "$sid" --error "provisioning failed: ${perr:-sql error}" >/dev/null 2>&1 || true; die "SQL provisioning failed: $perr"; }
+  else
+    perr="$(sql "USE $(brk "$db"); ALTER ROLE $(brk "$role") ADD MEMBER $(brk "$login");")" \
+      || { "$AGENT" provisioned --session-id "$sid" --error "provisioning failed: ${perr:-sql error}" >/dev/null 2>&1 || true; die "SQL provisioning failed: $perr"; }
+  fi
+
+  # 4) Report applied, hand the credential to the operator (never to Core), and hold
+  #    the session open for the interactive window. On exit the trap revokes.
+  "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
+  echo    "kalitka-db-agent: access provisioned (profile=$granted_profile role=$role)." >&2
+  echo    "  server:   $DB_SERVER"
+  echo    "  database: $db"
+  if [ "$mode" = ephemeral ]; then
+    echo  "  login:    $eph_login"
+    echo  "  password: $eph_pass"
+    echo  "  (ephemeral — dropped when this session ends; not shown again)"
+  else
+    echo  "  login:    $login  (added to role $role for this session)"
+  fi
+
+  if [ -n "$ttl" ]; then
+    echo "kalitka-db-agent: holding for ${ttl} min, then revoking (Ctrl-C to end now)..." >&2
+    sleep "$((ttl * 60))"
+  else
+    echo "kalitka-db-agent: press Enter (or Ctrl-C) to end the session and revoke access." >&2
+    read -r _ || true
+  fi
+}
+
+need openssl; need curl
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  access) access "$@" ;;
+  ""|-h|--help|help) sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $cmd (try --help)" ;;
+esac
