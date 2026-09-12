@@ -6,9 +6,25 @@
 # provision (capability `db`, e.g. allowed resource db:sql01/*), exactly like an SSH
 # agent — see ../ssh/README.md for keygen/enrol.
 
+# Which engine driver to load (drivers/<engine>). Default: sqlserver.
+DB_ENGINE=sqlserver
+
 # The SQL Server this agent provisions on. Must equal the <server> part of the
 # resource: a request for db:sql01/orders provisions here only if DB_SERVER=sql01.
 DB_SERVER=sql01
+
+# The database holding the crash-recovery ledger (dbo.ProvisionedPrincipals). Created
+# by roles.sql; keep it separate so the agent's rights stay narrow.
+DB_LEDGER_DB=kalitka_agent
+
+# Where the local intent journal lives (survives a process crash). One file per session.
+KALITKA_DB_STATE=/var/lib/kalitka/db-agent
+
+# Crash-recovery ceilings (seconds). OrphanAbsoluteMaxAge is the only case where a
+# principal is dropped without confirming it against Core or a local expiry, so keep it
+# >= the longest grant TTL you allow, plus grace. Default: 2 x MaxGrantTtl.
+MAX_GRANT_TTL_SEC=3600
+ORPHAN_ABSOLUTE_MAX_AGE_SEC=7200
 
 # Default provisioning mode when --mode is not given.
 #   ephemeral  create a JIT login+user, drop it when the grant ends (preferred)

@@ -65,7 +65,38 @@ GRANT ALTER ON ROLE::[kalitka_writer]           TO [kalitka_agent];
 GRANT ALTER ON ROLE::[kalitka_order_correction] TO [kalitka_agent];
 GO
 
--- === 3. JIT DBA (the sql-dba profile) — opt-in, deliberately not here ========
+-- === 3. The provisioning ledger (durable crash-recovery provenance) ==========
+-- The agent records every principal it provisions here, WITH its expiry, before it
+-- creates anything, and deletes the row after a clean teardown. This survives loss of
+-- the agent host (the local journal only survives a process crash), so reconcile can
+-- revoke an orphaned principal on a locally-known expiry even while Core is
+-- unreachable. Its own database so it is separable and the agent's rights stay narrow.
+IF DB_ID(N'kalitka_agent') IS NULL CREATE DATABASE [kalitka_agent];
+GO
+USE [kalitka_agent];
+GO
+IF OBJECT_ID(N'dbo.ProvisionedPrincipals') IS NULL
+    CREATE TABLE dbo.ProvisionedPrincipals(
+        session_id  NVARCHAR(64)  NOT NULL PRIMARY KEY,
+        mode        NVARCHAR(16)  NOT NULL,
+        db_name     NVARCHAR(128) NOT NULL,
+        role_name   NVARCHAR(128) NOT NULL,
+        principal   NVARCHAR(128) NOT NULL,
+        created_at  BIGINT        NOT NULL,   -- unix seconds
+        expires_at  BIGINT        NULL,       -- unix seconds; NULL only if the grant had none
+        resource    NVARCHAR(200) NOT NULL,
+        profile     NVARCHAR(64)  NOT NULL);
+GO
+-- The agent (see below) reads and writes only this table.
+IF DATABASE_PRINCIPAL_ID(N'kalitka_agent') IS NULL
+    CREATE USER [kalitka_agent] FOR LOGIN [kalitka_agent];
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.ProvisionedPrincipals TO [kalitka_agent];
+-- For the orphan safety-net sweep the agent lists its own logins (server catalog):
+GO
+GRANT VIEW ANY DEFINITION TO [kalitka_agent];
+GO
+
+-- === 4. JIT DBA (the sql-dba profile) — opt-in, deliberately not here ========
 -- Real db_owner/sysadmin membership cannot be handed out by a least-privilege agent:
 -- to add someone to db_owner the agent would itself need db_owner. So sql-dba is NOT
 -- wired by default. If you genuinely need JIT DBA, either (a) map sql-dba to a broad

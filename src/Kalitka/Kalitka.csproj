@@ -7,7 +7,7 @@
     <RootNamespace>Kalitka</RootNamespace>
     <AssemblyName>Kalitka</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.23.3</Version>
+    <Version>0.23.4</Version>
     <Copyright>Copyright (C) 2026 everycore</Copyright>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>

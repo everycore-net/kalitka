@@ -1,0 +1,75 @@
+# kalitka-db-agent driver: Microsoft SQL Server.
+#
+# Implements the narrow contract kalitka-db-lib calls — provision / deprovision, the
+# in-DB ledger, and orphan enumeration. All SQL runs as the agent's own least-privilege
+# identity via $SQLCMD (gMSA/integrated on Windows: `sqlcmd -b -S $DB_SERVER -E`). The
+# ledger lives in its own database ($DB_LEDGER_DB) so it survives loss of the agent host;
+# see roles.sql for the table and the grants the agent needs.
+
+SQLCMD="${SQLCMD:-sqlcmd -b -S ${DB_SERVER} -E}"
+DB_LEDGER_DB="${DB_LEDGER_DB:-kalitka_agent}"
+
+# Identifier hard-guard (defence in depth on top of the lib's safe_ident) + bracket-quote.
+_brk() { printf '[%s]' "${1//]/]]}"; }
+# A string literal, single-quoted with ' doubled.
+_lit() { printf "N'%s'" "${1//\'/\'\'}"; }
+
+# Run a batch as the agent identity; -h -1 -W give header-less, trimmed output.
+_sql() { printf '%s\n' "$1" | $SQLCMD -h -1 -W 2>&1; }
+_sql_q() { printf '%s\n' "$1" | $SQLCMD -h -1 -W; }   # quiet variant for read queries
+
+driver_provision() { # MODE DB ROLE PRINCIPAL PASSWORD
+  local mode="$1" db="$2" role="$3" principal="$4" password="$5"
+  if [ "$mode" = ephemeral ]; then
+    _sql "CREATE LOGIN $(_brk "$principal") WITH PASSWORD = $(_lit "$password");
+USE $(_brk "$db"); CREATE USER $(_brk "$principal") FOR LOGIN $(_brk "$principal");
+ALTER ROLE $(_brk "$role") ADD MEMBER $(_brk "$principal");" >&2
+  else
+    _sql "USE $(_brk "$db"); ALTER ROLE $(_brk "$role") ADD MEMBER $(_brk "$principal");" >&2
+  fi
+}
+
+driver_deprovision() { # MODE DB ROLE PRINCIPAL  (db/role may be empty for an orphan sweep)
+  local mode="$1" db="$2" role="$3" principal="$4"
+  if [ "$mode" = grant ] && [ -n "$db" ] && [ -n "$role" ]; then
+    _sql "USE $(_brk "$db"); ALTER ROLE $(_brk "$role") DROP MEMBER $(_brk "$principal");" >&2
+    return
+  fi
+  # ephemeral (or an orphan whose db is unknown): drop the DB user if we know the db,
+  # then always drop the server login — that alone revokes the ability to authenticate.
+  if [ -n "$db" ]; then
+    _sql "USE $(_brk "$db"); IF DATABASE_PRINCIPAL_ID($(_lit "$principal")) IS NOT NULL DROP USER $(_brk "$principal");" >&2 || true
+  fi
+  _sql "IF SUSER_ID($(_lit "$principal")) IS NOT NULL DROP LOGIN $(_brk "$principal");" >&2
+}
+
+# ---- ledger (durable provenance in the DB; survives loss of the agent host) ---------
+driver_ledger_put() { # SID MODE DB ROLE PRINCIPAL CREATED EXPIRES RESOURCE PROFILE
+  local sid="$1" mode="$2" db="$3" role="$4" principal="$5" created="$6" expires="$7" resource="$8" profile="$9"
+  local exp="${expires:-NULL}"
+  _sql "USE $(_brk "$DB_LEDGER_DB");
+MERGE dbo.ProvisionedPrincipals AS t
+USING (SELECT $(_lit "$sid") AS session_id) AS s ON t.session_id = s.session_id
+WHEN MATCHED THEN UPDATE SET mode=$(_lit "$mode"), db_name=$(_lit "$db"), role_name=$(_lit "$role"),
+     principal=$(_lit "$principal"), created_at=$created, expires_at=$exp, resource=$(_lit "$resource"), profile=$(_lit "$profile")
+WHEN NOT MATCHED THEN INSERT(session_id,mode,db_name,role_name,principal,created_at,expires_at,resource,profile)
+     VALUES($(_lit "$sid"),$(_lit "$mode"),$(_lit "$db"),$(_lit "$role"),$(_lit "$principal"),$created,$exp,$(_lit "$resource"),$(_lit "$profile"));" >&2
+}
+
+driver_ledger_del() { # SID
+  _sql "USE $(_brk "$DB_LEDGER_DB"); DELETE FROM dbo.ProvisionedPrincipals WHERE session_id = $(_lit "$1");" >&2
+}
+
+# Emit one line per ledger row: sid|mode|db|role|principal|expires  (matches the lib).
+driver_ledger_list() {
+  _sql_q "SET NOCOUNT ON; USE $(_brk "$DB_LEDGER_DB");
+SELECT session_id+'|'+mode+'|'+db_name+'|'+role_name+'|'+principal+'|'+ISNULL(CONVERT(varchar(20),expires_at),'')
+FROM dbo.ProvisionedPrincipals;" | sed '/^$/d'
+}
+
+# Emit one line per Kalitka-owned server login: principal|created_at(unix seconds).
+driver_enumerate() {
+  _sql_q "SET NOCOUNT ON;
+SELECT name+'|'+CONVERT(varchar(20),DATEDIFF_BIG(second,'1970-01-01',create_date))
+FROM sys.sql_logins WHERE name LIKE 'kalitka[_]%';" | sed '/^$/d'
+}

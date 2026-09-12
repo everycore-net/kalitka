@@ -7,6 +7,44 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.4] - 2026-09-12
+
+### Added
+
+- **DB-connector abstraction + crash recovery (4th slice of 0.23).** The shared
+  lifecycle and a narrow provisioning contract are extracted from the SQL Server
+  connector *before* a second engine, and — the point of the slice — orphaned access is
+  reconciled after a crash. `always deprovisions on exit` only held for a graceful exit;
+  an ungraceful death (OOM/SIGKILL/host panic) after `CREATE LOGIN` left a principal that
+  physically outlived the agent while its TTL lived only in Core.
+  - **Engine-agnostic structure.** `deploy/db/kalitka-db-lib` owns the lifecycle
+    (request→approve→redeem→provision→report→hold→deprovision→end→**reconcile**) and the
+    gate protocol; a per-engine driver (`deploy/db/drivers/<engine>`) owns only the SQL
+    (`driver_provision`/`driver_deprovision`/`driver_ledger_*`/`driver_enumerate`). SQL
+    Server is the first driver; `DB_ENGINE` selects it. PostgreSQL (0.23.5) drops on unchanged.
+  - **Durable provenance = correctness.** Written *before* provisioning, cleared *after* a
+    clean teardown, both carrying `expires_at`: a **local journal** (survives a process
+    crash) and an **in-DB ledger** `KalitkaProvisionedPrincipals` (survives loss of the
+    agent host). Ephemeral principals are named `kalitka_<session-id>`.
+  - **`kalitka-db-agent reconcile`** (run at boot and on a timer) decides per principal:
+    known + locally expired → drop even offline (`local-expiry`); known + locally valid →
+    keep (a Core outage is never on its own a reason to revoke); Core reachable + not open
+    → drop (`core-confirmed`); a Kalitka-owned principal past `OrphanAbsoluteMaxAge`
+    (default `2 × MaxGrantTtl`) → drop (`orphan-max-age`). It **never** drops a principal
+    without reliable Kalitka provenance.
+  - **Core additions:** the session carries the grant's `expires_at` (returned on redeem);
+    **`GET /agent/v1/sessions/{id}` → `{state, expires_at}`** for a liveness check; and
+    **`POST /agent/v1/sessions/reconciled`** records a crash-recovery revoke with its
+    distinct reason (audited `session.reconciled`) — so a cleanup made without Core
+    confirmation is always explainable. `kalitka-agent` gains `liveness` and `reconciled`.
+
+### Notes
+
+- New column `sessions(expires_at)` in SQLite + Postgres, added idempotently for upgrades;
+  non-breaking. Reconcile decision table + provenance gate verified against SQL Server 2022
+  (local-expiry drop while Core is down, locally-valid keep, orphan-max-age drop, and a
+  non-Kalitka login left untouched). Next in 0.23: **PostgreSQL** on this contract.
+
 ## [0.23.3] - 2026-09-12
 
 ### Added

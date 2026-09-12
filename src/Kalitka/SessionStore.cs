@@ -25,6 +25,12 @@ public sealed record SessionRecord(
     /// <summary>Uses left before the grant is spent; -1 = unlimited (session + TTL only).
     /// Reaching 0 closes the session (outcome <c>spent</c>).</summary>
     public int RemainingUses { get; init; } = -1;
+
+    /// <summary>When the grant's authority ends (the grant's own expiry, carried onto the
+    /// session at redemption). The connector journals this so it can revoke on a locally
+    /// known expiry even while Core is unreachable — a Core outage must never extend access
+    /// past a time we already know. Null only for pre-0.23.4 rows.</summary>
+    public DateTimeOffset? ExpiresAt { get; init; }
 }
 
 /// <summary>

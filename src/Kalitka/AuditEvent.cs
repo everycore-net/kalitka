@@ -30,6 +30,7 @@ public static class AuditEvents
     public const string GrantExpired     = "grant.expired";
     public const string SessionStarted   = "session.started";
     public const string SessionProvisioned = "session.provisioned";   // DB-agent applied the grant's profile
+    public const string SessionReconciled = "session.reconciled";     // crash-recovery cleanup (reason: core-confirmed | local-expiry | orphan-max-age)
     public const string SessionEnded     = "session.ended";
     public const string AdminLogin       = "admin.login";
     public const string AdminLoginDenied = "admin.login_denied";
