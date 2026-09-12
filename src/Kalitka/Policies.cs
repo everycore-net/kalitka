@@ -28,10 +28,17 @@ public sealed record AccessPolicy(
     /// operation class — e.g. a DDL profile needs more approvers than read-only.</summary>
     public string MatchProfile { get; init; } = "";
 
+    /// <summary>When set, a matching request MUST carry a command (0.26): no open-shell /
+    /// interactive access to this resource — only a specific, approved command (an SSH
+    /// cert with a <c>force-command</c>). Restrict-only: it can forbid the open shell, never
+    /// grant one.</summary>
+    public bool RequireCommand { get; init; }
+
     public bool SameContent(AccessPolicy other) =>
         string.Equals(MatchResource, other.MatchResource, StringComparison.OrdinalIgnoreCase)
         && MatchTags.SequenceEqual(other.MatchTags)
         && string.Equals(MatchProfile, other.MatchProfile, StringComparison.OrdinalIgnoreCase)
+        && RequireCommand == other.RequireCommand
         && RequiredApprovals == other.RequiredApprovals
         && GrantTtlMinutes == other.GrantTtlMinutes;
 
@@ -61,7 +68,8 @@ public static class ResourceGlob
 /// <summary>The constraints in force for a request, after combining every matching
 /// policy. Empty/default (<see cref="RequiredApprovals"/> = 1, no TTL override) when
 /// nothing matches.</summary>
-public sealed record PolicyDecision(int RequiredApprovals, int? GrantTtlMinutes, string[] MatchedPolicies)
+public sealed record PolicyDecision(int RequiredApprovals, int? GrantTtlMinutes, string[] MatchedPolicies,
+    bool RequireCommand = false)
 {
     public static readonly PolicyDecision None = new(1, null, Array.Empty<string>());
 }
@@ -109,7 +117,8 @@ public sealed class PolicyService
         var required = Math.Max(1, matched.Max(p => p.RequiredApprovals));
         var ttls = matched.Where(p => p.GrantTtlMinutes > 0).Select(p => p.GrantTtlMinutes).ToList();
         int? ttl = ttls.Count > 0 ? ttls.Min() : null;
-        return new PolicyDecision(required, ttl, matched.Select(p => p.Name).OrderBy(n => n).ToArray());
+        var requireCommand = matched.Any(p => p.RequireCommand);   // most-restrictive: any wins
+        return new PolicyDecision(required, ttl, matched.Select(p => p.Name).OrderBy(n => n).ToArray(), requireCommand);
     }
 
     public async Task Save(AccessPolicy policy, string actor, CancellationToken ct)

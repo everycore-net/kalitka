@@ -7,6 +7,35 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-12
+
+### Added
+
+- **Command-aware approval + SSH `force-command` certificates.** A request can carry the
+  exact command the operator wants to run; the approver sees it, it is recorded, and it is
+  returned on redeem so an SSH-cert signer can force it — the session can run only that
+  command. The SSH analogue of 0.24's stored-procedure actions: *sergej → prod-01 → exactly
+  `systemctl restart nginx` → approved by N people.*
+  - New request field **`command`** (stored, shown in the Telegram notification and the web
+    request detail, recorded in `access.requested`); redeem returns the **approved**
+    `command`, bound the same way as the principal (0.25.1) — the signer forces only what
+    Core approved, never a caller argument. `kalitka-agent request --command`, and
+    `kalitka-ssh connect/sign --command '…'` issues a cert with `force-command`.
+  - **Policy `RequireCommand`** (restrict-only): a matching resource may forbid open-shell
+    access — a request with no command is refused up front (`command-required`, HTTP 409),
+    so no one is asked to approve an open shell that policy disallows. Toggle it on the
+    Policies admin page. Command-aware quorum rides on the existing profile/tags matching
+    (`env:prod` → 2 approvers).
+
+### Notes
+
+- New column `requests(command)` in SQLite + Postgres, added idempotently; non-breaking.
+  Verified: the approved command flows to redeem and into the cert's `force-command`
+  critical option (`ssh-keygen -L`), a `RequireCommand` policy refuses a command-less
+  request, and the full suite (242) is green incl. Postgres. Follow-ups (roadmap):
+  policy-bound `source-address` and the richer `requested → approved` principal mapping
+  (0.26.1); hardened CA signer boundary (0.27).
+
 ## [0.25.1] - 2026-09-12
 
 ### Fixed
