@@ -22,11 +22,67 @@ audit log distinguishes `access.approved` (a human said yes) from
 `grant.redeemed` / `session.started` / `session.ended` (this login actually
 happened) — a second approved login needs a second grant.
 
-## What it is not (yet)
+## What it is not
 
-No certificates, no credential brokering, no SSH proxy, no TCP-level gating.
-kalitka only turns a human yes/no into a PAM exit code. Which of those to build
-next is a decision to make *after* this slice works end to end.
+The PAM hook gates entry as a second factor; it brokers no credential and does not
+issue certificates. For **JIT access via short-lived certificates**, see the next
+section — a different, self-expiring mechanism that composes the same approval flow.
+
+## JIT certificates (`kalitka-ssh`)
+
+The certificate analogue of the DB connector, same architecture and philosophy:
+
+```
+kalitka Core  --signed grant-->  kalitka-ssh (holds the CA)  -->  target host
+ (control plane)                  (on a bastion)
+```
+
+On a host you already reach (a bastion), `kalitka-ssh connect --host prod-01` mints an
+**ephemeral** keypair, raises an access request, waits for a human's approval, and on
+approval signs a **short-lived OpenSSH user certificate** — principals from the request,
+validity from the grant's `expires_at` (which already reflects any access policy) — then
+`exec`s `ssh` onto the target. You land with a cert that **self-expires**: nothing to
+revoke, nothing to leak, and a crash leaves no standing access. *Core never holds the CA
+key* — it only decides yes/no. The certificate IS the time-boxed authority.
+
+```
+kalitka-ssh connect --host prod-01 --user sergej
+   → ephemeral keypair in a tmpdir (shredded on exit)
+   → raises ssh:prod-01, waits for approval, redeems a grant
+   → signs a cert: principals=sergej, key-id=kalitka:<session>, valid ≈ grant TTL
+   → exec ssh onto prod-01; on logout the session is reported ended
+```
+
+Why this is nice: the cert's `key-id` is `kalitka:<session-id>`, so sshd's auth log ties
+straight back to the kalitka audit trail; and because access is a short cert rather than
+a standing grant, there is no reconcile/orphan problem at all — expiry is intrinsic.
+
+### Install (on the bastion / CA host)
+
+1. `bash`, `curl`, **OpenSSL 3**, and **`ssh`/`ssh-keygen`** must be present.
+2. Install the reference client and the tool:
+   ```
+   install -m 0755 -o root -g root kalitka-agent /usr/local/bin/kalitka-agent
+   install -m 0755 -o root -g root kalitka-ssh   /usr/local/bin/kalitka-ssh
+   ```
+3. Enrol this host as a kalitka agent (capability `ssh`, resources e.g. `ssh:*`) and give
+   it a key, exactly as for the PAM hook above; its gate config is the shared
+   `/etc/kalitka-approve.conf`. Optionally set `/etc/kalitka/ssh-ca.conf`
+   (`KALITKA_SSH_CA_KEY`, `KALITKA_SSH_CERT_OPTS`).
+4. Create the CA and print its public key: `kalitka-ssh keygen`. The CA **private** key
+   stays here (`root:root`, `0600`); nothing else ever sees it.
+5. On every **target** host, trust the CA and require a matching principal:
+   ```
+   # /etc/ssh/sshd_config
+   TrustedUserCAKeys /etc/ssh/kalitka_ca.pub      # the output of `kalitka-ssh keygen`
+   ```
+   The cert is issued for the requested `--user`, which is the principal, so a standard
+   login as that user is accepted. Restrict further with `AuthorizedPrincipalsFile` if
+   you want a principal ↔ login map.
+
+Certificates default to conservative options (`permit-pty` only — no agent/port/X11
+forwarding); override with `KALITKA_SSH_CERT_OPTS`. `kalitka-ssh sign --pubkey FILE` is
+the lower-level path when the user's key lives elsewhere and only the cert comes back.
 
 ## Install (on the SSH host)
 

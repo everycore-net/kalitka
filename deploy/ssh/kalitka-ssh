@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# kalitka-ssh — JIT SSH access with short-lived OpenSSH certificates.
+#
+# The SSH analogue of the database connector, same architecture:
+#
+#   kalitka Core  --signed grant-->  kalitka-ssh (holds the CA)  -->  target host
+#
+# Core is the control plane: it decides who / to what / under which policy, and records
+# it. It NEVER holds the SSH CA key. On a host you already reach (a bastion), `connect`
+# mints an ephemeral keypair, raises an access request, waits for a human's approval, and
+# on approval signs a **short-lived** user certificate — principals from the request, TTL
+# from the grant's `expires_at` (which already reflects any access policy). You then land
+# on the target with a cert that self-expires; there is nothing to revoke and nothing to
+# leak — the certificate IS the time-boxed authority. *kalitka brokers authority, not
+# credentials.*
+#
+# The CA private key stays here; target hosts trust its public half:
+#   # /etc/ssh/sshd_config on every target
+#   TrustedUserCAKeys /etc/ssh/kalitka_ca.pub
+# and the login name must be an allowed principal (it is, by default: the cert is issued
+# for the requested --user).
+#
+# All gate I/O goes through kalitka-agent (Ed25519-signed). Enrol this host as a kalitka
+# agent with capability `ssh` and the resources it may reach (e.g. ssh:*), exactly like
+# the PAM hook — see README.md. Config: $KALITKA_SSH_CONF (default /etc/kalitka/ssh-ca.conf)
+# plus the shared /etc/kalitka-approve.conf.
+#
+# Subcommands:
+#   keygen                    create the CA keypair if absent, print its public key
+#   ca-pubkey                 print the CA public key (for TrustedUserCAKeys on hosts)
+#   connect --host H [--user U] [--principals CSV]   the JIT flow, then exec ssh
+#   sign --host H --user U --pubkey FILE [--principals CSV]   sign only, print the cert path
+set -euo pipefail
+
+SSH_CONF="${KALITKA_SSH_CONF:-/etc/kalitka/ssh-ca.conf}"
+[ -r "$SSH_CONF" ] && . "$SSH_CONF"
+AGENT_CONF="${KALITKA_CONF:-/etc/kalitka-approve.conf}"
+[ -r "$AGENT_CONF" ] && . "$AGENT_CONF"
+
+AGENT="${KALITKA_AGENT_BIN:-/usr/local/bin/kalitka-agent}"
+CA_KEY="${KALITKA_SSH_CA_KEY:-/etc/kalitka/ssh_ca}"
+# Conservative certificate options by default; override in the conf if you need more.
+CERT_OPTS="${KALITKA_SSH_CERT_OPTS:--O clear -O permit-pty -O no-agent-forwarding -O no-port-forwarding -O no-x11-forwarding}"
+
+die() { echo "kalitka-ssh: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+field() { sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'; }
+nfield() { sed -n 's/.*"'"$1"'":\([0-9]\{1,\}\).*/\1/p'; }
+arg() { local want="$1"; shift; while [ $# -gt 0 ]; do case "$1" in "--$want") printf '%s' "${2:-}"; return 0 ;; esac; shift; done; }
+
+need "$AGENT"; need ssh-keygen
+
+keygen() {
+  if [ ! -f "$CA_KEY" ]; then
+    mkdir -p "$(dirname "$CA_KEY")"
+    ( umask 077; ssh-keygen -q -t ed25519 -f "$CA_KEY" -N '' -C "kalitka-ssh-ca" )
+  fi
+  cat "$CA_KEY.pub"
+}
+
+# Raise -> approve -> redeem for ssh:<host>; echoes "SID EXPIRES" (unix seconds).
+_grant() {
+  local host="$1" user="$2"
+  local resp id state
+  resp="$("$AGENT" request --host "$host" --user "$user")" || die "gate unreachable"
+  id="$(printf '%s' "$resp" | field id)"; state="$(printf '%s' "$resp" | field state)"
+  [ -n "$id" ] || die "no request id (state=$state)"
+  echo "kalitka-ssh: request $id for ssh:$host ($user) — waiting for approval..." >&2
+  local i=0 st grant=""
+  while [ "$i" -lt 100 ]; do
+    sleep 3; i=$((i + 1))
+    st="$("$AGENT" poll --id "$id" 2>/dev/null)" || continue
+    case "$(printf '%s' "$st" | field state)" in
+      approved) grant="$(printf '%s' "$st" | field grant)"; break ;;
+      denied) die "denied" ;;
+      gone)   die "request expired" ;;
+    esac
+  done
+  [ -n "$grant" ] || die "timed out waiting for approval"
+  local red sid exp
+  red="$("$AGENT" redeem --grant "$grant" --agent "$(hostname -s 2>/dev/null || hostname)")" || die "grant redemption failed"
+  sid="$(printf '%s' "$red" | field session_id)"
+  [ -n "$sid" ] || die "grant not redeemable (already used or expired)"
+  exp="$(printf '%s' "$red" | nfield expires_at)"
+  printf '%s %s\n' "$sid" "$exp"
+}
+
+# Sign a user public key against the granted session. Cert validity = the grant's expiry,
+# so the certificate cannot outlive the authority Core granted. Key id carries the session
+# id, so sshd's auth log ties straight back to the kalitka audit trail.
+_sign() { # PUBKEY_FILE SID EXPIRES PRINCIPALS -> writes <base>-cert.pub
+  local pub="$1" sid="$2" exp="$3" principals="$4"
+  [ -r "$CA_KEY" ] || die "no CA key at $CA_KEY (run 'kalitka-ssh keygen' as the CA host)"
+  local now mins; now="$(date +%s)"
+  if [ -n "$exp" ]; then mins=$(( (exp - now) / 60 )); else mins=5; fi
+  [ "$mins" -lt 1 ] && mins=1                      # floor; never issue an already-dead cert
+  # shellcheck disable=SC2086
+  ssh-keygen -s "$CA_KEY" -I "kalitka:$sid" -n "$principals" -V "+${mins}m" $CERT_OPTS "$pub" >&2
+}
+
+case "${1:-}" in
+  keygen) keygen ;;
+  ca-pubkey) [ -r "$CA_KEY.pub" ] || die "no CA key at $CA_KEY"; cat "$CA_KEY.pub" ;;
+
+  sign)
+    shift
+    host="$(arg host "$@")"; [ -n "$host" ] || die "sign needs --host"
+    user="$(arg user "$@")"; [ -n "$user" ] || die "sign needs --user"
+    pub="$(arg pubkey "$@")"; [ -r "$pub" ] || die "sign needs a readable --pubkey"
+    principals="$(arg principals "$@")"; [ -n "$principals" ] || principals="$user"
+    read -r sid exp < <(_grant "$host" "$user")
+    _sign "$pub" "$sid" "$exp" "$principals"
+    "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
+    cert="${pub%.pub}-cert.pub"
+    echo "kalitka-ssh: issued $cert (principals: $principals)" >&2
+    printf '%s\n' "$cert"
+    ;;
+
+  connect)
+    shift
+    host="$(arg host "$@")"; [ -n "$host" ] || die "connect needs --host"
+    user="$(arg user "$@")"; [ -n "$user" ] || user="$(id -un)"
+    principals="$(arg principals "$@")"; [ -n "$principals" ] || principals="$user"
+    need ssh
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/kalitka-ssh.XXXXXX")"
+    trap 'rm -rf "$dir"' EXIT INT TERM
+    ssh-keygen -q -t ed25519 -f "$dir/id" -N '' -C "kalitka-jit"     # ephemeral, dies with $dir
+    read -r sid exp < <(_grant "$host" "$user")
+    _sign "$dir/id.pub" "$sid" "$exp" "$principals"
+    "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
+    echo "kalitka-ssh: connecting to ${user}@${host} with a short-lived certificate..." >&2
+    # The session lives for the ssh connection; on exit report it ended (the cert also
+    # self-expires, so a missed report never leaves standing access).
+    ssh -o IdentitiesOnly=yes -i "$dir/id" -o "CertificateFile=$dir/id-cert.pub" "${user}@${host}" || true
+    "$AGENT" session-end --session-id "$sid" --outcome closed >/dev/null 2>&1 || true
+    ;;
+
+  ""|-h|--help|help) sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: ${1:-} (try --help)" ;;
+esac
