@@ -28,8 +28,12 @@
 # Subcommands:
 #   keygen                    create the CA keypair if absent, print its public key
 #   ca-pubkey                 print the CA public key (for TrustedUserCAKeys on hosts)
-#   connect --host H [--user U] [--principals CSV]   the JIT flow, then exec ssh
-#   sign --host H --user U --pubkey FILE [--principals CSV]   sign only, print the cert path
+#   connect --host H [--user U]              the JIT flow, then exec ssh
+#   sign --host H --user U --pubkey FILE     sign only, print the cert path
+#
+# The certificate principal is ALWAYS the identity Core approved (the request's --user),
+# returned on redeem — never a separate caller argument, so an approved request for one
+# login can never be turned into a certificate for another.
 set -euo pipefail
 
 SSH_CONF="${KALITKA_SSH_CONF:-/etc/kalitka/ssh-ca.conf}"
@@ -58,7 +62,8 @@ keygen() {
   cat "$CA_KEY.pub"
 }
 
-# Raise -> approve -> redeem for ssh:<host>; echoes "SID EXPIRES" (unix seconds).
+# Raise -> approve -> redeem for ssh:<host>; echoes "SID EXPIRES SUBJECT". SUBJECT is the
+# Core-approved principal — the ONLY thing the signer is allowed to put in the cert.
 _grant() {
   local host="$1" user="$2"
   local resp id state
@@ -77,25 +82,32 @@ _grant() {
     esac
   done
   [ -n "$grant" ] || die "timed out waiting for approval"
-  local red sid exp
+  local red sid exp subj
   red="$("$AGENT" redeem --grant "$grant" --agent "$(hostname -s 2>/dev/null || hostname)")" || die "grant redemption failed"
   sid="$(printf '%s' "$red" | field session_id)"
   [ -n "$sid" ] || die "grant not redeemable (already used or expired)"
   exp="$(printf '%s' "$red" | nfield expires_at)"
-  printf '%s %s\n' "$sid" "$exp"
+  subj="$(printf '%s' "$red" | field subject)"
+  [ -n "$subj" ] || die "redeem returned no approved principal — refusing to sign"
+  printf '%s %s %s\n' "$sid" "$exp" "$subj"
 }
 
-# Sign a user public key against the granted session. Cert validity = the grant's expiry,
-# so the certificate cannot outlive the authority Core granted. Key id carries the session
-# id, so sshd's auth log ties straight back to the kalitka audit trail.
-_sign() { # PUBKEY_FILE SID EXPIRES PRINCIPALS -> writes <base>-cert.pub
-  local pub="$1" sid="$2" exp="$3" principals="$4"
+# Sign a user public key against the granted session. The principal is the Core-APPROVED
+# subject only (bound to the approval, never a caller argument). The cert's end is exactly
+# the grant's expiry (raw epoch, no rounding), so it cannot outlive the granted authority;
+# a small negative start absorbs clock skew. Key id carries the session id, so sshd's auth
+# log ties straight back to the kalitka audit trail.
+_sign() { # PUBKEY_FILE SID EXPIRES PRINCIPAL -> writes <base>-cert.pub
+  local pub="$1" sid="$2" exp="$3" principal="$4"
   [ -r "$CA_KEY" ] || die "no CA key at $CA_KEY (run 'kalitka-ssh keygen' as the CA host)"
-  local now mins; now="$(date +%s)"
-  if [ -n "$exp" ]; then mins=$(( (exp - now) / 60 )); else mins=5; fi
-  [ "$mins" -lt 1 ] && mins=1                      # floor; never issue an already-dead cert
+  case "$principal" in ''|*[!A-Za-z0-9_.-]*) die "unsafe approved principal: '$principal'" ;; esac
+  local now; now="$(date +%s)"
+  [ -n "$exp" ] || die "grant has no expiry — refusing to sign"
+  [ "$exp" -gt "$now" ] 2>/dev/null || die "grant already expired — refusing to issue a certificate"
+  local start=$((now - 5))
   # shellcheck disable=SC2086
-  ssh-keygen -s "$CA_KEY" -I "kalitka:$sid" -n "$principals" -V "+${mins}m" $CERT_OPTS "$pub" >&2
+  ssh-keygen -s "$CA_KEY" -I "kalitka:$sid" -n "$principal" \
+    -V "0x$(printf '%x' "$start"):0x$(printf '%x' "$exp")" $CERT_OPTS "$pub" >&2
 }
 
 case "${1:-}" in
@@ -107,12 +119,11 @@ case "${1:-}" in
     host="$(arg host "$@")"; [ -n "$host" ] || die "sign needs --host"
     user="$(arg user "$@")"; [ -n "$user" ] || die "sign needs --user"
     pub="$(arg pubkey "$@")"; [ -r "$pub" ] || die "sign needs a readable --pubkey"
-    principals="$(arg principals "$@")"; [ -n "$principals" ] || principals="$user"
-    read -r sid exp < <(_grant "$host" "$user")
-    _sign "$pub" "$sid" "$exp" "$principals"
+    read -r sid exp principal < <(_grant "$host" "$user")
+    _sign "$pub" "$sid" "$exp" "$principal"
     "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
     cert="${pub%.pub}-cert.pub"
-    echo "kalitka-ssh: issued $cert (principals: $principals)" >&2
+    echo "kalitka-ssh: issued $cert (principal: $principal)" >&2
     printf '%s\n' "$cert"
     ;;
 
@@ -120,21 +131,24 @@ case "${1:-}" in
     shift
     host="$(arg host "$@")"; [ -n "$host" ] || die "connect needs --host"
     user="$(arg user "$@")"; [ -n "$user" ] || user="$(id -un)"
-    principals="$(arg principals "$@")"; [ -n "$principals" ] || principals="$user"
     need ssh
     dir="$(mktemp -d "${TMPDIR:-/tmp}/kalitka-ssh.XXXXXX")"
     trap 'rm -rf "$dir"' EXIT INT TERM
     ssh-keygen -q -t ed25519 -f "$dir/id" -N '' -C "kalitka-jit"     # ephemeral, dies with $dir
-    read -r sid exp < <(_grant "$host" "$user")
-    _sign "$dir/id.pub" "$sid" "$exp" "$principals"
+    read -r sid exp principal < <(_grant "$host" "$user")
+    _sign "$dir/id.pub" "$sid" "$exp" "$principal"
     "$AGENT" provisioned --session-id "$sid" >/dev/null 2>&1 || true
-    echo "kalitka-ssh: connecting to ${user}@${host} with a short-lived certificate..." >&2
-    # The session lives for the ssh connection; on exit report it ended (the cert also
-    # self-expires, so a missed report never leaves standing access).
-    ssh -o IdentitiesOnly=yes -i "$dir/id" -o "CertificateFile=$dir/id-cert.pub" "${user}@${host}" || true
-    "$AGENT" session-end --session-id "$sid" --outcome closed >/dev/null 2>&1 || true
+    echo "kalitka-ssh: connecting to ${principal}@${host} with a short-lived certificate..." >&2
+    # The session lives for the ssh connection. Report the true outcome: ssh's 255 is a
+    # connection/auth failure, anything else is a session that actually ran (its exit code
+    # is the remote command's). The caller gets ssh's real exit code. The cert self-expires,
+    # so even a missed report never leaves standing access.
+    rc=0; ssh -o IdentitiesOnly=yes -i "$dir/id" -o "CertificateFile=$dir/id-cert.pub" "${principal}@${host}" || rc=$?
+    if [ "$rc" -eq 255 ]; then outcome="connection-failed"; else outcome="closed"; fi
+    "$AGENT" session-end --session-id "$sid" --outcome "$outcome" >/dev/null 2>&1 || true
+    exit "$rc"
     ;;
 
-  ""|-h|--help|help) sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: ${1:-} (try --help)" ;;
 esac

@@ -404,8 +404,11 @@ static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantS
     var form = await ctx.Request.ReadFormAsync();
     // "agent" is the self-reported hostname (metadata); identity is the canonical one.
     var result = await grants.Redeem(form["grant"].ToString(), identity, form["agent"].ToString(), ctx.RequestAborted);
+    // `subject` is the Core-approved principal (the request's user); an SSH-cert signer
+    // derives the certificate principal from this, never from an unvalidated caller
+    // argument, so the approved identity and the cert principal stay cryptographically bound.
     if (result.Ok) return Results.Json(new { session_id = result.SessionId, profile = result.Profile,
-        expires_at = result.ExpiresAt?.ToUnixTimeSeconds() });
+        expires_at = result.ExpiresAt?.ToUnixTimeSeconds(), subject = result.Subject });
     return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
 }
 

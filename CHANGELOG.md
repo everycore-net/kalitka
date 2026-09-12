@@ -7,6 +7,37 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-09-12
+
+### Fixed
+
+- **SSH certificate principal is now bound to the approved identity (security).** Before,
+  `kalitka-ssh --principals <x>` fed `ssh-keygen -n` a value chosen *after* approval, so an
+  approved request for one login could be signed into a certificate for another (e.g.
+  `root`) — the approved identity and the certificate principal were not cryptographically
+  linked. Now redeem returns the Core-approved **`subject`** (the request's user), and the
+  signer uses **only** that as the principal; the `--principals` argument is removed. The
+  principal is validated to a safe charset before signing.
+- **Certificates cannot outlive the granted authority (security invariant).** Validity was
+  rounded up to whole minutes (and a just-expired grant still got a fresh minute). The cert
+  end is now the grant's exact `expires_at` (raw epoch seconds, `-V 0x<start>:0x<exp>`, a
+  5-second negative start absorbing clock skew), and issuing is **refused** if the grant has
+  already expired.
+- **Truthful SSH outcome.** `kalitka-ssh connect` no longer swallows `ssh`'s exit code and
+  report every attempt as `closed`. It preserves and returns the real exit code, and reports
+  the session as `connection-failed` on `ssh` 255 (connection/auth failure) versus `closed`
+  for a session that actually ran.
+
+### Notes
+
+- Small additive Core change: redeem now returns `subject` (the approved principal). Verified
+  end to end: redeem carries the approved user, the signer binds the cert principal to it and
+  refuses an expired grant, and the cert end matches `expires_at` exactly (`ssh-keygen -L`).
+- Known follow-ups (roadmap): richer `requested_principals → policy → approved_principals`
+  mapping and policy-bound `force-command` / `source-address` land with the sudo/command-aware
+  work (0.26); a hardened CA signer boundary (privileged helper / HSM-backed signer, so the
+  calling user cannot read the CA key) is 0.27.
+
 ## [0.25.0] - 2026-09-12
 
 ### Added
