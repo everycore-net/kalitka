@@ -80,6 +80,16 @@ on the policy (`RequireCommand`). A request for that resource with no command is
 up front (`command-required`) — nobody is even asked to approve an open shell that policy
 disallows.
 
+### Pinning and login allow-lists
+
+`--source-address CIDR` pins the certificate to an approved source (a comma-separated
+CIDR list): the cert is usable only from there, so a stolen cert is worthless elsewhere.
+Like the command, the value is bound to the approval — Core returns the approved
+`source-address` on redeem and the signer applies only that. A policy can `require_source`
+(no cert without a source binding) and `allowed_principals` (which logins may be requested,
+e.g. `deploy readonly` but never `root`); a request that violates either is refused up
+front (`source-required` / `principal-not-allowed`).
+
 ### Install (on the bastion / CA host)
 
 1. `bash`, `curl`, **OpenSSL 3**, and **`ssh`/`ssh-keygen`** must be present.

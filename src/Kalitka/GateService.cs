@@ -93,9 +93,9 @@ public sealed class GateService
     /// agent then polls <see cref="StateOf"/>.
     /// </summary>
     public async Task<(string state, string id)> RaiseAction(string resource, string subject, string ip, string actor, CancellationToken ct,
-        IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "")
+        IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "", string sourceAddr = "")
     {
-        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags, profile, maxUses, command);
+        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags, profile, maxUses, command, sourceAddr);
         await AnnounceAll(request, ct);
         return (state, id);
     }
@@ -115,6 +115,7 @@ public sealed class GateService
     public string ProfileOf(string id) => _engine.ProfileOf(id);
     public int MaxUsesOf(string id) => _engine.MaxUsesOf(id);
     public string CommandOf(string id) => _engine.CommandOf(id);
+    public string SourceAddrOf(string id) => _engine.SourceAddrOf(id);
     public (string grant, bool created) EnsureGrant(string id, string candidate) => _engine.EnsureGrant(id, candidate);
 
     public IReadOnlyList<PendingView> PendingSnapshot() => _engine.PendingSnapshot();

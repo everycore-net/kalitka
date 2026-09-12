@@ -51,7 +51,7 @@ public sealed class SqliteRequestStore : IRequestStore
               city TEXT, raised INTEGER NOT NULL, state TEXT NOT NULL, grant_tok TEXT NOT NULL DEFAULT '',
               required_approvals INTEGER NOT NULL DEFAULT 1,
               profile TEXT NOT NULL DEFAULT '', max_uses INTEGER NOT NULL DEFAULT 0,
-              command TEXT NOT NULL DEFAULT '');
+              command TEXT NOT NULL DEFAULT '', source_addr TEXT NOT NULL DEFAULT '');
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
             -- Distinct approvers per request (quorum): (request_id, principal) is unique,
             -- so an approval is idempotent and the count is a simple COUNT.
@@ -63,7 +63,7 @@ public sealed class SqliteRequestStore : IRequestStore
 
         // Columns added after requests first shipped (required_approvals 0.19.3,
         // profile/max_uses 0.23) — add idempotently so an older DB does not break on SELECT.
-        foreach (var (col, def) in new[] { ("required_approvals", "INTEGER NOT NULL DEFAULT 1"), ("profile", "TEXT NOT NULL DEFAULT ''"), ("max_uses", "INTEGER NOT NULL DEFAULT 0"), ("command", "TEXT NOT NULL DEFAULT ''") })
+        foreach (var (col, def) in new[] { ("required_approvals", "INTEGER NOT NULL DEFAULT 1"), ("profile", "TEXT NOT NULL DEFAULT ''"), ("max_uses", "INTEGER NOT NULL DEFAULT 0"), ("command", "TEXT NOT NULL DEFAULT ''"), ("source_addr", "TEXT NOT NULL DEFAULT ''") })
         {
             using var check = conn.CreateCommand();
             check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name=$n;";
@@ -80,12 +80,12 @@ public sealed class SqliteRequestStore : IRequestStore
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command)
-            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant,$req,$profile,$uses,$command)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr)
+            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant,$req,$profile,$uses,$command,$srcaddr)
             ON CONFLICT(id) DO UPDATE SET
               target=$target,input=$input,ip=$ip,resource=$resource,country=$country,
               country_code=$cc,city=$city,raised=$raised,state=$state,grant_tok=$grant,required_approvals=$req,
-              profile=$profile,max_uses=$uses,command=$command;
+              profile=$profile,max_uses=$uses,command=$command,source_addr=$srcaddr;
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -225,7 +225,7 @@ public sealed class SqliteRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr";
 
     private static void Bind(SqliteCommand cmd, PendingRequest r)
     {
@@ -244,6 +244,7 @@ public sealed class SqliteRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("$profile", r.Profile);
         cmd.Parameters.AddWithValue("$uses", r.MaxUses);
         cmd.Parameters.AddWithValue("$command", r.Command);
+        cmd.Parameters.AddWithValue("$srcaddr", r.SourceAddr);
     }
 
     private static PendingRequest Read(SqliteDataReader r) => new()
@@ -252,7 +253,7 @@ public sealed class SqliteRequestStore : IRequestStore
         Resource = r.GetString(4), Country = r.GetString(5), CountryCode = r.GetString(6),
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
         State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11),
-        Profile = r.GetString(12), MaxUses = r.GetInt32(13), Command = r.GetString(14)
+        Profile = r.GetString(12), MaxUses = r.GetInt32(13), Command = r.GetString(14), SourceAddr = r.GetString(15)
     };
 }
 

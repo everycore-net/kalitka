@@ -134,6 +134,8 @@ public static class AdminPages
           // to this one command (an SSH cert force-command), not an open shell.
           .Append(string.IsNullOrEmpty(r.Command) ? ""
               : $"<tr><th>Command</th><td><code>{H(r.Command)}</code> <span class=\"muted\">(force-command — no open shell)</span></td></tr>")
+          .Append(string.IsNullOrEmpty(r.SourceAddr) ? ""
+              : $"<tr><th>From address</th><td><code>{H(r.SourceAddr)}</code> <span class=\"muted\">(cert usable only from here)</span></td></tr>")
           .Append($"<tr><th>IP</th><td><code>{H(r.Ip)}</code></td></tr>")
           .Append($"<tr><th>From</th><td>{H(Place(r))}</td></tr>")
           .Append($"<tr><th>Raised</th><td>{r.Raised:yyyy-MM-dd HH:mm:ss}</td></tr>")
@@ -393,8 +395,11 @@ public static class AdminPages
           .Append(In("match_profile", "match grant profile (e.g. sql-dba, sql-*; blank = any)"))
           .Append(In("required", "required approvals (e.g. 2)"))
           .Append(In("grant_ttl", "grant TTL minutes (0 = no override)"))
+          .Append(In("allowed_principals", "allowed principals — logins this policy permits (deploy readonly); blank = any"))
           .Append("<label class=\"muted\" style=\"display:block;margin:6px 0\">"
               + "<input type=\"checkbox\" name=\"require_command\"> require a command (no open shell — SSH cert force-command only)</label>")
+          .Append("<label class=\"muted\" style=\"display:block;margin:6px 0\">"
+              + "<input type=\"checkbox\" name=\"require_source\"> require a source address (pin the SSH cert to an approved CIDR)</label>")
           .Append("<div class=\"btns\"><button>Save policy</button></div></form>");
 
         sb.Append("<h2>Policies</h2>");
@@ -403,7 +408,7 @@ public static class AdminPages
         else
         {
             sb.Append("<table><tr><th>Name</th><th>Resource</th><th>Tags</th><th>Profile</th>"
-                + "<th>Approvals</th><th>Grant TTL</th><th>Command</th><th></th></tr>");
+                + "<th>Approvals</th><th>Grant TTL</th><th>Command</th><th>Source</th><th>Principals</th><th></th></tr>");
             foreach (var p in policies)
                 sb.Append("<tr>")
                   .Append($"<td><code>{H(p.Name)}</code></td>")
@@ -413,6 +418,8 @@ public static class AdminPages
                   .Append($"<td>{p.RequiredApprovals}</td>")
                   .Append($"<td class=\"muted\">{(p.GrantTtlMinutes > 0 ? p.GrantTtlMinutes + " min" : "—")}</td>")
                   .Append($"<td class=\"muted\">{(p.RequireCommand ? "required" : "—")}</td>")
+                  .Append($"<td class=\"muted\">{(p.RequireSourceAddress ? "required" : "—")}</td>")
+                  .Append($"<td class=\"muted\">{(p.AllowedPrincipals.Length == 0 ? "—" : H(string.Join(" ", p.AllowedPrincipals)))}</td>")
                   .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/policies/delete\">"
                       + $"<input type=\"hidden\" name=\"name\" value=\"{H(p.Name)}\">"
                       + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"

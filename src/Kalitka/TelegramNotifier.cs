@@ -58,6 +58,7 @@ public sealed class TelegramNotifier : INotifier
              + $"Says: <b>{H(r.Input)}</b>\n"
              // The command is the crux of what is being approved — show it prominently.
              + (string.IsNullOrEmpty(r.Command) ? "" : $"Command: <code>{H(r.Command)}</code>\n")
+             + (string.IsNullOrEmpty(r.SourceAddr) ? "" : $"From-addr: <code>{H(r.SourceAddr)}</code>\n")
              + $"IP: <code>{H(r.Ip)}</code>\n"
              + $"From: {place}\n"
              + $"<i>{r.Raised:yyyy-MM-dd HH:mm:ss zzz}</i>";
