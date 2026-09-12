@@ -373,8 +373,17 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     // + allowed resource) — a valid credential is not a licence for any resource.
     if (!identity.MayRepresent(resource, AgentCapabilities.Request)) return Results.StatusCode(403);
 
+    // Optional command (0.26): the exact command the operator asks to run. When set, the
+    // human approves this command and an SSH-cert signer forces it (force-command). Kept to
+    // a sane length; its characters are opaque (it becomes a cert value, never local shell).
+    var command = form["command"].ToString().Trim();
+    if (command.Length > 4000) return Results.BadRequest();
+
     var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags,
-        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0);
+        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0, command);
+    // A policy can forbid open-shell access to a resource: a request with no command is
+    // refused up front (409), so no one is asked to approve access that policy disallows.
+    if (state == "command-required") return Results.Json(new { id, state }, statusCode: 409);
     return Results.Json(new { id, state });
 }
 
@@ -408,7 +417,7 @@ static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantS
     // derives the certificate principal from this, never from an unvalidated caller
     // argument, so the approved identity and the cert principal stay cryptographically bound.
     if (result.Ok) return Results.Json(new { session_id = result.SessionId, profile = result.Profile,
-        expires_at = result.ExpiresAt?.ToUnixTimeSeconds(), subject = result.Subject });
+        expires_at = result.ExpiresAt?.ToUnixTimeSeconds(), subject = result.Subject, command = result.Command });
     return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
 }
 
@@ -946,7 +955,11 @@ guarded.MapPost("/policies/create", async (HttpContext ctx, AdminAuth auth, Poli
     int.TryParse(form["required"].ToString(), out var required);
     int.TryParse(form["grant_ttl"].ToString(), out var ttl);
     var policy = new AccessPolicy(name, resource, Words(form["match_tags"].ToString()),
-        Math.Max(1, required), Math.Max(0, ttl)) { MatchProfile = form["match_profile"].ToString().Trim() };
+        Math.Max(1, required), Math.Max(0, ttl))
+    {
+        MatchProfile = form["match_profile"].ToString().Trim(),
+        RequireCommand = form["require_command"].ToString() is "on" or "true" or "1",
+    };
     await policies.Save(policy, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/policies", false);
 }).RequirePermission(Perm.PoliciesManage);

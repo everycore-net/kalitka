@@ -57,6 +57,29 @@ Why this is nice: the cert's `key-id` is `kalitka:<session-id>`, so sshd's auth 
 straight back to the kalitka audit trail; and because access is a short cert rather than
 a standing grant, there is no reconcile/orphan problem at all — expiry is intrinsic.
 
+### Command-aware access (`--command`)
+
+For a single, unambiguous operation, grant exactly that — not a shell. `--command` requests
+a **force-command** certificate: the human approves the exact command (it is shown in the
+approval and recorded in the audit trail), and the issued cert can run **only** it.
+
+```
+kalitka-ssh connect --host prod-01 --user deploy --command 'systemctl restart nginx'
+   → the approval shows "Command: systemctl restart nginx"
+   → the cert carries force-command="systemctl restart nginx"
+   → the session can run nothing else, for the grant's short TTL
+```
+
+This is the SSH analogue of the database `action` mode (0.24): sergej → prod-01 → exactly
+`systemctl restart nginx` → approved by N people (raise the quorum with a policy). The
+command is bound the same way as the principal — Core returns the **approved** command on
+redeem and the signer forces only that, never a caller argument chosen after approval.
+
+A policy can **require** a command for a resource (no open shells): set *require a command*
+on the policy (`RequireCommand`). A request for that resource with no command is refused
+up front (`command-required`) — nobody is even asked to approve an open shell that policy
+disallows.
+
 ### Install (on the bastion / CA host)
 
 1. `bash`, `curl`, **OpenSSL 3**, and **`ssh`/`ssh-keygen`** must be present.
