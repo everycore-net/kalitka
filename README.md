@@ -156,6 +156,7 @@ engine. Telegram stays; the console is additive.
 /admin/agents        registered agents — keys, capabilities, enrolment, revoke
 /admin/profiles      agent profiles; /admin/reconcile applies profile changes
 /admin/policies      access policies (quorum, grant TTL, profile match, require-command)
+/admin/principals    operators — link channel identities so a quorum counts people
 /admin/history       audit log, filter by actor/resource/event + paging
 ```
 
@@ -257,14 +258,32 @@ lets the bar differ per operation class (a `sql-dba` grant needing four eyes whi
 
 Two things worth knowing about `required: 2`:
 
-- Only an authenticated **control-plane** approver (a Google admin, keyed on the stable
-  `sub`) counts toward a quorum greater than one. The same person approving twice, or
-  via two channels, is still one approver; a Telegram tap or an e-mail link can deny or
-  satisfy a single approval, but does not count as a second person.
+- A quorum counts **distinct operator principals** — people, not channels (see
+  [Operators](#operators)). An identity linked to a principal (Telegram, later
+  Slack/Teams/app) counts as that person; the same person on two channels counts once; an
+  unlinked Google admin still counts as itself; any other unlinked channel can satisfy a
+  single approval but does not count toward a quorum greater than one.
 - A **denial from any channel denies immediately** — the quorum is only for approval.
 
 Managing policies needs the `policies.manage` permission (full admin has it). With no
 policies defined, every request needs one approval and the default grant lifetime.
+
+## Operators
+
+Approvals arrive as **channel identities** — `google:<sub>`, `telegram:<user_id>`, later
+`slack:<team>:<user>`, `teams:<tenant>:<oid>`, `app:<id>`. An **operator principal** at
+`/admin/principals` binds several of them to one person, so a quorum counts *people, not
+channels*:
+
+- a Telegram (or Slack/Teams/app) approval by a linked identity counts as that operator;
+- the same operator on two channels counts **once** — you cannot satisfy four-eyes alone;
+- an unlinked Google admin still counts as itself (no setup needed for the common case);
+- any other unlinked identity can satisfy a single approval, but not a quorum.
+
+Channels are **transports of one control plane**, not separate identity models: adding
+Slack, Teams or a first-party app is a new identity scheme to link here — the quorum logic
+does not change. An identity belongs to at most one operator (enforced on save). Managing
+operators needs the `principals.manage` permission (full admin has it).
 
 ## E-mail approvals
 

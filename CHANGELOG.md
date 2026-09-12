@@ -7,6 +7,37 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-13
+
+### Added
+
+- **Operator principals — a quorum counts people, not channels.** A quorum (`required: 2`)
+  used to count only `google:<sub>`; a Telegram tap or e-mail link could not be a second
+  person. Now an **operator principal** at `/admin/principals` binds a human's channel
+  identities (`google:<sub>`, `telegram:<user_id>`, and — by the same model —
+  `slack:<team>:<user>`, `teams:<tenant>:<oid>`, `app:<id>`), and the quorum counts
+  **distinct principals**:
+  - a Telegram (later Slack/Teams/app) approval by a **linked** identity counts as that
+    operator, so it can satisfy four-eyes;
+  - the **same operator on two channels counts once** — one human cannot satisfy a quorum
+    alone;
+  - an **unlinked Google admin still counts as itself** (no setup for the common case); any
+    other unlinked identity can satisfy a single approval but not a quorum.
+  - Channels are transports of one control plane: adding a channel is a new identity scheme
+    to link — the quorum logic does not change. An identity belongs to at most one operator
+    (enforced on save); CRUD is audited (`principal.*`) and stored in the shared config
+    (durable/cluster-wide). New permission `principals.manage` (in the policy-admin bundle,
+    which full admin has).
+
+### Notes
+
+- No schema change — operator principals live in the shared config store (SQLite/Postgres/
+  JSON), like policies. Verified: a linked Telegram approval reaches a quorum, the same
+  person on two channels dedupes, an unlinked identity does not count, an unlinked Google
+  admin still does, and an identity cannot be linked to two operators. Full suite (250)
+  green incl. Postgres. This unblocks **Slack / Teams / first-party app** as transports of
+  the one control plane.
+
 ## [0.26.1] - 2026-09-12
 
 ### Added

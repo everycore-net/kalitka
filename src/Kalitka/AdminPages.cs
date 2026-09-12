@@ -56,6 +56,7 @@ public static class AdminPages
         + Nav(who, Perm.ProfilesManage, "/admin/profiles", "Profiles")
         + Nav(who, Perm.AgentsRead, "/admin/reconcile", "Reconcile")
         + Nav(who, Perm.PoliciesRead, "/admin/policies", "Policies")
+        + Nav(who, Perm.PrincipalsRead, "/admin/principals", "Operators")
         + Nav(who, Perm.HistoryRead, "/admin/history", "History")
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
@@ -428,6 +429,47 @@ public static class AdminPages
             sb.Append("</table>");
         }
 
+        return Shell(who, sb.ToString());
+    }
+
+    // ---- Operator principals (who counts as a distinct approver) -------------
+
+    public static string Principals(AdminIdentity who, IReadOnlyList<OperatorPrincipal> principals, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Operators</h1>");
+        sb.Append("<p class=\"muted\">An operator is one person across channels. Linking their "
+            + "identities lets a Telegram (later Slack/Teams/app) approval count in a quorum, and the "
+            + "same person on two channels count once. Identities are <code>scheme:value</code> — "
+            + "<code>google:&lt;sub&gt;</code>, <code>telegram:&lt;user_id&gt;</code>, "
+            + "<code>slack:&lt;team&gt;:&lt;user&gt;</code>, <code>app:&lt;id&gt;</code>. "
+            + "An unlinked Google admin still counts as itself; other unlinked channels do not.</p>");
+
+        sb.Append("<h2>New / update operator</h2>")
+          .Append("<form method=\"post\" action=\"/admin/principals/create\">")
+          .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+          .Append(In("id", "id (stable slug, e.g. sergej)"))
+          .Append(In("display", "display name (e.g. Sergej D.)"))
+          .Append(In("identities", "identities — space-separated (google:1234 telegram:98765)"))
+          .Append("<div class=\"btns\"><button>Save operator</button></div></form>");
+
+        sb.Append("<h2>Operators</h2>");
+        if (principals.Count == 0)
+            sb.Append("<p class=\"muted\">No operators yet — a quorum currently counts only Google admins (each as itself).</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Id</th><th>Name</th><th>Identities</th><th></th></tr>");
+            foreach (var p in principals)
+                sb.Append("<tr>")
+                  .Append($"<td><code>{H(p.Id)}</code></td>")
+                  .Append($"<td>{H(p.DisplayName)}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", p.Identities))}</td>")
+                  .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/principals/delete\">"
+                      + $"<input type=\"hidden\" name=\"id\" value=\"{H(p.Id)}\">"
+                      + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                      + "<button class=\"no\">Delete</button></form></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
         return Shell(who, sb.ToString());
     }
 
