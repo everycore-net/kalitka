@@ -51,6 +51,7 @@ public static class AdminPages
         + "<a href=\"/admin/dashboard\">Dashboard</a>"
         // Nav mirrors permissions — purely UX; the endpoint guards are the boundary.
         + Nav(who, Perm.RequestsRead, "/admin/requests", "Requests")
+        + Nav(who, Perm.RequestsRead, "/admin/sessions", "Sessions")
         + Nav(who, Perm.AgentsRead, "/admin/agents", "Agents")
         + Nav(who, Perm.ProfilesManage, "/admin/profiles", "Profiles")
         + Nav(who, Perm.AgentsRead, "/admin/reconcile", "Reconcile")
@@ -324,6 +325,44 @@ public static class AdminPages
             sb.Append("</table>");
         }
 
+        return Shell(who, sb.ToString());
+    }
+
+    // ---- Sessions -----------------------------------------------------------
+
+    public static string Sessions(AdminIdentity who, IReadOnlyList<SessionRecord> sessions, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Sessions</h1>")
+          .Append("<p class=\"muted\">Redeemed grants that became real sessions — the proof access happened, "
+              + "not just that it was approved. Open sessions can be revoked; a session left open past its max "
+              + "lifetime is auto-closed as <code>expired</code>.</p>");
+
+        if (sessions.Count == 0)
+            return Shell(who, sb.Append("<p class=\"muted\">No sessions.</p>").ToString());
+
+        sb.Append("<table><tr><th>Subject</th><th>Resource</th><th>Agent</th><th>Started (UTC)</th>"
+            + "<th>State</th><th>Request</th><th></th></tr>");
+        foreach (var s in sessions)
+        {
+            var open = s.EndedAt is null;
+            var state = open ? "<span class=\"pill approved\">open</span>"
+                : $"<span class=\"pill denied\">{H(s.Outcome.Length == 0 ? "closed" : s.Outcome)}</span>";
+            sb.Append("<tr>")
+              .Append($"<td>{H(s.Subject)}</td>")
+              .Append($"<td><code>{H(s.Resource)}</code></td>")
+              .Append($"<td class=\"muted\">{H(s.AgentId)}</td>")
+              .Append($"<td class=\"muted\">{s.StartedAt:yyyy-MM-dd HH:mm:ss}</td>")
+              .Append($"<td>{state}</td>")
+              .Append($"<td class=\"muted\"><code>{H(Short(s.RequestId))}</code></td>")
+              .Append(open
+                  ? "<td><form class=\"inline\" method=\"post\" action=\"/admin/sessions/revoke\">"
+                    + $"<input type=\"hidden\" name=\"id\" value=\"{H(s.SessionId)}\">"
+                    + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                    + "<button class=\"no\">Revoke</button></form></td>"
+                  : "<td></td>")
+              .Append("</tr>");
+        }
+        sb.Append("</table>");
         return Shell(who, sb.ToString());
     }
 

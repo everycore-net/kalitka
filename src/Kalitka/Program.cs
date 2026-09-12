@@ -687,6 +687,25 @@ guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
         "text/html; charset=utf-8");
 }).RequirePermission(Perm.HistoryRead);
 
+// ---- Sessions (live view of used grants) -----------------------------------
+
+guarded.MapGet("/sessions", async (HttpContext ctx, AdminAuth auth, GrantService grants, IOptions<GateOptions> opt) =>
+{
+    var who = Admin(ctx);
+    // Auto-close anything left open past its max lifetime before listing.
+    await grants.ExpireStaleSessions(TimeSpan.FromHours(opt.Value.SessionMaxHours), ctx.RequestAborted);
+    return Results.Content(AdminPages.Sessions(who, grants.Sessions(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+}).RequirePermission(Perm.RequestsRead);
+
+guarded.MapPost("/sessions/revoke", async (HttpContext ctx, AdminAuth auth, GrantService grants) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await grants.RevokeSession(form["id"].ToString(), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/sessions", false);
+}).RequirePermission(Perm.RequestsDecide);
+
 // ---- Agents (control plane) ------------------------------------------------
 
 guarded.MapGet("/agents", (HttpContext ctx, AdminAuth auth, AgentService agentsSvc, ProfileService profiles) =>

@@ -7,6 +7,29 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-12
+
+### Added
+
+- **SSH session correctness.** A live sessions view at `/admin/sessions` (subject,
+  resource, agent, started, state, request) surfaces the request ↔ grant ↔ agent ↔
+  session linkage. An admin can **revoke** an open session out of band (outcome
+  `revoked`, audited). And a session left open past its max lifetime
+  (`SessionMaxHours`, default 24) is **auto-closed as `expired`** on the next sweep, so
+  a crashed or missed close hook never leaks a permanently-open session.
+- The SSH client hooks now keep the session ids in a **LIFO stack per user** (one id
+  per line): concurrent logins by the same user push their own id and each logout pops
+  one, so they no longer overwrite each other. This removes the previous "one active
+  session per user" assumption; any equivalent session a given logout does not close is
+  caught by the server-side expiry above.
+
+### Notes
+
+- Permissions: viewing `/admin/sessions` needs `requests.read`, revoking needs
+  `requests.decide`. No schema change (the sessions table already carries the outcome).
+  This is the SSH-foundation baseline the deeper SSH work (JIT certificates,
+  sudo/command-aware) will build on — after 0.23.
+
 ## [0.21.3] - 2026-09-12
 
 ### Added
