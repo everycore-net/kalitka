@@ -25,11 +25,14 @@ AGENT="${KALITKA_AGENT_BIN:-/usr/local/bin/kalitka-agent}"
 user="${PAM_USER:-unknown}"
 state="/run/kalitka/session-${user}"
 [ -r "$state" ] || exit 0                      # nothing was redeemed for this user
-sid=$(cat "$state" 2>/dev/null || true)
-[ -n "$sid" ] || { rm -f "$state" 2>/dev/null || true; exit 0; }
+
+# Pop the most recent session id off the stack (one per line). Concurrent logins
+# push their own id, so one logout closes exactly one session, not "the user's".
+sid=$(tail -n 1 "$state" 2>/dev/null || true)
+sed -i '$ d' "$state" 2>/dev/null || true      # remove the popped line
+[ -s "$state" ] || rm -f "$state" 2>/dev/null || true   # drop the file once empty
+[ -n "$sid" ] || exit 0
 
 # Best effort: a hung gate must not wedge logout (kalitka-agent bounds each call).
 "$AGENT" session-end --session-id "$sid" --outcome closed >/dev/null 2>&1 || true
-
-rm -f "$state" 2>/dev/null || true
 exit 0

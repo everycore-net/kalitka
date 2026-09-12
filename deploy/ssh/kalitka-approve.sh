@@ -56,9 +56,13 @@ while [ "$i" -lt 100 ]; do
         || { echo "kalitka: grant redemption failed." >&2; exit 1; }
       sid=$(printf '%s' "$red" | field session_id)
       [ -n "$sid" ] || { echo "kalitka: grant not redeemable (already used or expired)." >&2; exit 1; }
-      # Hand the session id to the PAM session-close hook (best effort; one
-      # concurrent session per user in this PoC — robust correlation is later).
-      mkdir -p /run/kalitka 2>/dev/null && printf '%s' "$sid" > "/run/kalitka/session-${user}" 2>/dev/null || true
+      # Hand the session id to the PAM session-close hook. The file is a LIFO stack
+      # (one id per line): concurrent logins by the same user PUSH ids and each logout
+      # POPs one, so they no longer overwrite each other. Which equivalent session a
+      # given logout closes is not pinned, but the count stays right and any leftover
+      # is auto-closed server-side as "expired" (SessionMaxHours) — a missed close
+      # never leaks a permanently-open session.
+      mkdir -p /run/kalitka 2>/dev/null && printf '%s\n' "$sid" >> "/run/kalitka/session-${user}" 2>/dev/null || true
       echo "kalitka: approved." >&2
       exit 0 ;;
     denied) echo "kalitka: denied." >&2; exit 1 ;;

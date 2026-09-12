@@ -269,6 +269,11 @@ public sealed class GateOptions
     /// <summary>Lifetime of a one-time approval link. Short: it is a capability.</summary>
     public int OneTimeMinutes { get; set; } = 15;
 
+    /// <summary>Max lifetime of an open session before it is auto-closed as
+    /// <c>expired</c> — so a crashed or missed close hook cannot leave a session open
+    /// forever. 0 disables expiry.</summary>
+    public int SessionMaxHours { get; set; } = 24;
+
     /// <summary>Lifetime of an agent enrollment token. Longer than an approval link:
     /// an operator may create it, then enrol the machine a while later.</summary>
     public int EnrollmentTokenMinutes { get; set; } = 60;

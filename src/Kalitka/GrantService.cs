@@ -112,12 +112,35 @@ public sealed class GrantService
         return new(true, sessionId);
     }
 
-    /// <summary>Close a session the agent reports as ended.</summary>
-    public async Task<bool> EndSession(string sessionId, string outcome, CancellationToken ct)
+    /// <summary>A live, queryable view of sessions (open and recently closed).</summary>
+    public IReadOnlyList<SessionRecord> Sessions() => _sessions.Snapshot();
+
+    /// <summary>Admin-close an open session out of band (outcome <c>revoked</c>),
+    /// attributed to the admin, not the agent.</summary>
+    public Task<bool> RevokeSession(string sessionId, string actor, CancellationToken ct) =>
+        EndSession(sessionId, "revoked", ct, actor);
+
+    /// <summary>Auto-close sessions left open longer than <paramref name="maxAge"/> — a
+    /// crashed or missed close hook must not leave a session open forever. Each close is
+    /// the same atomic, audited transition as a normal end (outcome <c>expired</c>).</summary>
+    public async Task<int> ExpireStaleSessions(TimeSpan maxAge, CancellationToken ct)
+    {
+        if (maxAge <= TimeSpan.Zero) return 0;
+        var cutoff = _clock.GetUtcNow() - maxAge;
+        var n = 0;
+        foreach (var s in _sessions.Snapshot())
+            if (s.EndedAt is null && s.StartedAt < cutoff && await EndSession(s.SessionId, "expired", ct, "system"))
+                n++;
+        return n;
+    }
+
+    /// <summary>Close a session the agent reports as ended (or, with an explicit
+    /// <paramref name="actor"/>, an admin revoke / system expiry).</summary>
+    public async Task<bool> EndSession(string sessionId, string outcome, CancellationToken ct, string? actor = null)
     {
         var s = _sessions.Get(sessionId);
         if (s is null) return false;
-        var actor = string.IsNullOrEmpty(s.AgentId) || s.AgentId == "-" ? "agent" : $"agent:{s.AgentId}";
+        actor ??= string.IsNullOrEmpty(s.AgentId) || s.AgentId == "-" ? "agent" : $"agent:{s.AgentId}";
         var ended = Event(AuditEvents.SessionEnded, actor, s.Subject, s.Resource, s.RequestId, s.GrantId, sessionId, outcome);
 
         // Close and its event commit together when transactional; otherwise the
