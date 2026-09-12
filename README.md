@@ -20,6 +20,15 @@ visitor ──▶ reverse proxy ──forwardAuth──▶ kalitka ──▶ Tel
 It is a **pre-filter, not an authentication system**. It does not replace the
 login behind it, and it is not meant to.
 
+The web gate is where kalitka started; the same *ask-a-human* mechanic now also
+governs **SSH** (login approval, and short-lived, single-command certificates) and
+**database** access (just-in-time SQL Server / PostgreSQL grants). Across all of them
+kalitka is the control plane that decides *who / to what / under which policy* and
+records it — it **brokers authority, not credentials**: it holds no SSH CA key and no
+database password; the local connector does, and only acts on kalitka's approval. If
+you only want the web doorbell, ignore those sections — nothing below the web gate is
+loaded unless you deploy it.
+
 ## What it does
 
 - **Ask and wait.** The visitor types a name or an e-mail, you get a message
@@ -36,6 +45,11 @@ login behind it, and it is not meant to.
   hosts individually. Unarmed hosts pass straight through.
 - **Mute.** For the night someone decides to hammer the door: every new caller
   is silently added to the block list instead of notifying you.
+- **Speak more than English.** The visitor and waiting pages detect the browser
+  locale and render in English, German or Russian.
+- **Gate more than the web.** The same approval flow fronts SSH and database
+  access through a registered **agent** on the far host — see
+  [SSH](#ssh-just-in-time-access) and [Database access](#database-just-in-time-access).
 
 ## What it is not
 
@@ -60,11 +74,14 @@ login behind it, and it is not meant to.
 dotnet test
 ```
 
-The suite is small and pointed at the security-critical behaviour: forged and
-proxied `X-Forwarded-For`, cookie tampering / expiry / secret rotation, the
-`/auth` decision for armed, unarmed and bypass cases, a wrong Telegram webhook
-secret, a non-admin callback, and callback replay against a resolved or expired
-request. Time is driven by a fake clock, so nothing sleeps and nothing is flaky.
+The suite is pointed at the security-critical behaviour: forged and proxied
+`X-Forwarded-For`, cookie tampering / expiry / secret rotation, the `/auth` decision
+for armed, unarmed and bypass cases, a wrong Telegram webhook secret, a non-admin
+callback, callback replay against a resolved or expired request, agent signature and
+replay, policy quorum with distinct approvers, bounded-grant and session lifecycle,
+and command-aware / cert-principal binding. Time is driven by a fake clock, so nothing
+sleeps and nothing is flaky. The Postgres-backed tests run only when
+`KALITKA_TEST_POSTGRES` points at a throwaway instance.
 
 ## Getting started
 
@@ -135,14 +152,20 @@ engine. Telegram stays; the console is additive.
 /admin/dashboard     overview + waiting count
 /admin/requests      requests waiting for a decision
 /admin/requests/{id} one request — approve / deny / remember / block
+/admin/sessions      live SSH/DB sessions — profile, uses-left, revoke
+/admin/agents        registered agents — keys, capabilities, enrolment, revoke
+/admin/profiles      agent profiles; /admin/reconcile applies profile changes
+/admin/policies      access policies (quorum, grant TTL, profile match, require-command)
 /admin/history       audit log, filter by actor/resource/event + paging
 ```
 
+The nav shows only what your permissions allow (see below).
+
 History is a durable **audit log** of resource-centric events (`access.requested`,
-`access.approved`, `access.denied`, `admin.login`, `grant.redeemed`,
-`session.started`, …) with a fixed envelope, so SSH/DB events fit later without a
-schema change. Set `AuditDbPath` (e.g. `/data/audit.db`) to keep it across restarts
-via SQLite; empty keeps it in memory.
+`access.approved`, `access.denied`, `admin.login`, `grant.redeemed`, `session.started`,
+`session.provisioned`, `session.reconciled`, `session.ended`, `agent.*`, `policy.*`, …)
+with a fixed envelope, so web, SSH and DB events all share one shape. Set `AuditDbPath`
+(e.g. `/data/audit.db`) to keep it across restarts via SQLite; empty keeps it in memory.
 
 **Durable live state.** Beyond the audit trail, the live state — pending requests,
 consumed one-time tokens, and sessions — can be kept in SQLite too: set
@@ -185,8 +208,9 @@ several lists gets the union):
 
 Every endpoint checks a permission; the nav only shows what you can use. Effective
 permissions are resolved from the current config on each request, so removing an
-address takes effect at once — not at session expiry. (A policy/config role will be
-added when a policy surface exists.)
+address takes effect at once — not at session expiry. Managing access policies needs
+`policies.manage`, which **full admin** has; a policy-only role bundle exists internally
+but is not yet wired to its own e-mail list.
 
 Login is Google OIDC (only a verified e-mail on the allowlist gets in; the stable
 `sub` keys the session). Add the console's redirect URI to your Google client:
@@ -212,15 +236,21 @@ name: prod-ssh
 match:
   resource: "ssh:*"
   tags: { env: prod }
+  profile: "sql-dba"   # optional: match only this grant profile (glob), e.g. DDL vs read-only
 approval:
-  required: 2       # distinct approvers before it is approved
-  grant_ttl: 15m    # shorten the one-time SSH grant
+  required: 2          # distinct approvers before it is approved
+  grant_ttl: 15m       # shorten the one-time grant
+  require_command: true  # forbid an open shell — only a specific, approved command
 ```
 
-A policy **only ever restricts** — it can require more approvals or shorten the grant,
-never grant a capability or resource an agent does not already have (the agent's own
-authority is checked first). Several matching policies combine the strictest way: most
-approvals (`max`), shortest grant (`min`) — there is no rule ordering.
+A policy **only ever restricts** — it can require more approvals, shorten the grant, or
+forbid an open shell, never grant a capability or resource an agent does not already have
+(the agent's own authority is checked first). Several matching policies combine the
+strictest way: most approvals (`max`), shortest grant (`min`), require-command if **any**
+matches — there is no rule ordering. `match.profile` lets the bar differ per operation
+class (a `sql-dba` grant needing four eyes while `sql-readonly` stays single); a request
+that violates `require_command` (no command given) is refused up front as `command-required`,
+before anyone is asked.
 
 Two things worth knowing about `required: 2`:
 
@@ -281,15 +311,46 @@ SSH host does not admit a web visitor of that name, and vice versa. Buttons on a
 request carry that request's resource; the `/allow` and `/block` commands default
 to `web:*`.
 
-## SSH (experimental)
+## SSH just-in-time access
 
-kalitka can gate an SSH login on a human's approval — a first step beyond HTTP. A
-small PAM hook on the host (`deploy/ssh/kalitka-approve.sh`) raises a request for
-`ssh:<host>` after authentication and blocks until you approve through any
-channel; then the session continues, and it is in `/admin/history` against the
-`ssh:` resource. Proof of concept: no certificates, credential brokering or
-proxy — it is a *second* factor, never the only one, and it is fail-closed, so
-keep a break-glass path. See [`deploy/ssh/`](deploy/ssh/).
+kalitka gates SSH the same way it gates the web — on a human's approval — in two
+shapes that compose. Both run through a registered agent on the far host and land in
+`/admin/history` against the `ssh:<host>` resource. See [`deploy/ssh/`](deploy/ssh/).
+
+- **Login gate (PAM).** A small PAM hook (`deploy/ssh/kalitka-approve.sh`) raises a
+  request *after* authentication and blocks until you approve; then the session
+  continues. It is a *second* factor, never the only one, and fail-closed — keep a
+  break-glass path. It brokers no credential; it only turns a yes/no into a PAM exit code.
+- **JIT certificates (`kalitka-ssh`).** On a bastion, `kalitka-ssh connect --host prod-01`
+  mints an ephemeral keypair, raises the request, and on approval signs a **short-lived
+  OpenSSH user certificate** — principal bound to the approved login, validity exactly the
+  grant's expiry — then `exec`s `ssh`. The cert self-expires: nothing to revoke, no orphan.
+  Core never holds the CA key. Add `--command 'systemctl restart nginx'` for a
+  **force-command** certificate: the human approves that exact command and the session can
+  run *only* it (the SSH analogue of a pre-approved stored procedure); a policy can
+  `require_command` to forbid open shells for a resource. The cert's key-id is
+  `kalitka:<session-id>`, so sshd's auth log ties back to the audit trail.
+
+## Database just-in-time access
+
+`kalitka-db-agent` (see [`deploy/db/`](deploy/db/)) runs next to **SQL Server** or
+**PostgreSQL** and turns an approved grant into real, time-boxed database access, then
+removes it. Core is the control plane and **holds no database credential** — a grant
+carries only a server-side *profile* (`sql-readonly`, `sql-writer`, …) the local connector
+maps to a predefined role; no raw SQL ever comes from Core.
+
+- **Modes.** *ephemeral* (default) creates a JIT login+role and drops it when the grant
+  ends, returning the credential to the operator out of band; *grant* adds an existing
+  principal to the role for the session; *action* hands out **no** login and instead runs
+  one DBA-vetted stored procedure once, counting it as exactly one use.
+- **Bounded grants.** A grant ends on the first of its `expires_at` (mandatory ceiling), a
+  `max_uses` budget, or an explicit revoke — carried on the session (`profile`, uses-left)
+  and shown at `/admin/sessions`.
+- **Crash recovery.** The connector journals every provisioned principal (locally and in an
+  in-DB ledger) with its expiry, and a `reconcile` pass revokes orphans left by an ungraceful
+  death — a locally-known expiry is dropped even while Core is unreachable; a Core outage is
+  never on its own a reason to revoke; and it never touches a principal without Kalitka
+  provenance. The agent runs as a least-privilege identity (a gMSA on Windows), not a DB admin.
 
 ## Agent credentials
 
@@ -310,8 +371,9 @@ An `/agent/*` caller authenticates one of three ways, most-preferred first:
 
    sent with `X-Kalitka-Agent-Id`, `X-Kalitka-Timestamp`, `X-Kalitka-Nonce` (and an
    optional `X-Kalitka-Key-Id`). The signature binds the exact request, a 5-minute
-   timestamp window plus a single-use nonce stop replay. (Signed requests over mTLS on
-   purpose: they reach the app unchanged whatever the proxy does with TLS.)
+   timestamp window plus a single-use nonce stop replay. (Application-level signatures
+   rather than mTLS, on purpose: they reach the app unchanged whatever the reverse proxy
+   does with TLS.)
 2. **Per-agent shared secret** (`X-Kalitka-Agent-Id` + `X-Kalitka-Agent-Secret`) —
    registry credential, kept through the migration window.
 3. **Legacy global secret** (`X-Kalitka-Agent`) — deprecated, one migration window.

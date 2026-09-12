@@ -7,6 +7,14 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **README brought up to date.** It framed kalitka only as a web doorbell and still
+  said the SSH gate had "no certificates"; it now describes the three access axes —
+  web, SSH (login gate + JIT/force-command certificates), and database JIT (SQL Server /
+  PostgreSQL, ephemeral/grant/action, bounded grants, crash recovery) — the current admin
+  console surface, policy profile-match / require-command, i18n, and the broader test suite.
+
 ## [0.26.0] - 2026-09-12
 
 ### Added
