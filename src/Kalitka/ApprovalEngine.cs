@@ -92,10 +92,12 @@ public sealed class ApprovalEngine
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
 
     private readonly PolicyService? _policies;
+    private readonly PrincipalService? _principals;
 
     public ApprovalEngine(IGeoLookup geo, AccessLists lists, GateOptions options,
         ILogger log, TimeProvider clock, IRequestStore store, IAuditStore audit,
-        IAtomicWork? atomic = null, IConfigStore? config = null, PolicyService? policies = null)
+        IAtomicWork? atomic = null, IConfigStore? config = null, PolicyService? policies = null,
+        PrincipalService? principals = null)
     {
         _geo = geo;
         _lists = lists;
@@ -107,6 +109,7 @@ public sealed class ApprovalEngine
         _atomic = atomic;
         _config = config ?? new JsonFileConfigStore(options, log);
         _policies = policies;
+        _principals = principals;
 
         _sessions = new SessionService(_options.HmacSecret, clock);
         _sessionMinutes = _options.SessionMinutes;
@@ -458,6 +461,20 @@ public sealed class ApprovalEngine
         new(Guid.NewGuid().ToString("N"), _clock.GetUtcNow(), type,
             actor, subject, resource, requestId, "-", channel, metadata);
 
+    /// <summary>The distinct-approver key for a quorum, channel-agnostic. An identity linked
+    /// to an operator principal collapses to <c>principal:&lt;id&gt;</c> (so the same human on
+    /// Telegram and the web counts once); an unlinked <c>google:&lt;sub&gt;</c> admin counts as
+    /// itself; anything else unlinked is not eligible (cannot be attributed to a distinct
+    /// human). This is the one place the quorum learns about channels — Slack/Teams/app are
+    /// just more identity schemes to link, no change here.</summary>
+    private (bool eligible, string key) QuorumKey(string actor)
+    {
+        var principalId = _principals?.Resolve(actor);
+        if (principalId is not null) return (true, "principal:" + principalId);
+        if (actor.StartsWith("google:", StringComparison.Ordinal)) return (true, actor);
+        return (false, "");
+    }
+
     private static string ChannelOf(string actor) =>
         actor.StartsWith("telegram:", StringComparison.Ordinal) ? "telegram"
         : actor.StartsWith("google:", StringComparison.Ordinal) ? "web"
@@ -548,22 +565,25 @@ public sealed class ApprovalEngine
         if (toState is null) return new CallbackResult(CallbackOutcome.Ignored);
 
         // Quorum: a tag-driven policy may require several DISTINCT approvers. A denial
-        // from any channel still denies at once (one "no" is enough). An approval,
-        // when the quorum is > 1, only advances if it comes from an authenticated
-        // control-plane principal (google:<sub>) — the same human approving via
-        // Telegram and via the web must not satisfy four-eyes. When enough distinct
-        // approvers have signed off, we fall through to the single resolve below.
+        // from any channel still denies at once (one "no" is enough). An approval, when
+        // the quorum is > 1, counts per DISTINCT OPERATOR PRINCIPAL — the human, not the
+        // channel: an identity linked to a principal (telegram:, slack:, teams:, app:, a
+        // linked google:) counts as that person, and the same person via two channels
+        // dedupes to one. An unlinked google admin counts as itself (its sub); any other
+        // unlinked channel identity cannot be attributed to a distinct human and does not
+        // count. When enough distinct principals have signed off, we fall through.
         if (toState == "approved" && request.RequiredApprovals > 1)
         {
-            if (!actor.StartsWith("google:", StringComparison.Ordinal))
+            var (eligible, principalKey) = QuorumKey(actor);
+            if (!eligible)
             {
                 await _audit.Append(Event(AuditEvents.AccessApprovalNoted, actor, request.Input, request.Resource,
-                    id, ChannelOf(actor), "not counted (channel not eligible for quorum)"), CancellationToken.None);
+                    id, ChannelOf(actor), "not counted (identity not linked to an operator principal)"), CancellationToken.None);
                 return new CallbackResult(CallbackOutcome.Pending, request,
-                    $"Approval noted — it does not count toward the {request.RequiredApprovals}-approver quorum.");
+                    $"Approval noted — this identity is not linked to an operator, so it does not count toward the {request.RequiredApprovals}-approver quorum.");
             }
 
-            var count = _store.AddApprovalAndCount(id, actor);
+            var count = _store.AddApprovalAndCount(id, principalKey);
             if (count < request.RequiredApprovals)
             {
                 await _audit.Append(Event(AuditEvents.AccessApprovalNoted, actor, request.Input, request.Resource,

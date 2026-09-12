@@ -111,6 +111,7 @@ builder.Services.AddSingleton<AgentService>();
 builder.Services.AddSingleton<ProfileService>();
 builder.Services.AddSingleton<ReconcileService>();
 builder.Services.AddSingleton<PolicyService>();
+builder.Services.AddSingleton<PrincipalService>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -983,6 +984,34 @@ guarded.MapPost("/policies/delete", async (HttpContext ctx, AdminAuth auth, Poli
     await policies.Delete(form["name"].ToString().Trim(), who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/policies", false);
 }).RequirePermission(Perm.PoliciesManage);
+
+// ---- Operator principals: who counts as a distinct approver in a quorum ----
+
+guarded.MapGet("/principals", (HttpContext ctx, AdminAuth auth, PrincipalService principals) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AdminPages.Principals(who, principals.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+}).RequirePermission(Perm.PrincipalsRead);
+
+guarded.MapPost("/principals/create", async (HttpContext ctx, AdminAuth auth, PrincipalService principals) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    if (form["id"].ToString().Trim().Length == 0) return Results.BadRequest();
+    await principals.Save(form["id"].ToString(), form["display"].ToString(),
+        Words(form["identities"].ToString()), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/principals", false);
+}).RequirePermission(Perm.PrincipalsManage);
+
+guarded.MapPost("/principals/delete", async (HttpContext ctx, AdminAuth auth, PrincipalService principals) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await principals.Delete(form["id"].ToString().Trim(), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/principals", false);
+}).RequirePermission(Perm.PrincipalsManage);
 
 guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminAuth auth, AgentService agentsSvc) =>
 {

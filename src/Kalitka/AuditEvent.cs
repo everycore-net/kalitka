@@ -53,6 +53,10 @@ public static class AuditEvents
     public const string PolicyCreated = "policy.created";
     public const string PolicyUpdated = "policy.updated";
     public const string PolicyDeleted = "policy.deleted";
+
+    public const string PrincipalCreated = "principal.created";
+    public const string PrincipalUpdated = "principal.updated";
+    public const string PrincipalDeleted = "principal.deleted";
 }
 
 /// <summary>A narrow query over the audit log: a few filters and a page.</summary>
