@@ -400,7 +400,7 @@ public sealed class ApprovalEngine
 
         // A tag-driven policy may require more than one approval for this resource.
         // Policy only restricts, so the floor is 1 (checked in PolicyService).
-        var required = _policies?.Effective(resource, agentTags).RequiredApprovals ?? 1;
+        var required = _policies?.Effective(resource, agentTags, profile ?? "").RequiredApprovals ?? 1;
 
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
         var request = new PendingRequest

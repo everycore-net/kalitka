@@ -7,6 +7,36 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-09-12
+
+### Added
+
+- **SQL Server resource model + provisioning protocol (second slice of 0.23).** The
+  bounded-grant model now spans any agent-brokered resource, not just SSH: a database
+  agent raises requests for a **`db:<server>/<database>`** resource, an access policy can
+  raise the bar on a specific **grant profile**, and the connector reports back whether
+  it actually provisioned the grant.
+  - Agent requests take an explicit **`resource`** (any scheme — `db:sql01/orders`,
+    `sudo:…`, `ssh:…`), validated to a sane charset; the SSH hooks keep their
+    `ssh:<host>` shorthand. The authenticated agent may only raise resources it is
+    scoped to, and a grant is now issued for **any agent resource** (not only `ssh:`) —
+    never for a `web:` visitor request.
+  - **Policy on the grant profile.** `AccessPolicy` gains a `MatchProfile` glob (e.g.
+    `sql-dba`, `sql-*`), so four-eyes can be required for DDL/DBA profiles while
+    read-only stays single-approval. Restrict-only and most-restrictive-wins as before.
+  - New **`POST /agent/v1/sessions/provisioned`**: the connector reports the grant was
+    applied (audited `session.provisioned`) or **failed** (the session is closed as
+    `provision-failed`, since access was never really granted). `kalitka-agent` gains a
+    `provisioned --session-id [--error MSG]` subcommand and a `request --resource` flag.
+
+### Notes
+
+- *Kalitka brokers authority, not database credentials.* Core hands the connector a
+  server-side profile and bounds; it holds no DB-admin credentials and issues no
+  arbitrary SQL permissions. The reference DB-agent connector — existing-principal
+  `GRANT`/`REVOKE` or ephemeral login/role/`DROP` under a least-privilege service
+  identity (gMSA) — lands in 0.23.3. No schema change; non-breaking.
+
 ## [0.23.1] - 2026-09-12
 
 ### Added

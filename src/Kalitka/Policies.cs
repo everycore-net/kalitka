@@ -23,18 +23,26 @@ public sealed record AccessPolicy(
     /// <summary>Bumped on each content change (append-only history in the store).</summary>
     public int Revision { get; init; }
 
+    /// <summary>Optional grant-profile glob this policy applies to (e.g. <c>sql-dba</c>,
+    /// <c>sql-*</c>); empty = any profile. Lets the operational model raise the bar per
+    /// operation class — e.g. a DDL profile needs more approvers than read-only.</summary>
+    public string MatchProfile { get; init; } = "";
+
     public bool SameContent(AccessPolicy other) =>
         string.Equals(MatchResource, other.MatchResource, StringComparison.OrdinalIgnoreCase)
         && MatchTags.SequenceEqual(other.MatchTags)
+        && string.Equals(MatchProfile, other.MatchProfile, StringComparison.OrdinalIgnoreCase)
         && RequiredApprovals == other.RequiredApprovals
         && GrantTtlMinutes == other.GrantTtlMinutes;
 
-    /// <summary>Does this policy apply to a request for <paramref name="resource"/>
-    /// raised by an agent carrying <paramref name="tags"/>? The resource must match the
-    /// glob and every <see cref="MatchTags"/> entry must be present on the agent.</summary>
-    public bool Matches(string resource, IReadOnlyCollection<string> tags) =>
+    /// <summary>Does this policy apply to a request for <paramref name="resource"/> with
+    /// grant <paramref name="profile"/> raised by an agent carrying <paramref name="tags"/>?
+    /// The resource must match the glob, every <see cref="MatchTags"/> entry must be on the
+    /// agent, and (if set) the profile must match <see cref="MatchProfile"/>.</summary>
+    public bool Matches(string resource, IReadOnlyCollection<string> tags, string profile = "") =>
         ResourceGlob.Matches(MatchResource, resource)
-        && MatchTags.All(t => tags.Any(x => string.Equals(x, t, StringComparison.OrdinalIgnoreCase)));
+        && MatchTags.All(t => tags.Any(x => string.Equals(x, t, StringComparison.OrdinalIgnoreCase)))
+        && (MatchProfile.Length == 0 || ResourceGlob.Matches(MatchProfile, profile));
 }
 
 /// <summary>Resource glob matching, shared with the agent authority model: an exact
@@ -93,9 +101,9 @@ public sealed class PolicyService
     /// approvals wins (<c>max</c>), a shorter grant wins (<c>min</c>) — so there is no
     /// priority or first-match to reason about. Never returns fewer approvals than 1.
     /// </summary>
-    public PolicyDecision Effective(string resource, IReadOnlyCollection<string> agentTags)
+    public PolicyDecision Effective(string resource, IReadOnlyCollection<string> agentTags, string profile = "")
     {
-        var matched = All().Where(p => p.Matches(resource, agentTags)).ToList();
+        var matched = All().Where(p => p.Matches(resource, agentTags, profile)).ToList();
         if (matched.Count == 0) return PolicyDecision.None;
 
         var required = Math.Max(1, matched.Max(p => p.RequiredApprovals));

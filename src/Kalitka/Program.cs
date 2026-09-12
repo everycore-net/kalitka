@@ -333,6 +333,7 @@ app.MapPost("/agent/redeem", AgentRedeem);
 app.MapPost("/agent/v1/sessions/end", AgentSessionEnd);
 app.MapPost("/agent/session/end", AgentSessionEnd);
 app.MapPost("/agent/v1/sessions/use", AgentSessionUse);
+app.MapPost("/agent/v1/sessions/provisioned", AgentSessionProvisioned);
 app.MapPost("/agent/v1/enroll", AgentEnroll);
 app.MapPost("/agent/enroll", AgentEnroll);
 app.MapPost("/agent/v1/heartbeat", AgentHeartbeat);
@@ -350,13 +351,24 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     var ip = form["ip"].ToString().Trim();
     if (string.IsNullOrEmpty(ip)) ip = ResolveIp(ctx, gate);
 
-    // The host names a resource; keep it a sane label (it lands in audit/notify).
-    if (host.Length is 0 or > 100 || host.Any(c => !(char.IsLetterOrDigit(c) || c is '.' or '-' or '_')))
+    // The resource is either given directly (e.g. db:sql01/orders, any scheme) or, for
+    // the SSH hooks, built from the host. Either way it is a label that lands in
+    // audit/notify, so keep it to a sane charset.
+    var resource = form["resource"].ToString().Trim();
+    if (resource.Length == 0)
+    {
+        if (host.Length is 0 or > 100 || host.Any(c => !(char.IsLetterOrDigit(c) || c is '.' or '-' or '_')))
+            return Results.BadRequest();
+        resource = "ssh:" + host;
+    }
+    else if (resource.Length > 160 || !resource.Contains(':') ||
+             resource.Any(c => !(char.IsLetterOrDigit(c) || c is ':' or '.' or '-' or '_' or '/')))
+    {
         return Results.BadRequest();
+    }
 
     // The authenticated agent may only raise resources it is scoped to (capability
     // + allowed resource) — a valid credential is not a licence for any resource.
-    var resource = "ssh:" + host;
     if (!identity.MayRepresent(resource, AgentCapabilities.Request)) return Results.StatusCode(403);
 
     var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags,
@@ -406,6 +418,19 @@ static async Task<IResult> AgentSessionUse(HttpContext ctx, GateService gate, Gr
     var remaining = await grants.ReportUse(form["session_id"].ToString(), identity.Actor, ctx.RequestAborted);
     if (remaining is null) return Results.Json(new { error = "not-open" }, statusCode: 409);
     return Results.Json(new { remaining_uses = remaining, spent = remaining == 0 });
+}
+
+// The connector reports the provisioning outcome: applied, or failed (which closes the
+// session, since access was never really granted).
+static async Task<IResult> AgentSessionProvisioned(HttpContext ctx, GateService gate, GrantService grants, IAgentStore agents, IReplayStore replay)
+{
+    MarkAgentVersion(ctx);
+    var identity = await AuthenticateAgent(ctx, gate, agents, replay);
+    if (identity is null) return Results.StatusCode(403);
+
+    var form = await ctx.Request.ReadFormAsync();
+    var ok = await grants.ReportProvisioned(form["session_id"].ToString(), form["error"].ToString(), identity.Actor, ctx.RequestAborted);
+    return Results.Json(new { provisioned = ok });
 }
 
 // The agent reports the session ended (session.ended).
@@ -874,7 +899,7 @@ guarded.MapPost("/policies/create", async (HttpContext ctx, AdminAuth auth, Poli
     int.TryParse(form["required"].ToString(), out var required);
     int.TryParse(form["grant_ttl"].ToString(), out var ttl);
     var policy = new AccessPolicy(name, resource, Words(form["match_tags"].ToString()),
-        Math.Max(1, required), Math.Max(0, ttl));
+        Math.Max(1, required), Math.Max(0, ttl)) { MatchProfile = form["match_profile"].ToString().Trim() };
     await policies.Save(policy, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/policies", false);
 }).RequirePermission(Perm.PoliciesManage);

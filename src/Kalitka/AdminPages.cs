@@ -384,8 +384,9 @@ public static class AdminPages
           .Append("<form method=\"post\" action=\"/admin/policies/create\">")
           .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
           .Append(In("name", "name (e.g. prod-ssh)"))
-          .Append(In("match_resource", "match resource (ssh:*  |  ssh:prod-01  |  *)"))
+          .Append(In("match_resource", "match resource (ssh:*  |  db:sql01/*  |  *)"))
           .Append(In("match_tags", "match tags — all required (env:prod role:web)"))
+          .Append(In("match_profile", "match grant profile (e.g. sql-dba, sql-*; blank = any)"))
           .Append(In("required", "required approvals (e.g. 2)"))
           .Append(In("grant_ttl", "grant TTL minutes (0 = no override)"))
           .Append("<div class=\"btns\"><button>Save policy</button></div></form>");
@@ -395,13 +396,14 @@ public static class AdminPages
             sb.Append("<p class=\"muted\">No policies yet — every request needs one approval and the default grant lifetime.</p>");
         else
         {
-            sb.Append("<table><tr><th>Name</th><th>Resource</th><th>Tags</th>"
+            sb.Append("<table><tr><th>Name</th><th>Resource</th><th>Tags</th><th>Profile</th>"
                 + "<th>Approvals</th><th>Grant TTL</th><th></th></tr>");
             foreach (var p in policies)
                 sb.Append("<tr>")
                   .Append($"<td><code>{H(p.Name)}</code></td>")
                   .Append($"<td><code>{H(p.MatchResource)}</code></td>")
                   .Append($"<td class=\"muted\">{H(string.Join(" ", p.MatchTags))}</td>")
+                  .Append($"<td class=\"muted\">{(p.MatchProfile.Length == 0 ? "—" : H(p.MatchProfile))}</td>")
                   .Append($"<td>{p.RequiredApprovals}</td>")
                   .Append($"<td class=\"muted\">{(p.GrantTtlMinutes > 0 ? p.GrantTtlMinutes + " min" : "—")}</td>")
                   .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/policies/delete\">"

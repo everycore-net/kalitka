@@ -37,8 +37,8 @@ public sealed class GrantService
         _policies = policies;
     }
 
-    /// <summary>The grant for an approved SSH request, issued once. Null if the
-    /// request is not approved, is not an agent resource, or the requesting agent is
+    /// <summary>The grant for an approved agent request (ssh:, db:, …), issued once. Null
+    /// if the request is not approved, is not an agent resource, or the requesting agent is
     /// not scoped to redeem that resource — a valid credential is not a licence to
     /// collect the grant for a resource outside the agent's scope (this mirrors the
     /// check <see cref="Redeem"/> makes, so the grant is never even handed out to the
@@ -47,14 +47,17 @@ public sealed class GrantService
     {
         if (_gate.StateOf(id) != "approved") return null;
         var resource = _gate.ResourceOf(id) ?? "";
-        if (!resource.StartsWith("ssh:", StringComparison.Ordinal)) return null;
+        // Any agent-brokered resource can be granted (ssh:, db:, sudo:, …) — but never a
+        // web: visitor request, which is served by the gate flow, not a redeemable grant.
+        if (resource.StartsWith("web:", StringComparison.Ordinal) || !resource.Contains(':')) return null;
         if (!agent.MayRepresent(resource, AgentCapabilities.Redeem)) return null;
 
         var subject = _gate.SubjectOf(id) ?? "";
         // A matching access policy may only SHORTEN the grant, never extend it beyond
-        // the global lifetime (restrict-only), so the effective TTL is the min.
+        // the global lifetime (restrict-only), so the effective TTL is the min. The
+        // request's profile lets the policy pick per operation class (e.g. sql-dba).
         var ttl = _grantMinutes;
-        var policyTtl = _policies?.Effective(resource, agent.Tags).GrantTtlMinutes;
+        var policyTtl = _policies?.Effective(resource, agent.Tags, _gate.ProfileOf(id)).GrantTtlMinutes;
         if (policyTtl is > 0) ttl = Math.Min(ttl, policyTtl.Value);
         var (grant, created) = _gate.EnsureGrant(id, _tokens.MintGrant(resource, id, subject, ttl));
         if (created && _tokens.Read(grant) is { } cap)
@@ -115,6 +118,24 @@ public sealed class GrantService
         await _audit.Append(redeemed, ct);
         await _audit.Append(started, ct);
         return new(true, sessionId, Profile: profile);
+    }
+
+    /// <summary>The connector reports the provisioning outcome for a session: applied
+    /// (audited <c>session.provisioned</c>) or failed (the session is closed as
+    /// <c>provision-failed</c>, since access was never really granted). Returns whether
+    /// provisioning is considered applied. Revoking is reported via <see cref="EndSession"/>.</summary>
+    public async Task<bool> ReportProvisioned(string sessionId, string? error, string actor, CancellationToken ct)
+    {
+        var s = _sessions.Get(sessionId);
+        if (s is null) return false;
+        if (!string.IsNullOrEmpty(error))
+        {
+            await EndSession(sessionId, "provision-failed", ct, actor);
+            return false;
+        }
+        await _audit.Append(Event(AuditEvents.SessionProvisioned, actor, s.Subject, s.Resource,
+            s.RequestId, s.GrantId, sessionId, s.Profile), ct);
+        return true;
     }
 
     /// <summary>Report one use of a granted operation (the bounded-grant `max_uses`).
