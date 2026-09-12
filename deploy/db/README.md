@@ -1,8 +1,10 @@
-# Database JIT access — SQL Server (reference connector)
+# Database JIT access — SQL Server & PostgreSQL (reference connector)
 
-Give someone time-boxed SQL Server access that a human approves in kalitka — the
+Give someone time-boxed database access that a human approves in kalitka — the
 same door, from a phone or the web console — and that **removes itself** when the
-grant ends. This is the first database axis and the reference for others.
+grant ends. This is the first database axis and the reference for others. The
+connector is engine-agnostic: `DB_ENGINE=sqlserver` (default) or `DB_ENGINE=postgres`
+selects a driver; the whole lifecycle, protocol and crash recovery are shared.
 
 ```
 kalitka-db-agent access --database orders --profile sql-readonly --user sergej
@@ -102,21 +104,33 @@ unconfirmed cleanup, for a Kalitka-owned principal whose journal *and* ledger ar
 keep it ≥ your longest grant TTL. Every revoke is audited with its reason
 (`session.reconciled`), so an unconfirmed cleanup is always explainable after the fact.
 
+## PostgreSQL (`DB_ENGINE=postgres`)
+
+The second engine, on the same contract — set `DB_ENGINE=postgres`, install
+`drivers/postgres`, and run `roles-postgres.sql` instead of `roles.sql`. The lifecycle,
+the signed protocol, and crash recovery are identical; only the SQL differs:
+
+- PostgreSQL has no separate login/user — a role with `LOGIN` *is* the user. So the
+  profile roles are **`NOLOGIN` group roles** (`kalitka_readonly`, `kalitka_writer`, …)
+  carrying the privileges, and an **ephemeral principal is a `LOGIN` role that is a
+  member** of the group and inherits it (`CREATE ROLE … IN ROLE`).
+- Because its privileges come via membership, the ephemeral role has no per-database
+  ACLs of its own and `DROP ROLE` removes it cluster-wide and cleanly. Teardown also
+  `ALTER ROLE … NOLOGIN` first, so authentication is revoked immediately even if a later
+  `DROP` is delayed by leftover owned objects.
+- The agent authenticates as a **`CREATEROLE NOINHERIT`** role with `ADMIN OPTION` on the
+  group roles (`$PSQL`) — enough to create/drop ephemeral roles and manage membership,
+  never a superuser. Provenance for the orphan sweep is stamped in the role's `COMMENT`
+  (`pg_roles` has no creation timestamp).
+
 ## Bounded grants
 
 The universal bounded-grant model applies: a grant ends on the *first* of its
 `expires_at` (mandatory ceiling), a `--max-uses` budget being spent (only where one
 operation is unambiguous — a pre-approved stored procedure — never for counting
-arbitrary SQL), or an explicit revoke. Interactive (SSMS) access is session + TTL.
+arbitrary SQL), or an explicit revoke. Interactive access is session + TTL.
 
-## Bounded grants
-
-The universal bounded-grant model applies: a grant ends on the *first* of its
-`expires_at` (mandatory ceiling), a `--max-uses` budget being spent (only where one
-operation is unambiguous — a pre-approved stored procedure — never for counting
-arbitrary SQL), or an explicit revoke. Interactive (SSMS) access is session + TTL.
-
-## Install (on the SQL Server host / a host next to it)
+## Install (next to the database)
 
 1. `bash`, `curl`, **OpenSSL 3**, and **`sqlcmd`** must be present.
 2. Install the reference client, the entrypoint, the shared lib and the engine driver:

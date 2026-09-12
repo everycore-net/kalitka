@@ -7,6 +7,34 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.5] - 2026-09-12
+
+### Added
+
+- **PostgreSQL connector (5th slice of 0.23).** A second engine on the 0.23.4 contract:
+  the shared lifecycle (`kalitka-db-lib`) and crash-recovery reconcile are reused
+  **unchanged** — only a new `deploy/db/drivers/postgres` and `roles-postgres.sql`. Set
+  `DB_ENGINE=postgres`. Same grant/profile/session semantics, same bounded-grant and
+  crash-recovery guarantees.
+  - PostgreSQL has no separate login/user: profile roles are `NOLOGIN` **group roles**
+    (`kalitka_readonly`, `kalitka_writer`) carrying the privileges; an ephemeral
+    principal is a `LOGIN` role that is a **member** and inherits them. Its privileges
+    come via membership, so it has no per-database ACLs of its own and `DROP ROLE` removes
+    it cluster-wide and cleanly; teardown `ALTER ROLE … NOLOGIN` first, so authentication
+    is revoked immediately even if a `DROP` is delayed by leftover owned objects.
+  - The agent authenticates as a **`CREATEROLE NOINHERIT`** role with `ADMIN OPTION` on
+    the group roles — enough to create/drop ephemeral roles and manage membership, never a
+    superuser. Orphan-sweep provenance is stamped in the role's `COMMENT` (`pg_roles` has
+    no creation timestamp).
+
+### Notes
+
+- Pure client-side connector — no `Kalitka.dll` change. Reconcile decision table +
+  provenance gate verified against **PostgreSQL 16** on the unchanged shared lib
+  (local-expiry drop while Core is down, locally-valid keep, orphan-max-age drop, and the
+  agent's own role left untouched). Next in 0.23: **0.24 — usage-controlled DB actions**
+  (stored-procedure/action profiles with real `max_uses`).
+
 ## [0.23.4] - 2026-09-12
 
 ### Added
