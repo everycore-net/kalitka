@@ -45,6 +45,21 @@ public static class AdminPages
 
     private static string H(string s) => WebUtility.HtmlEncode(s);
 
+    // Honest wording: a provider hint is a local CLAIM, not a verified fact. Until
+    // attestation validates it (assurance != unverified), never say "TPM protected".
+    private static string ProviderLabel(AgentKey k) => k.Assurance switch
+    {
+        "attested-tpm" => "TPM-attested",
+        "attested-secure-enclave" => "Secure Enclave-attested",
+        _ => k.ProviderHint switch
+        {
+            "windows-platform" => "Platform Crypto Provider — not remotely attested",
+            "apple-secure-enclave" => "Secure Enclave — not remotely attested",
+            "software" => "software",
+            _ => "unknown",
+        },
+    };
+
     private static string Shell(AdminIdentity who, string body) =>
         Head
         + $"<div class=\"top\"><span class=\"brand\"><img class=\"mark\" src=\"{Brand.IconDataUri}\" alt=\"\" width=\"22\" height=\"22\"><b>kalitka</b></span>"
@@ -522,11 +537,13 @@ public static class AdminPages
             sb.Append("<p class=\"muted\">None — this agent still authenticates with its shared secret.</p>");
         else
         {
-            sb.Append("<table><tr><th>Key id</th><th>Public key (Ed25519)</th><th>Added</th><th></th></tr>");
+            sb.Append("<table><tr><th>Key id</th><th>Public key (SPKI)</th><th>Provider</th><th>Assurance</th><th>Added</th><th></th></tr>");
             foreach (var k in a.Keys)
                 sb.Append("<tr>")
                   .Append($"<td><code>{H(k.KeyId)}</code></td>")
                   .Append($"<td class=\"muted\"><code>{H(k.PublicKey)}</code></td>")
+                  .Append($"<td class=\"muted\">{H(ProviderLabel(k))}</td>")
+                  .Append($"<td class=\"muted\">{H(k.Assurance)}</td>")
                   .Append($"<td class=\"muted\">{k.AddedAt:yyyy-MM-dd HH:mm} UTC</td>")
                   .Append(a.Status == AgentStatus.Revoked ? "<td></td>"
                       : "<td><form class=\"inline\" method=\"post\" action=\"" + $"/admin/agents/{H(a.Id)}/action" + "\">"
@@ -538,7 +555,7 @@ public static class AdminPages
         if (a.Status != AgentStatus.Revoked)
             sb.Append("<form method=\"post\" action=\"" + $"/admin/agents/{H(a.Id)}/action" + "\" style=\"margin-top:10px\">")
               .Append($"<input type=\"hidden\" name=\"verb\" value=\"addkey\"><input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
-              .Append(In("public_key", "Ed25519 public key (base64, 32 bytes)"))
+              .Append(In("public_key", "public key — SPKI (base64)"))
               .Append("<div class=\"btns\"><button>Add key</button></div></form>");
 
         sb.Append("<p style=\"margin-top:18px\"><a class=\"row\" href=\"/admin/agents\">← back</a></p>");

@@ -56,7 +56,10 @@ urlenc() {
 
 sha256hex() { openssl dgst -sha256 | awk '{print $NF}'; }
 b64() { openssl base64 -A; }
-pubkey_b64() { openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | tail -c 32 | b64; }
+# The full SubjectPublicKeyInfo (SPKI), base64 — self-describing (the algorithm is inside),
+# so the server derives the key type from the credential. (Pre-SPKI clients sent the raw 32
+# Ed25519 bytes; the server still reads those from already-registered agents.)
+pubkey_b64() { openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | b64; }
 have_key() { [ -n "${KALITKA_AGENT_ID:-}" ] && [ -r "$KEY" ]; }
 
 keygen() {

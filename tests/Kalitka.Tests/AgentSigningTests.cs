@@ -10,6 +10,7 @@ using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
 using Org.BouncyCastle.Security;
+using Org.BouncyCastle.X509;
 using Xunit;
 
 namespace Kalitka.Tests;
@@ -22,13 +23,17 @@ namespace Kalitka.Tests;
 /// </summary>
 public class AgentSigningTests
 {
+    // pubB64 is the SPKI (SubjectPublicKeyInfo) base64 — the form clients now register
+    // (0.29.0). Verification still accepts the legacy raw 32-byte form; the interop
+    // known-answer vector below covers that path.
     private static (string pubB64, Ed25519PrivateKeyParameters priv) NewKeyPair()
     {
         var gen = new Ed25519KeyPairGenerator();
         gen.Init(new Ed25519KeyGenerationParameters(new SecureRandom()));
         var pair = gen.GenerateKeyPair();
         var pub = (Ed25519PublicKeyParameters)pair.Public;
-        return (Convert.ToBase64String(pub.GetEncoded()), (Ed25519PrivateKeyParameters)pair.Private);
+        var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(pub).GetDerEncoded();
+        return (Convert.ToBase64String(spki), (Ed25519PrivateKeyParameters)pair.Private);
     }
 
     private static string Sign(Ed25519PrivateKeyParameters priv, byte[] message)
