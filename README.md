@@ -1,6 +1,6 @@
 # kalitka
 
-A doorbell for your reverse proxy.
+A doorbell in front of your app.
 
 Something on your network has a login page that is fine, but you would rather
 the whole internet did not get to see it — a Grafana, a Dockge, an admin panel,
@@ -20,7 +20,9 @@ visitor ──▶ reverse proxy ──forwardAuth──▶ kalitka ──▶ Tel
 It is a **pre-filter, not an authentication system**. It does not replace the
 login behind it, and it is not meant to.
 
-That is what kalitka is: **a doorbell in front of your reverse proxy.** The
+That is what kalitka is: **a doorbell in front of your app** — wired in through your
+reverse proxy's forwardAuth hook, which is how it sees the request before the app does, but
+what it guards is the application, not the proxy. The
 [SSH](#ssh-just-in-time-access) and [database](#database-just-in-time-access) sections are
 the *same ask-a-human step reused elsewhere* — an **optional** extension that does **not**
 go through the proxy (a local agent calls kalitka's `/agent/*` API instead) and does
