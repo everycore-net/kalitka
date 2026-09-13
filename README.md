@@ -285,6 +285,16 @@ Slack, Teams or a first-party app is a new identity scheme to link here — the 
 does not change. An identity belongs to at most one operator (enforced on save). Managing
 operators needs the `principals.manage` permission (full admin has it).
 
+The link works **both directions**. Backward, an approval resolves to a person (the quorum
+above). Forward, a request can be routed **to** a person: a request carries a
+machine-readable `subject_identity` (e.g. `os:CONTOSO\anna`), which resolves to an operator
+and asks *them* — not the global admins. A policy `self` mode routes a request to its own
+subject (the person confirms their own action, and only they are asked); everything else
+asks the operator **and** the admins. A subject that does not resolve falls back to the
+admins, and that fallback is **audited** (`notify.fallback`) — never silent, and never a
+lowering of the policy's approval requirement. This is what makes the solo tier and
+self-confirmation flows possible without tenancy work in the core.
+
 ## E-mail approvals
 
 A third way to answer, beside Telegram and the console: when SMTP is configured,

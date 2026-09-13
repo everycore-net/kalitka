@@ -72,6 +72,18 @@ public sealed class PrincipalService
         return null;
     }
 
+    /// <summary>The reverse of <see cref="Resolve"/>: the identities of an operator, so a
+    /// resolved person can be turned back into channel targets (0.30). Optionally filter by
+    /// scheme prefix (e.g. <c>telegram:</c>). Empty if the operator is unknown.</summary>
+    public IReadOnlyList<string> IdentitiesOf(string principalId, string schemePrefix = "")
+    {
+        var p = Get(principalId);
+        if (p is null) return Array.Empty<string>();
+        return schemePrefix.Length == 0
+            ? p.Identities
+            : p.Identities.Where(i => i.StartsWith(schemePrefix, StringComparison.Ordinal)).ToArray();
+    }
+
     /// <summary>Create or replace a principal. Returns an error string (identity already
     /// owned by another principal, or nothing to save) or null on success.</summary>
     public async Task<string?> Save(string id, string displayName, IEnumerable<string> identities, string actor, CancellationToken ct)

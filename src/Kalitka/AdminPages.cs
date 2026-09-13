@@ -416,6 +416,8 @@ public static class AdminPages
               + "<input type=\"checkbox\" name=\"require_command\"> require a command (no open shell — SSH cert force-command only)</label>")
           .Append("<label class=\"muted\" style=\"display:block;margin:6px 0\">"
               + "<input type=\"checkbox\" name=\"require_source\"> require a source address (pin the SSH cert to an approved CIDR)</label>")
+          .Append("<label class=\"muted\" style=\"display:block;margin:6px 0\">"
+              + "<input type=\"checkbox\" name=\"approval_self\"> self-approval (ask the subject to confirm their own action; only them)</label>")
           .Append("<div class=\"btns\"><button>Save policy</button></div></form>");
 
         sb.Append("<h2>Policies</h2>");
@@ -424,7 +426,7 @@ public static class AdminPages
         else
         {
             sb.Append("<table><tr><th>Name</th><th>Resource</th><th>Tags</th><th>Profile</th>"
-                + "<th>Approvals</th><th>Grant TTL</th><th>Command</th><th>Source</th><th>Principals</th><th></th></tr>");
+                + "<th>Approvals</th><th>Grant TTL</th><th>Command</th><th>Source</th><th>Principals</th><th>Self</th><th></th></tr>");
             foreach (var p in policies)
                 sb.Append("<tr>")
                   .Append($"<td><code>{H(p.Name)}</code></td>")
@@ -436,6 +438,7 @@ public static class AdminPages
                   .Append($"<td class=\"muted\">{(p.RequireCommand ? "required" : "—")}</td>")
                   .Append($"<td class=\"muted\">{(p.RequireSourceAddress ? "required" : "—")}</td>")
                   .Append($"<td class=\"muted\">{(p.AllowedPrincipals.Length == 0 ? "—" : H(string.Join(" ", p.AllowedPrincipals)))}</td>")
+                  .Append($"<td class=\"muted\">{(p.ApprovalSelf ? "self" : "—")}</td>")
                   .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/policies/delete\">"
                       + $"<input type=\"hidden\" name=\"name\" value=\"{H(p.Name)}\">"
                       + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"

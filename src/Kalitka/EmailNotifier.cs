@@ -23,9 +23,19 @@ public sealed class EmailNotifier : INotifier
 
     public bool Ready => _email.Enabled && _o.AdminEmails.Length > 0;
 
-    public async Task Announce(PendingRequest r, CancellationToken ct)
+    public async Task Announce(PendingRequest r, NotifyRouting routing, CancellationToken ct)
     {
-        if (!Ready) return;
+        if (!_email.Enabled) return;
+
+        // The resolved operator's e-mail identities, plus the admins when the routing asks
+        // for them. An ordinary request (routing = Admins) e-mails the admins as before.
+        var recipients = routing.OperatorIdentities
+            .Where(i => i.StartsWith("email:", StringComparison.Ordinal))
+            .Select(i => i["email:".Length..])
+            .ToList();
+        if (routing.IncludeAdmins) recipients.AddRange(_o.AdminEmails);
+        recipients = recipients.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (recipients.Count == 0) return;
 
         var resource = "web:" + r.Target;
         var approve = Link(_tokens.Mint("approve", resource, r.Id, "a", _o.OneTimeMinutes));
@@ -40,7 +50,7 @@ public sealed class EmailNotifier : INotifier
           + $"Each link opens a confirmation page — nothing happens until you confirm there. "
           + $"They work once and expire in {_o.OneTimeMinutes} minutes.";
 
-        await _email.Send(_o.AdminEmails, $"kalitka: access request for {r.Target}", body, ct);
+        await _email.Send(recipients.ToArray(), $"kalitka: access request for {r.Target}", body, ct);
     }
 
     private string Link(string token) => $"https://{_o.GateHost}/action?t={Uri.EscapeDataString(token)}";

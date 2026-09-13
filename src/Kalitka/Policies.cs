@@ -45,12 +45,19 @@ public sealed record AccessPolicy(
     /// a resource. Several matching policies intersect (a login must satisfy every one).</summary>
     public string[] AllowedPrincipals { get; init; } = Array.Empty<string>();
 
+    /// <summary>Self-approval (0.30): the request is routed to its own subject — the person
+    /// acting confirms their own action — and only they are asked. Must be explicit per
+    /// policy: otherwise 0.19.3's distinct-approver rule for a quorum could be undermined.
+    /// Independent of <see cref="RequiredApprovals"/> (self is who is asked, not how many).</summary>
+    public bool ApprovalSelf { get; init; }
+
     public bool SameContent(AccessPolicy other) =>
         string.Equals(MatchResource, other.MatchResource, StringComparison.OrdinalIgnoreCase)
         && MatchTags.SequenceEqual(other.MatchTags)
         && string.Equals(MatchProfile, other.MatchProfile, StringComparison.OrdinalIgnoreCase)
         && RequireCommand == other.RequireCommand
         && RequireSourceAddress == other.RequireSourceAddress
+        && ApprovalSelf == other.ApprovalSelf
         && AllowedPrincipals.SequenceEqual(other.AllowedPrincipals)
         && RequiredApprovals == other.RequiredApprovals
         && GrantTtlMinutes == other.GrantTtlMinutes;
@@ -82,7 +89,8 @@ public static class ResourceGlob
 /// policy. Empty/default (<see cref="RequiredApprovals"/> = 1, no TTL override) when
 /// nothing matches.</summary>
 public sealed record PolicyDecision(int RequiredApprovals, int? GrantTtlMinutes, string[] MatchedPolicies,
-    bool RequireCommand = false, bool RequireSourceAddress = false, string[]? AllowedPrincipals = null)
+    bool RequireCommand = false, bool RequireSourceAddress = false, string[]? AllowedPrincipals = null,
+    bool ApprovalSelf = false)
 {
     public static readonly PolicyDecision None = new(1, null, Array.Empty<string>());
 
@@ -149,8 +157,9 @@ public sealed class PolicyService
             var inter = constraints.Aggregate((a, b) => { a.IntersectWith(b); return a; });
             allowed = inter.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
         }
+        var approvalSelf = matched.Any(p => p.ApprovalSelf);   // self only where a policy says so
         return new PolicyDecision(required, ttl, matched.Select(p => p.Name).OrderBy(n => n).ToArray(),
-            requireCommand, requireSource, allowed);
+            requireCommand, requireSource, allowed, approvalSelf);
     }
 
     public async Task Save(AccessPolicy policy, string actor, CancellationToken ct)
