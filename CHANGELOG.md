@@ -7,6 +7,37 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-09-13
+
+### Added
+
+- **Per-request notification routing — ask the right person, not always the admins.** The
+  forward half of operator principals (0.27.0 resolved an *answer* to a person; this routes
+  a *request* to the person who must be asked). A request carries a machine-readable
+  **`subject_identity`** (identity-shaped, e.g. `os:CONTOSO\anna`, `sid:S-1-5-…`), which the
+  gate resolves to an operator principal and asks **them**.
+  - `PrincipalService.IdentitiesOf(principalId, scheme?)` — the reverse of `Resolve`. Each
+    notifier targets its own scheme (`telegram:`, `email:`) from the resolved identities; a
+    request with no `subject_identity` asks the admins exactly as before.
+  - **`NotifyRouting`** is resolved once per request and passed to every notifier
+    (`INotifier.Announce` now takes it). An unmapped subject **falls back to the admins and
+    is audited** (`notify.fallback`) — never silent. The fallback never lowers a policy's
+    approval requirement (a `quorum(2)` stays a quorum however it was routed).
+  - **Policy `self`** (`ApprovalSelf`) routes a request to its own subject — the person
+    confirms their own action, and **only they** are asked; everything else asks the
+    operator *and* the admins. `self` is explicit per policy, so 0.19.3's distinct-approver
+    rule for a quorum is never quietly undermined. `kalitka-agent request` gains
+    `--subject-identity`.
+
+### Notes
+
+- New column `requests(subject_identity)` in SQLite + Postgres (idempotent); non-breaking.
+  Verified: a mapped subject asks the operator + admins, a `self` policy asks only the
+  operator, an unmapped subject falls back to admins + audits it, an ordinary request is
+  unchanged, and `IdentitiesOf` is the reverse of `Resolve`. Full suite (262) green incl.
+  Postgres. Unblocks app-launch self-confirmation, the solo tier, and the demo stand.
+  Design: `docs/design/notification-routing.md` (with claude-fd).
+
 ## [0.29.0] - 2026-09-13
 
 ### Added

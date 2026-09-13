@@ -25,6 +25,7 @@ public static class AuditEvents
     public const string AccessApproved     = "access.approved";
     public const string AccessApprovalNoted = "access.approval_noted";   // quorum: one approver, not yet enough
     public const string AccessDenied       = "access.denied";
+    public const string NotifyFallback     = "notify.fallback";   // subject did not resolve to an operator; asked the admins
     public const string GrantCreated     = "grant.created";
     public const string GrantRedeemed    = "grant.redeemed";
     public const string GrantExpired     = "grant.expired";

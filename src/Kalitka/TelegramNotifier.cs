@@ -27,22 +27,29 @@ public sealed class TelegramNotifier : INotifier
 
     // ---- Announce a new request --------------------------------------------
 
-    public async Task Announce(PendingRequest request, CancellationToken ct)
+    public async Task Announce(PendingRequest request, NotifyRouting routing, CancellationToken ct)
     {
         // Notify only now, after the visitor typed something. Otherwise every
         // passing scanner would ring the bell.
-        foreach (var chatId in NotificationTargets())
+        foreach (var chatId in NotificationTargets(routing))
             await _telegram.SendMessage(chatId, Describe(request), Buttons(request), ct);
     }
 
-    private IEnumerable<string> NotificationTargets()
+    // The resolved operator's telegram chat ids (from the routing), plus the global admins
+    // when the routing asks for them. Distinct, so an operator who is also an admin is asked
+    // once. An ordinary request (routing = Admins) yields exactly the old behaviour.
+    private IEnumerable<string> NotificationTargets(NotifyRouting routing)
     {
-        if (_options.AdminIds.Length > 0)
-            return _options.AdminIds.Select(id => id.ToString());
-
-        return string.IsNullOrWhiteSpace(_options.ChatId)
-            ? Array.Empty<string>()
-            : new[] { _options.ChatId };
+        var targets = routing.OperatorIdentities
+            .Where(i => i.StartsWith("telegram:", StringComparison.Ordinal))
+            .Select(i => i["telegram:".Length..])
+            .ToList();
+        if (routing.IncludeAdmins)
+        {
+            if (_options.AdminIds.Length > 0) targets.AddRange(_options.AdminIds.Select(id => id.ToString()));
+            else if (!string.IsNullOrWhiteSpace(_options.ChatId)) targets.Add(_options.ChatId);
+        }
+        return targets.Distinct();
     }
 
     private static string H(string s) => WebUtility.HtmlEncode(s);

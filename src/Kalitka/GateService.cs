@@ -93,9 +93,10 @@ public sealed class GateService
     /// agent then polls <see cref="StateOf"/>.
     /// </summary>
     public async Task<(string state, string id)> RaiseAction(string resource, string subject, string ip, string actor, CancellationToken ct,
-        IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "", string sourceAddr = "")
+        IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "", string sourceAddr = "",
+        string subjectIdentity = "")
     {
-        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags, profile, maxUses, command, sourceAddr);
+        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags, profile, maxUses, command, sourceAddr, subjectIdentity);
         await AnnounceAll(request, ct);
         return (state, id);
     }
@@ -103,9 +104,12 @@ public sealed class GateService
     private async Task AnnounceAll(PendingRequest? request, CancellationToken ct)
     {
         if (request is null) return;
-        await _notifier.Announce(request, ct);
+        // Resolve who to ask once (subject → operator → channels, or the audited admin
+        // fallback); every notifier targets its own scheme from the same decision.
+        var routing = await _engine.ResolveRouting(request, ct);
+        await _notifier.Announce(request, routing, ct);
         foreach (var n in _extra)
-            await n.Announce(request, ct);
+            await n.Announce(request, routing, ct);
     }
 
     public string? StateOf(string id) => _engine.StateOf(id);

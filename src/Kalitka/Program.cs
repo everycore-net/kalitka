@@ -386,8 +386,14 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     if (sourceAddr.Length > 400 || sourceAddr.Any(c => !(char.IsAsciiHexDigit(c) || c is '.' or ':' or '/' or ',' or ' ')))
         return Results.BadRequest();
 
+    // Optional machine-readable subject identity (0.30): e.g. os:CONTOSO\anna, sid:S-1-5-…
+    // — used to route the request to the person acting. Opaque (matched against operator
+    // identities, never shell); kept to a sane length.
+    var subjectIdentity = form["subject_identity"].ToString().Trim();
+    if (subjectIdentity.Length > 200) return Results.BadRequest();
+
     var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags,
-        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0, command, sourceAddr);
+        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0, command, sourceAddr, subjectIdentity);
     // A policy can restrict access up front — forbid an open shell, require a source
     // binding, or disallow the requested login. All are refused (409) before anyone is
     // asked to approve access that policy disallows.
@@ -971,6 +977,7 @@ guarded.MapPost("/policies/create", async (HttpContext ctx, AdminAuth auth, Poli
         RequireCommand = form["require_command"].ToString() is "on" or "true" or "1",
         RequireSourceAddress = form["require_source"].ToString() is "on" or "true" or "1",
         AllowedPrincipals = Words(form["allowed_principals"].ToString()),
+        ApprovalSelf = form["approval_self"].ToString() is "on" or "true" or "1",
     };
     await policies.Save(policy, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/policies", false);

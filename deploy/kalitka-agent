@@ -21,7 +21,7 @@
 #   keygen                 create the private key if absent, print the public key
 #   pubkey                 print the public key (base64, for /admin/agents)
 #   enroll --token T [--host H]     enrol: generate a key, register its public key
-#   request --host H --user U [--ip IP] [--resource R] [--profile P] [--max-uses N] [--command CMD] [--source-address CIDR]
+#   request --host H --user U [--ip IP] [--resource R] [--profile P] [--max-uses N] [--command CMD] [--source-address CIDR] [--subject-identity ID]
 #   poll --id ID
 #   redeem --grant G [--agent NAME]
 #   use --session-id S       report one use of a bounded (max_uses) grant
@@ -138,6 +138,7 @@ case "$cmd" in
     uses="$(arg max-uses "$@")"; [ -n "$uses" ] && body="$body&max_uses=$(urlenc "$uses")"
     cmd_="$(arg command "$@")"; [ -n "$cmd_" ] && body="$body&command=$(urlenc "$cmd_")"
     src="$(arg source-address "$@")"; [ -n "$src" ] && body="$body&source_address=$(urlenc "$src")"
+    subj="$(arg subject-identity "$@")"; [ -n "$subj" ] && body="$body&subject_identity=$(urlenc "$subj")"
     call POST /agent/v1/requests "$body"
     ;;
 

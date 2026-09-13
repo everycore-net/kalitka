@@ -29,6 +29,15 @@ public sealed class PendingRequest
     // signer must issue a cert with source-address = this — the cert is usable only from
     // there, so a stolen cert is worthless elsewhere. Empty = no source restriction.
     public string SourceAddr = "";
+    // Notification routing (0.30): a machine-readable subject identity (e.g. os:CONTOSO\anna,
+    // sid:S-1-5-21-…) the agent knows, resolvable to an operator principal so THIS person is
+    // asked — not the global admins. Empty = ordinary request (ask admins). Distinct from the
+    // free-text Input, which is what a visitor typed and cannot be matched to a principal.
+    public string SubjectIdentity = "";
+    // True when a matching policy sets approval=self: the target is the subject itself (the
+    // person acting confirms their own action), and only they are asked. Transient — used at
+    // announce time, derived from policy at raise; not persisted.
+    public bool Self;
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.
@@ -355,11 +364,11 @@ public sealed class ApprovalEngine
     public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
         string resource, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "",
-        string sourceAddr = "")
+        string sourceAddr = "", string subjectIdentity = "")
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr);
+        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity);
     }
 
     /// <summary>
@@ -369,10 +378,12 @@ public sealed class ApprovalEngine
     /// </summary>
     private async Task<(string state, string id, PendingRequest? request)> Raise(
         string resource, string target, string subject, string ip, string actor, CancellationToken ct,
-        IReadOnlyList<string> agentTags, string profile, int maxUses, string command = "", string sourceAddr = "")
+        IReadOnlyList<string> agentTags, string profile, int maxUses, string command = "", string sourceAddr = "",
+        string subjectIdentity = "")
     {
         command = (command ?? "").Trim();
         sourceAddr = (sourceAddr ?? "").Trim();
+        subjectIdentity = OperatorPrincipal.Normalize(subjectIdentity ?? "");
         var place = await _geo.Locate(ip, ct);
 
         // Allow list: straight through, no question asked. Scoped to the resource.
@@ -443,7 +454,8 @@ public sealed class ApprovalEngine
             Id = id, Target = target, Resource = resource, Input = subject, Ip = ip,
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
             Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required,
-            Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command, SourceAddr = sourceAddr
+            Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command, SourceAddr = sourceAddr,
+            SubjectIdentity = subjectIdentity, Self = decision.ApprovalSelf && subjectIdentity.Length > 0
         };
         _store.Add(request);
 
@@ -489,6 +501,38 @@ public sealed class ApprovalEngine
     public int MaxUsesOf(string id) => _store.Get(id)?.MaxUses ?? 0;
     public string CommandOf(string id) => _store.Get(id)?.Command ?? "";
     public string SourceAddrOf(string id) => _store.Get(id)?.SourceAddr ?? "";
+
+    /// <summary>Who to ask for this request (0.30): the request's machine-readable subject
+    /// resolved to an operator's channel identities, plus whether the admins are asked too.
+    /// A subject that does not resolve to an operator falls back to the admins — and that
+    /// fallback is audited, never silent, so a misconfigured deployment does not quietly
+    /// become ask-the-owner-about-everything. An ordinary request (no subject identity) goes
+    /// to the admins as it always has.</summary>
+    public async Task<NotifyRouting> ResolveRouting(PendingRequest r, CancellationToken ct)
+    {
+        var subj = r.SubjectIdentity ?? "";
+        if (subj.Length == 0 || _principals is null) return NotifyRouting.Admins;   // no routing intent
+
+        var principalId = _principals.Resolve(subj);
+        if (principalId is null)
+        {
+            await AuditNotifyFallback(r, "subject-unmapped", ct);
+            return NotifyRouting.Admins;
+        }
+        var identities = _principals.IdentitiesOf(principalId);
+        if (identities.Count == 0)
+        {
+            await AuditNotifyFallback(r, "operator-unreachable", ct);
+            return NotifyRouting.Admins;
+        }
+        // self → only the person acting is asked; otherwise the operator AND the admins.
+        return new NotifyRouting(identities, IncludeAdmins: !r.Self);
+    }
+
+    private Task AuditNotifyFallback(PendingRequest r, string reason, CancellationToken ct) =>
+        _audit.Append(Event(AuditEvents.NotifyFallback, "system", r.Input, r.Resource, r.Id,
+            r.Resource.StartsWith("web:", StringComparison.Ordinal) ? "gate" : "agent",
+            $"{reason}: {r.SubjectIdentity}"), ct);
 
     /// <summary>
     /// Issue the request's one-time grant exactly once (on first approval read),
