@@ -244,6 +244,7 @@ approval:
   require_command: true     # forbid an open shell — only a specific, approved command
   require_source: true      # pin the SSH cert to an approved source address
   allowed_principals: [deploy, readonly]   # which logins may be requested (never root)
+  self: true                # route to the request's own subject (they confirm; only them)
 ```
 
 A policy **only ever restricts** — it can require more approvals, shorten the grant, forbid
@@ -255,6 +256,10 @@ matches, allowed-principals **intersected** — there is no rule ordering. `matc
 lets the bar differ per operation class (a `sql-dba` grant needing four eyes while
 `sql-readonly` stays single). A request that violates a restriction is refused up front
 (`command-required` / `source-required` / `principal-not-allowed`), before anyone is asked.
+
+`self` is the one non-restriction knob: it routes the request to its own subject (see
+[Operators](#operators)) so the person acting confirms it, and must be set explicitly per
+policy — it never overrides the quorum requirement.
 
 Two things worth knowing about `required: 2`:
 
@@ -390,9 +395,9 @@ maps to a predefined role; no raw SQL ever comes from Core.
 
 An `/agent/*` caller authenticates one of three ways, most-preferred first:
 
-1. **Signed request (Ed25519).** The agent registers a public key (agent detail page)
-   and signs each request, so no reusable secret is ever sent. The signature
-   (`X-Kalitka-Signature`, base64) covers a canonical newline-joined string:
+1. **Signed request.** The agent registers a public key (agent detail page) and signs
+   each request, so no reusable secret is ever sent. The signature (`X-Kalitka-Signature`,
+   base64) covers a canonical newline-joined string:
 
    ```
    kalitka-agent-sig-v1
@@ -404,10 +409,18 @@ An `/agent/*` caller authenticates one of three ways, most-preferred first:
    ```
 
    sent with `X-Kalitka-Agent-Id`, `X-Kalitka-Timestamp`, `X-Kalitka-Nonce` (and an
-   optional `X-Kalitka-Key-Id`). The signature binds the exact request, a 5-minute
+   optional `X-Kalitka-Key-Id`). The signature binds the exact request; a 5-minute
    timestamp window plus a single-use nonce stop replay. (Application-level signatures
    rather than mTLS, on purpose: they reach the app unchanged whatever the reverse proxy
    does with TLS.)
+
+   The key is stored as **`SubjectPublicKeyInfo`**, so the algorithm is derived from the
+   credential, not the request — **Ed25519** and **ECDSA-P256** are supported behind one
+   interface (ECDSA on the wire is IEEE P1363, 64 bytes). The key id is a fingerprint of
+   the key (`base64url(SHA-256(SPKI))`). Each key also carries a `provider_hint` (a local
+   claim: `software` / `windows-platform` / …) and an `assurance` (what Core has verified —
+   `unverified` until attestation), so a policy can later demand a hardware-attested
+   credential. The canonical string is unchanged, so the scheme stays `v1`.
 2. **Per-agent shared secret** (`X-Kalitka-Agent-Id` + `X-Kalitka-Agent-Secret`) —
    registry credential, kept through the migration window.
 3. **Legacy global secret** (`X-Kalitka-Agent`) — deprecated, one migration window.
