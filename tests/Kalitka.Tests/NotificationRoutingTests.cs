@@ -56,20 +56,25 @@ public class NotificationRoutingTests : IClassFixture<GateFactory>
     }
 
     [Fact]
-    public async Task A_self_policy_asks_only_the_operator()
+    public async Task Subject_required_at_quorum_1_asks_only_the_operator()
     {
         await _f.Services.GetRequiredService<PolicyService>()
-            .Save(new AccessPolicy("selfp", "ssh:*", new[] { "env:self" }, 1, 0) { ApprovalSelf = true }, "google:admin", default);
+            .Save(new AccessPolicy("selfp", "ssh:*", new[] { "env:self" }, 1, 0) { Subject = SubjectApproval.Required }, "google:admin", default);
         await _f.Services.GetRequiredService<PrincipalService>()
             .Save("bea", "Bea", new[] { "os:contoso\\bea", "telegram:777" }, "google:admin", default);
-        Register("route-self", "s", new[] { "env:self" });
+        // The agent must be trusted to ASSERT the subject; a bare CLI subject would be refused.
+        _f.Services.GetRequiredService<IAgentStore>().Create(new Agent(
+            "route-self", "route-self", "windows", "h", AgentStatus.Active, AgentSecrets.Hash("s"),
+            new[] { "ssh", AgentCapabilities.AssertSubject }, new[] { "ssh:*" }, "", _f.Clock.GetUtcNow(), null, "", null)
+        { Tags = new[] { "env:self" } });
         var before = _f.Telegram.Messages.Count;
 
+        // beneficiary (user) matches the asserted subject account (bea).
         await Raise("route-self", "s", new() { ["host"] = "h2", ["user"] = "bea", ["subject_identity"] = "os:contoso\\bea" });
 
         var chats = ChatIdsSince(before);
         Assert.Contains("777", chats);        // only the person acting
-        Assert.DoesNotContain("111", chats);  // the admins are NOT asked for a self-approval
+        Assert.DoesNotContain("111", chats);  // the admins are NOT asked when the subject alone suffices
     }
 
     [Fact]

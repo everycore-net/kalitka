@@ -39,13 +39,14 @@ public sealed class PgRequestStore : IRequestStore
               required_approvals INT NOT NULL DEFAULT 1,
               profile TEXT NOT NULL DEFAULT '', max_uses INT NOT NULL DEFAULT 0,
               command TEXT NOT NULL DEFAULT '', source_addr TEXT NOT NULL DEFAULT '',
-              subject_identity TEXT NOT NULL DEFAULT '');
+              subject_identity TEXT NOT NULL DEFAULT '', subject_mode TEXT NOT NULL DEFAULT '');
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS required_approvals INT NOT NULL DEFAULT 1;
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS profile TEXT NOT NULL DEFAULT '';
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS max_uses INT NOT NULL DEFAULT 0;
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS command TEXT NOT NULL DEFAULT '';
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS source_addr TEXT NOT NULL DEFAULT '';
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS subject_identity TEXT NOT NULL DEFAULT '';
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS subject_mode TEXT NOT NULL DEFAULT '';
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
             CREATE TABLE IF NOT EXISTS request_approvals(
               request_id TEXT NOT NULL, principal TEXT NOT NULL,
@@ -59,14 +60,15 @@ public sealed class PgRequestStore : IRequestStore
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity)
-            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode)
+            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode)
             ON CONFLICT(id) DO UPDATE SET
               target=EXCLUDED.target,input=EXCLUDED.input,ip=EXCLUDED.ip,resource=EXCLUDED.resource,
               country=EXCLUDED.country,country_code=EXCLUDED.country_code,city=EXCLUDED.city,
               raised=EXCLUDED.raised,state=EXCLUDED.state,grant_tok=EXCLUDED.grant_tok,
               required_approvals=EXCLUDED.required_approvals,profile=EXCLUDED.profile,max_uses=EXCLUDED.max_uses,
-              command=EXCLUDED.command,source_addr=EXCLUDED.source_addr,subject_identity=EXCLUDED.subject_identity;
+              command=EXCLUDED.command,source_addr=EXCLUDED.source_addr,subject_identity=EXCLUDED.subject_identity,
+              subject_mode=EXCLUDED.subject_mode;
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -122,6 +124,16 @@ public sealed class PgRequestStore : IRequestStore
         cmd.CommandText = "SELECT COUNT(*) FROM request_approvals WHERE request_id=@id;";
         cmd.Parameters.AddWithValue("id", id);
         return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    public bool HasApproval(string id, string principal)
+    {
+        using var conn = PgState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM request_approvals WHERE request_id=@id AND principal=@p LIMIT 1;";
+        cmd.Parameters.AddWithValue("id", id);
+        cmd.Parameters.AddWithValue("p", principal);
+        return cmd.ExecuteScalar() is not null;
     }
 
     public IReadOnlyList<PendingRequest> Snapshot()
@@ -200,7 +212,7 @@ public sealed class PgRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode";
 
     private static void Bind(NpgsqlCommand cmd, PendingRequest r)
     {
@@ -221,6 +233,7 @@ public sealed class PgRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("command", r.Command);
         cmd.Parameters.AddWithValue("srcaddr", r.SourceAddr);
         cmd.Parameters.AddWithValue("subjid", r.SubjectIdentity);
+        cmd.Parameters.AddWithValue("submode", SubjectModes.ToDb(r.Subject));
     }
 
     private static PendingRequest Read(NpgsqlDataReader r) => new()
@@ -230,7 +243,7 @@ public sealed class PgRequestStore : IRequestStore
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
         State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11),
         Profile = r.GetString(12), MaxUses = r.GetInt32(13), Command = r.GetString(14), SourceAddr = r.GetString(15),
-        SubjectIdentity = r.GetString(16)
+        SubjectIdentity = r.GetString(16), Subject = SubjectModes.FromDb(r.GetString(17))
     };
 }
 

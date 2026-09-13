@@ -13,6 +13,22 @@ namespace Kalitka;
 /// policies combine the <i>most-restrictive</i> way (see <see cref="PolicyService"/>),
 /// so there is no rule ordering to reason about.
 /// </summary>
+/// <summary>How a request's own subject relates to its approval (0.30.1).</summary>
+public enum SubjectApproval { Optional, Required, Forbidden }
+
+/// <summary>Persisting <see cref="SubjectApproval"/> as a short string (empty = optional),
+/// so an older row without the column reads as the safe default.</summary>
+public static class SubjectModes
+{
+    public static string ToDb(SubjectApproval s) => s == SubjectApproval.Optional ? "" : s.ToString().ToLowerInvariant();
+    public static SubjectApproval FromDb(string? s) => s switch
+    {
+        "required" => SubjectApproval.Required,
+        "forbidden" => SubjectApproval.Forbidden,
+        _ => SubjectApproval.Optional,
+    };
+}
+
 public sealed record AccessPolicy(
     string Name,
     string MatchResource,      // "ssh:*" | "ssh:prod-01" | "*"
@@ -45,11 +61,15 @@ public sealed record AccessPolicy(
     /// a resource. Several matching policies intersect (a login must satisfy every one).</summary>
     public string[] AllowedPrincipals { get; init; } = Array.Empty<string>();
 
-    /// <summary>Self-approval (0.30): the request is routed to its own subject — the person
-    /// acting confirms their own action — and only they are asked. Must be explicit per
-    /// policy: otherwise 0.19.3's distinct-approver rule for a quorum could be undermined.
-    /// Independent of <see cref="RequiredApprovals"/> (self is who is asked, not how many).</summary>
-    public bool ApprovalSelf { get; init; }
+    /// <summary>How the request's own subject relates to approval (0.30.1), orthogonal to
+    /// <see cref="RequiredApprovals"/>: <c>Optional</c> (default) the subject may approve and
+    /// counts as one principal; <c>Required</c> the subject MUST approve AND `required`
+    /// distinct principals in total (requester-confirmation composed with four-eyes);
+    /// <c>Forbidden</c> the requester may not approve at all (clean four-eyes by others). For
+    /// Required/Forbidden the subject is trusted only when a capable agent ASSERTED it (see
+    /// <see cref="AgentCapabilities.AssertSubject"/>), never a requester string. Distinctness
+    /// is by operator principal, never by channel.</summary>
+    public SubjectApproval Subject { get; init; } = SubjectApproval.Optional;
 
     public bool SameContent(AccessPolicy other) =>
         string.Equals(MatchResource, other.MatchResource, StringComparison.OrdinalIgnoreCase)
@@ -57,7 +77,7 @@ public sealed record AccessPolicy(
         && string.Equals(MatchProfile, other.MatchProfile, StringComparison.OrdinalIgnoreCase)
         && RequireCommand == other.RequireCommand
         && RequireSourceAddress == other.RequireSourceAddress
-        && ApprovalSelf == other.ApprovalSelf
+        && Subject == other.Subject
         && AllowedPrincipals.SequenceEqual(other.AllowedPrincipals)
         && RequiredApprovals == other.RequiredApprovals
         && GrantTtlMinutes == other.GrantTtlMinutes;
@@ -90,7 +110,7 @@ public static class ResourceGlob
 /// nothing matches.</summary>
 public sealed record PolicyDecision(int RequiredApprovals, int? GrantTtlMinutes, string[] MatchedPolicies,
     bool RequireCommand = false, bool RequireSourceAddress = false, string[]? AllowedPrincipals = null,
-    bool ApprovalSelf = false)
+    SubjectApproval Subject = SubjectApproval.Optional)
 {
     public static readonly PolicyDecision None = new(1, null, Array.Empty<string>());
 
@@ -157,9 +177,12 @@ public sealed class PolicyService
             var inter = constraints.Aggregate((a, b) => { a.IntersectWith(b); return a; });
             allowed = inter.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
         }
-        var approvalSelf = matched.Any(p => p.ApprovalSelf);   // self only where a policy says so
+        // Most-restrictive wins: Forbidden (requester can't vote) beats Required beats Optional.
+        var subject = matched.Any(p => p.Subject == SubjectApproval.Forbidden) ? SubjectApproval.Forbidden
+            : matched.Any(p => p.Subject == SubjectApproval.Required) ? SubjectApproval.Required
+            : SubjectApproval.Optional;
         return new PolicyDecision(required, ttl, matched.Select(p => p.Name).OrderBy(n => n).ToArray(),
-            requireCommand, requireSource, allowed, approvalSelf);
+            requireCommand, requireSource, allowed, subject);
     }
 
     public async Task Save(AccessPolicy policy, string actor, CancellationToken ct)

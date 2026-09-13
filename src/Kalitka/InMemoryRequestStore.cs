@@ -40,7 +40,11 @@ public sealed class InMemoryRequestStore : IRequestStore
     public int ApprovalCount(string id) =>
         _approvals.TryGetValue(id, out var set) ? Lock(set) : 0;
 
+    public bool HasApproval(string id, string principal) =>
+        _approvals.TryGetValue(id, out var set) && Has(set, principal);
+
     private static int Lock(HashSet<string> set) { lock (set) return set.Count; }
+    private static bool Has(HashSet<string> set, string principal) { lock (set) return set.Contains(principal); }
 
     public bool TryResolve(string id, string toState, DateTimeOffset notOlderThan, out PendingRequest? request)
     {

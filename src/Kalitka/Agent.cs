@@ -17,6 +17,15 @@ public static class AgentCapabilities
     public const string Request = "access.request";
     public const string Redeem = "grant.redeem";
     public const string SessionEnd = "session.end";
+
+    /// <summary>The agent is trusted to ASSERT the subject of a request (its OS security
+    /// context — SID / account), not merely relay a requester-typed hint. Only such an
+    /// agent's <c>subject_identity</c> may gate a subject-approval policy: otherwise a
+    /// caller could name someone else's identity as the subject and approve their own
+    /// privileged action. The Windows agent, which derives the SID from the login session,
+    /// carries this; a generic CLI agent does not (its subject is fine for notification
+    /// routing, but never trusted for subject approval).</summary>
+    public const string AssertSubject = "subject.assert";
 }
 
 /// <summary>
@@ -95,6 +104,12 @@ public sealed record AgentIdentity(
     public IReadOnlyList<string> Tags { get; init; } = Array.Empty<string>();
 
     public static AgentIdentity FromAgent(Agent a) => new(a.Id, a.Capabilities, a.AllowedResources, false) { Tags = a.Tags };
+
+    /// <summary>May this caller's <c>subject_identity</c> be trusted to gate a subject-approval
+    /// policy? Only when it holds <see cref="AgentCapabilities.AssertSubject"/> — the legacy
+    /// global-secret caller never can.</summary>
+    public bool CanAssertSubject =>
+        !IsLegacy && Capabilities.Any(c => string.Equals(c, AgentCapabilities.AssertSubject, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Legacy global-secret caller: no capability model; empty resource
     /// binding means "any" (the pre-registry behaviour).</summary>

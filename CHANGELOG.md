@@ -7,6 +7,41 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-09-13
+
+### Security
+
+- **Subject approval: the two boundaries of `self`, fixed before it gets teeth.** Routing
+  (0.30.0) took `subject_identity` straight from the request body — fine for *addressing* a
+  notification, but unsafe the moment a subject can approve its own action. This slice draws
+  the line before app-launch arrives.
+  - **A subject that gates approval must be asserted by a trusted executor, not the
+    requester.** New agent capability `subject.assert`: only such an agent's subject is
+    `asserted` (usable for subject-approval); a generic agent's `--subject-identity` stays
+    `claimed` (routing only). Windows will assert the SID from the OS security context; the
+    CLI cannot choose it. (Also closes a live gap: a caller could set the subject and thereby
+    suppress admin notification.)
+  - **`ApprovalSelf` replaced by an explicit, orthogonal `subject: optional | required |
+    forbidden`.** `required` = the subject **must** approve **and** `RequiredApprovals`
+    distinct principals in total (`required:1`→subject alone; `required:2`→subject + one
+    other); `forbidden` = the requester may not approve at all (clean four-eyes). Distinctness
+    is by operator principal, never by channel.
+  - **The subject must be the grant's beneficiary** — a request for `--user Administrator`
+    can't be satisfied by a different subject's tap (`beneficiary-mismatch`). **No admin
+    fallback under `required`:** an unmapped/untrusted/mismatched subject is refused up front
+    (`subject-unmapped` / `claimed-not-asserted` / `beneficiary-mismatch` / `subject-required`
+    / `subject-unreachable`, all 409, audited) rather than silently dropping the requirement.
+
+### Notes
+
+- New column `requests(subject_mode)` in SQLite + Postgres (idempotent); non-breaking.
+  Migration: an `ApprovalSelf` policy is superseded by `subject: required` (recreate it; the
+  field is day-old and had no deployed use). Verified: a claimed subject can't satisfy
+  `required`; beneficiary≠subject and unmapped are refused, not fallen back; `required:2`
+  needs the subject and one other (two channels of one person still count once);
+  `forbidden` refuses the requester's own approval. Full suite (268) green incl. Postgres.
+  Design: `docs/design/subject-approval.md` (with claude-fd). Now safe for the Windows agent.
+
 ## [0.30.0] - 2026-09-13
 
 ### Added

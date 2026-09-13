@@ -393,11 +393,17 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     if (subjectIdentity.Length > 200) return Results.BadRequest();
 
     var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags,
-        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0, command, sourceAddr, subjectIdentity);
+        form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0, command, sourceAddr,
+        // A subject is trusted to gate subject-approval only when THIS agent may assert it
+        // (e.g. the Windows agent, from the OS security context) — never a requester-typed
+        // string, which could otherwise self-approve someone else's action.
+        subjectIdentity, identity.CanAssertSubject);
     // A policy can restrict access up front — forbid an open shell, require a source
-    // binding, or disallow the requested login. All are refused (409) before anyone is
-    // asked to approve access that policy disallows.
-    if (state is "command-required" or "source-required" or "principal-not-allowed")
+    // binding, disallow the requested login, or require the trusted subject to approve.
+    // All are refused (409) before anyone is asked to approve access policy disallows.
+    if (state is "command-required" or "source-required" or "principal-not-allowed"
+        or "subject-required" or "claimed-not-asserted" or "subject-unmapped"
+        or "subject-unreachable" or "beneficiary-mismatch")
         return Results.Json(new { id, state }, statusCode: 409);
     return Results.Json(new { id, state });
 }
@@ -977,7 +983,12 @@ guarded.MapPost("/policies/create", async (HttpContext ctx, AdminAuth auth, Poli
         RequireCommand = form["require_command"].ToString() is "on" or "true" or "1",
         RequireSourceAddress = form["require_source"].ToString() is "on" or "true" or "1",
         AllowedPrincipals = Words(form["allowed_principals"].ToString()),
-        ApprovalSelf = form["approval_self"].ToString() is "on" or "true" or "1",
+        Subject = form["subject"].ToString().Trim().ToLowerInvariant() switch
+        {
+            "required" => SubjectApproval.Required,
+            "forbidden" => SubjectApproval.Forbidden,
+            _ => SubjectApproval.Optional,
+        },
     };
     await policies.Save(policy, who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/policies", false);
