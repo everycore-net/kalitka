@@ -520,7 +520,7 @@ static async Task<IResult> AgentEnroll(HttpContext ctx, AgentService agentsSvc)
     var result = await agentsSvc.Enroll(
         form["token"].ToString(), form["secret"].ToString(),
         form["hostname"].ToString(), form["metadata"].ToString(), ctx.RequestAborted,
-        form["public_key"].ToString());
+        form["public_key"].ToString(), form["provider_hint"].ToString());
     return result.Ok
         ? Results.Json(new { agent_id = result.AgentId })
         : Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 400);
@@ -1030,7 +1030,7 @@ guarded.MapPost("/agents/{id}/action", async (HttpContext ctx, string id, AdminA
             return Results.Content(AdminPages.SecretShown(who, "Secret rotated",
                 $"New secret for agent {id}, shown once:", secret,
                 "The old secret no longer works. Update the host now."), "text/html; charset=utf-8");
-        case "addkey": await agentsSvc.AddKey(id, form["public_key"].ToString().Trim(), who.Actor, ctx.RequestAborted); break;
+        case "addkey": await agentsSvc.AddKey(id, form["public_key"].ToString().Trim(), who.Actor, ctx.RequestAborted, form["provider_hint"].ToString().Trim()); break;
         case "removekey": await agentsSvc.RemoveKey(id, form["key_id"].ToString().Trim(), who.Actor, ctx.RequestAborted); break;
     }
     return Results.Redirect("/admin/agents/" + id, false);

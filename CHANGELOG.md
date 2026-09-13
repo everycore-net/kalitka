@@ -7,6 +7,41 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-13
+
+### Added
+
+- **Pluggable agent signature suites + SPKI key material (the seam before a Windows agent).**
+  `AgentSignatures` no longer knows Ed25519 concretely; verification goes through
+  `IAgentSignatureSuite` (`CanHandle`/`ValidatePublicKey`/`Verify` over SPKI), with
+  **Ed25519** and **ECDSA-P256** registered. The canonical signed string is unchanged, so
+  the wire scheme stays `kalitka-agent-sig-v1` — this is additive, not a protocol break.
+  - **SPKI is the canonical key form.** Public keys are stored as `SubjectPublicKeyInfo`, so
+    the algorithm is derived from the credential, never declared beside it or chosen by the
+    caller (no algorithm-confusion downgrade). New enrolment is **SPKI-only** (`IsValidSpki`);
+    keys registered before this — raw 32-byte Ed25519 — are normalised to SPKI **on read**, so
+    they keep verifying untouched. `kalitka-agent` now sends the full SPKI.
+  - **Key id = fingerprint** `base64url(SHA-256(SPKI))` for new keys — idempotent
+    re-registration of the same key. Legacy random ids are left as-is (the `X-Kalitka-Key-Id`
+    header is an optional filter, so they keep matching until they rotate out).
+  - **ECDSA-P256 on the wire:** SHA-256 + IEEE **P1363** (r‖s), exactly 64 bytes — DER is
+    rejected, never sniffed (a leading `0x30` is a plausible P1363 byte, not a discriminator).
+  - **Claimed vs verified, two fields on a key:** `provider_hint` (`software` |
+    `windows-platform` | `apple-secure-enclave` | `unknown` — a local claim) and `assurance`
+    (`unverified` default | `attested-tpm` | `attested-secure-enclave` — what Core verified).
+    Policy will read `assurance` only; until attestation exists the console says "Platform
+    Crypto Provider — not remotely attested", never "TPM protected".
+
+### Notes
+
+- No schema change — agent keys are stored as JSON, so the two new fields are additive.
+  Verified: Ed25519 SPKI and legacy raw both verify (incl. the OpenSSL interop known-answer
+  vector), ECDSA-P256 P1363 verifies and DER is rejected, the suite is chosen from the key
+  not the signature, raw & SPKI of one key share a fingerprint, and new enrolment is SPKI-only.
+  Full suite (257) green incl. Postgres. Unblocks the Windows agent (ECDSA P-256 via CNG /
+  Microsoft Platform Crypto Provider) with no BouncyCastle in the client. Design:
+  `docs/design/agent-identity.md` (with claude-fd).
+
 ## [0.28.0] - 2026-09-13
 
 ### Added

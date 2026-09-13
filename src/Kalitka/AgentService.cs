@@ -100,13 +100,14 @@ public sealed class AgentService
     /// secretless**: no usable shared secret is stored, so the agent can authenticate
     /// only by signature. The token is single-use; the pending agent goes active.</summary>
     public async Task<EnrollResult> Enroll(string token, string secret, string hostname, string metadata,
-        CancellationToken ct, string? publicKey = null)
+        CancellationToken ct, string? publicKey = null, string providerHint = "unknown")
     {
         var cap = _tokens.Read(token);
         if (cap is null || cap.Purpose != "agent-enrollment") return new(false, Error: "invalid");
 
         var hasKey = !string.IsNullOrEmpty(publicKey);
-        if (hasKey && !AgentSignatures.IsValidPublicKey(publicKey!)) return new(false, Error: "bad-key");
+        // New enrolment is SPKI-only; the raw legacy form is read-compatibility, not accepted here.
+        if (hasKey && !AgentSignatures.IsValidSpki(publicKey!)) return new(false, Error: "bad-key");
         var hasSecret = !string.IsNullOrWhiteSpace(secret);
         if (hasSecret && secret.Length < 16) return new(false, Error: "weak-secret");
         if (!hasKey && !hasSecret) return new(false, Error: "no-credential");   // need a key or a secret
@@ -119,7 +120,8 @@ public sealed class AgentService
         if (!await _replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ct)) return new(false, Error: "used");
 
         var keys = hasKey
-            ? agent.Keys.Append(new AgentKey(AgentSignatures.NewKeyId(), publicKey!, _clock.GetUtcNow())).ToArray()
+            ? agent.Keys.Append(new AgentKey(AgentSignatures.KeyIdFor(publicKey!)!, publicKey!, _clock.GetUtcNow())
+                { ProviderHint = CleanHint(providerHint) }).ToArray()
             : agent.Keys;
 
         _agents.Create(agent with
@@ -164,19 +166,27 @@ public sealed class AgentService
         return secret;
     }
 
-    /// <summary>Register an Ed25519 public key (base64, 32 bytes) for an agent, so it
-    /// can sign its requests instead of sending the shared secret. Add-only here;
-    /// rotation/revocation manage the set later. Idempotent on the same key.</summary>
-    public async Task<bool> AddKey(string id, string publicKeyBase64, string actor, CancellationToken ct)
+    /// <summary>Register a public key (base64 SPKI) for an agent, so it can sign its
+    /// requests instead of sending the shared secret. Add-only here; rotation/revocation
+    /// manage the set later. Idempotent on the same key (by fingerprint).</summary>
+    public async Task<bool> AddKey(string id, string publicKeyBase64, string actor, CancellationToken ct, string providerHint = "unknown")
     {
         var agent = _agents.GetById(id);
-        if (agent is null || !AgentSignatures.IsValidPublicKey(publicKeyBase64)) return false;
-        if (agent.Keys.Any(k => k.PublicKey == publicKeyBase64)) return true;   // already registered
-        var key = new AgentKey(AgentSignatures.NewKeyId(), publicKeyBase64, _clock.GetUtcNow());
+        if (agent is null || !AgentSignatures.IsValidSpki(publicKeyBase64)) return false;
+        var keyId = AgentSignatures.KeyIdFor(publicKeyBase64)!;
+        if (agent.Keys.Any(k => k.KeyId == keyId || k.PublicKey == publicKeyBase64)) return true;   // already registered
+        var key = new AgentKey(keyId, publicKeyBase64, _clock.GetUtcNow()) { ProviderHint = CleanHint(providerHint) };
         _agents.Create(agent with { Keys = agent.Keys.Append(key).ToArray() });
         await _audit.Append(Ev(AuditEvents.AgentKeyAdded, actor, id), ct);
         return true;
     }
+
+    // A provider hint is a local claim, not a security fact — keep it to the known set.
+    private static string CleanHint(string hint) => hint switch
+    {
+        "software" or "windows-platform" or "apple-secure-enclave" => hint,
+        _ => "unknown",
+    };
 
     /// <summary>Remove (revoke) one registered key by id; the agent's other keys and
     /// its shared secret keep working. Rotation is add-the-new then remove-the-old —
