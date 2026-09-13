@@ -56,4 +56,8 @@ public interface IRequestStore
 
     /// <summary>How many distinct approvers a request has so far (for display).</summary>
     int ApprovalCount(string id);
+
+    /// <summary>Whether a specific principal has already approved this request — used to
+    /// enforce subject-approval (the request's own subject must be among the approvers).</summary>
+    bool HasApproval(string id, string principal);
 }

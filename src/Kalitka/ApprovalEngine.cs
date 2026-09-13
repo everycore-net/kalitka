@@ -34,10 +34,12 @@ public sealed class PendingRequest
     // asked — not the global admins. Empty = ordinary request (ask admins). Distinct from the
     // free-text Input, which is what a visitor typed and cannot be matched to a principal.
     public string SubjectIdentity = "";
-    // True when a matching policy sets approval=self: the target is the subject itself (the
-    // person acting confirms their own action), and only they are asked. Transient — used at
-    // announce time, derived from policy at raise; not persisted.
-    public bool Self;
+    // Subject-approval (0.30.1), snapshotted at raise (like RequiredApprovals): Required =
+    // the subject's operator principal must be among the distinct approvers (and the count
+    // must still reach RequiredApprovals); Forbidden = the subject's principal may NOT
+    // approve (four-eyes by others); Optional = no special rule. For Required/Forbidden the
+    // subject was trusted-asserted by a capable agent and resolves to a known principal.
+    public SubjectApproval Subject = SubjectApproval.Optional;
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.
@@ -364,11 +366,11 @@ public sealed class ApprovalEngine
     public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
         string resource, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "",
-        string sourceAddr = "", string subjectIdentity = "")
+        string sourceAddr = "", string subjectIdentity = "", bool subjectTrusted = false)
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity);
+        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted);
     }
 
     /// <summary>
@@ -379,7 +381,7 @@ public sealed class ApprovalEngine
     private async Task<(string state, string id, PendingRequest? request)> Raise(
         string resource, string target, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string> agentTags, string profile, int maxUses, string command = "", string sourceAddr = "",
-        string subjectIdentity = "")
+        string subjectIdentity = "", bool subjectTrusted = false)
     {
         command = (command ?? "").Trim();
         sourceAddr = (sourceAddr ?? "").Trim();
@@ -448,6 +450,30 @@ public sealed class ApprovalEngine
             return ("principal-not-allowed", "", null);
         }
 
+        // Subject-approval (Required or Forbidden) is only safe when a TRUSTED agent asserted
+        // the subject — else a caller could name someone else's identity and approve their own
+        // privileged action (Required), or lie about who the subject is to sidestep exclusion
+        // (Forbidden). It also needs the subject to resolve to a known operator principal, and
+        // — for Required — that subject to be the grant's beneficiary and be reachable. Any of
+        // these missing is refused up front, never silently downgraded to a normal quorum.
+        if (decision.Subject != SubjectApproval.Optional)
+        {
+            if (subjectIdentity.Length == 0)
+            { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "subject-required"); return ("subject-required", "", null); }
+            if (!subjectTrusted)
+            { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "claimed-not-asserted"); return ("claimed-not-asserted", "", null); }
+            var sp = _principals?.Resolve(subjectIdentity);
+            if (sp is null)
+            { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "subject-unmapped"); return ("subject-unmapped", "", null); }
+            if (decision.Subject == SubjectApproval.Required)
+            {
+                if (!BeneficiaryMatches(subject, subjectIdentity))
+                { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "beneficiary-mismatch"); return ("beneficiary-mismatch", "", null); }
+                if (_principals!.IdentitiesOf(sp).Count == 0)
+                { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "subject-unreachable"); return ("subject-unreachable", "", null); }
+            }
+        }
+
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
         var request = new PendingRequest
         {
@@ -455,7 +481,7 @@ public sealed class ApprovalEngine
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
             Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required,
             Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command, SourceAddr = sourceAddr,
-            SubjectIdentity = subjectIdentity, Self = decision.ApprovalSelf && subjectIdentity.Length > 0
+            SubjectIdentity = subjectIdentity, Subject = decision.Subject
         };
         _store.Add(request);
 
@@ -519,14 +545,35 @@ public sealed class ApprovalEngine
             await AuditNotifyFallback(r, "subject-unmapped", ct);
             return NotifyRouting.Admins;
         }
+        // Forbidden: the subject may not approve, so never route the request to them — ask
+        // the admins (other principals) instead.
+        if (r.Subject == SubjectApproval.Forbidden) return NotifyRouting.Admins;
+
         var identities = _principals.IdentitiesOf(principalId);
         if (identities.Count == 0)
         {
             await AuditNotifyFallback(r, "operator-unreachable", ct);
             return NotifyRouting.Admins;
         }
-        // self → only the person acting is asked; otherwise the operator AND the admins.
-        return new NotifyRouting(identities, IncludeAdmins: !r.Self);
+        // Subject Required: ask the subject; add the admins only when more approvers are
+        // still needed (RequiredApprovals > 1). Otherwise (Optional): operator AND admins.
+        var includeAdmins = r.Subject == SubjectApproval.Required ? r.RequiredApprovals > 1 : true;
+        return new NotifyRouting(identities, includeAdmins);
+    }
+
+    /// <summary>Does the asserted subject identity denote the same account as the grant's
+    /// beneficiary (the requested user)? Self-confirmation is only meaningful when the person
+    /// confirming is the one receiving the authority — a request for <c>--user Administrator</c>
+    /// by an ordinary subject can never be self-approved. The account is the tail of the
+    /// identity (after the last <c>\</c> or <c>:</c>), compared case-insensitively; a subject
+    /// with no comparable account (e.g. a bare <c>sid:</c>) does not match, so it fails closed.</summary>
+    private static bool BeneficiaryMatches(string user, string subjectIdentity)
+    {
+        var acct = subjectIdentity;
+        var bs = acct.LastIndexOf('\\');
+        if (bs >= 0) acct = acct[(bs + 1)..];
+        else { var c = acct.LastIndexOf(':'); if (c >= 0) acct = acct[(c + 1)..]; }
+        return acct.Length > 0 && string.Equals(acct, user, StringComparison.OrdinalIgnoreCase);
     }
 
     private Task AuditNotifyFallback(PendingRequest r, string reason, CancellationToken ct) =>
@@ -616,7 +663,7 @@ public sealed class ApprovalEngine
         // dedupes to one. An unlinked google admin counts as itself (its sub); any other
         // unlinked channel identity cannot be attributed to a distinct human and does not
         // count. When enough distinct principals have signed off, we fall through.
-        if (toState == "approved" && request.RequiredApprovals > 1)
+        if (toState == "approved" && (request.RequiredApprovals > 1 || request.Subject != SubjectApproval.Optional))
         {
             var (eligible, principalKey) = QuorumKey(actor);
             if (!eligible)
@@ -624,18 +671,40 @@ public sealed class ApprovalEngine
                 await _audit.Append(Event(AuditEvents.AccessApprovalNoted, actor, request.Input, request.Resource,
                     id, ChannelOf(actor), "not counted (identity not linked to an operator principal)"), CancellationToken.None);
                 return new CallbackResult(CallbackOutcome.Pending, request,
-                    $"Approval noted — this identity is not linked to an operator, so it does not count toward the {request.RequiredApprovals}-approver quorum.");
+                    "Approval noted — this identity is not linked to an operator, so it does not count toward the quorum.");
+            }
+
+            var subjectPrincipal = request.Subject == SubjectApproval.Optional ? null : _principals?.Resolve(request.SubjectIdentity);
+
+            // Forbidden: the request's own subject may not approve it — a clean four-eyes by
+            // others. Their tap is refused outright and never counted.
+            if (request.Subject == SubjectApproval.Forbidden && subjectPrincipal is not null
+                && principalKey == "principal:" + subjectPrincipal)
+            {
+                await _audit.Append(Event(AuditEvents.AccessApprovalNoted, actor, request.Input, request.Resource,
+                    id, ChannelOf(actor), "refused (subject may not approve own request)"), CancellationToken.None);
+                return new CallbackResult(CallbackOutcome.Pending, request,
+                    "You cannot approve your own request — this resource requires another person.");
             }
 
             var count = _store.AddApprovalAndCount(id, principalKey);
-            if (count < request.RequiredApprovals)
+
+            // Required: the subject's operator principal must be among the approvers. Any of
+            // that person's linked channels satisfies it — the same person via two channels
+            // is still one.
+            var subjectPending = request.Subject == SubjectApproval.Required
+                && (subjectPrincipal is null || !_store.HasApproval(id, "principal:" + subjectPrincipal));
+
+            if (count < request.RequiredApprovals || subjectPending)
             {
                 await _audit.Append(Event(AuditEvents.AccessApprovalNoted, actor, request.Input, request.Resource,
-                    id, "web", $"{count} of {request.RequiredApprovals}"), CancellationToken.None);
+                    id, "web", subjectPending ? $"{count} of {request.RequiredApprovals}, awaiting the subject" : $"{count} of {request.RequiredApprovals}"), CancellationToken.None);
                 return new CallbackResult(CallbackOutcome.Pending, request,
-                    $"Approved by {count} of {request.RequiredApprovals} — waiting for more approvers.");
+                    subjectPending
+                        ? $"Approved by {count} of {request.RequiredApprovals} — still waiting for the subject to confirm."
+                        : $"Approved by {count} of {request.RequiredApprovals} — waiting for more approvers.");
             }
-            // Quorum reached — fall through to the terminal transition.
+            // Quorum reached (and the subject has confirmed, if required) — fall through.
         }
 
         // The one atomic step: only the first caller flips waiting → terminal, so

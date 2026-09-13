@@ -243,7 +243,7 @@ approval:
   require_command: true     # forbid an open shell — only a specific, approved command
   require_source: true      # pin the SSH cert to an approved source address
   allowed_principals: [deploy, readonly]   # which logins may be requested (never root)
-  self: true                # route to the request's own subject (they confirm; only them)
+  subject: required         # optional | required | forbidden (requester confirmation)
 ```
 
 A policy **only ever restricts** — it can require more approvals, shorten the grant, forbid
@@ -256,9 +256,14 @@ lets the bar differ per operation class (a `sql-dba` grant needing four eyes whi
 `sql-readonly` stays single). A request that violates a restriction is refused up front
 (`command-required` / `source-required` / `principal-not-allowed`), before anyone is asked.
 
-`self` is the one non-restriction knob: it routes the request to its own subject (see
-[Operators](#operators)) so the person acting confirms it, and must be set explicitly per
-policy — it never overrides the quorum requirement.
+`subject` composes with the quorum (see [Operators](#operators)): `required` means the
+request's own subject **must** be one of the approvers (with `required: 1`, only them; with
+`required: 2`, them plus one other distinct person); `forbidden` means the requester may not
+approve at all (clean four-eyes). The subject that gates this must be **asserted by a
+trusted agent** (its OS security context), never a requester-supplied string, and must be
+the grant's beneficiary — so you cannot request `Administrator` and confirm it as yourself.
+A request that can't meet a `required` subject (unmapped, untrusted, or a mismatched
+beneficiary) is refused up front, never silently downgraded.
 
 Two things worth knowing about `required: 2`:
 
@@ -292,12 +297,13 @@ operators needs the `principals.manage` permission (full admin has it).
 The link works **both directions**. Backward, an approval resolves to a person (the quorum
 above). Forward, a request can be routed **to** a person: a request carries a
 machine-readable `subject_identity` (e.g. `os:CONTOSO\anna`), which resolves to an operator
-and asks *them* — not the global admins. A policy `self` mode routes a request to its own
-subject (the person confirms their own action, and only they are asked); everything else
-asks the operator **and** the admins. A subject that does not resolve falls back to the
-admins, and that fallback is **audited** (`notify.fallback`) — never silent, and never a
-lowering of the policy's approval requirement. This is what makes the solo tier and
-self-confirmation flows possible without tenancy work in the core.
+and asks *them* — not the global admins. A policy `subject: required` also makes that
+person's approval mandatory (requester confirmation), with the subject **trusted-asserted**
+by the agent, not a requester string; everything else asks the operator **and** the admins.
+A subject that does not resolve falls back to the admins, and that fallback is **audited**
+(`notify.fallback`) — never silent, and (under `required`) never a silent drop of the
+requirement. This is what makes the solo tier and self-confirmation flows possible without
+tenancy work in the core.
 
 ## E-mail approvals
 
