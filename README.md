@@ -20,14 +20,11 @@ visitor ──▶ reverse proxy ──forwardAuth──▶ kalitka ──▶ Tel
 It is a **pre-filter, not an authentication system**. It does not replace the
 login behind it, and it is not meant to.
 
-The web gate is where kalitka started; the same *ask-a-human* mechanic now also
-governs **SSH** (login approval, and short-lived, single-command certificates) and
-**database** access (just-in-time SQL Server / PostgreSQL grants). Across all of them
-kalitka is the control plane that decides *who / to what / under which policy* and
-records it — it **brokers authority, not credentials**: it holds no SSH CA key and no
-database password; the local connector does, and only acts on kalitka's approval. If
-you only want the web doorbell, ignore those sections — nothing below the web gate is
-loaded unless you deploy it.
+That is what kalitka is: **a doorbell in front of your reverse proxy.** The
+[SSH](#ssh-just-in-time-access) and [database](#database-just-in-time-access) sections are
+the *same ask-a-human step reused elsewhere* — an **optional** extension that does **not**
+go through the proxy (a local agent calls kalitka's `/agent/*` API instead) and does
+nothing until you deploy it. If you only want the doorbell, they don't touch your setup.
 
 ## What it does
 
