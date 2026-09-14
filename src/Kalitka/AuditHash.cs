@@ -25,19 +25,22 @@ public static class AuditHash
     public static string Compute(AuditEvent e, string prevHash)
     {
         var buf = new ArrayBufferWriter<byte>();
-        Field(buf, Scheme);
-        Field(buf, prevHash);
-        Field(buf, e.Seq.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        Field(buf, e.Id);
-        Field(buf, e.Timestamp.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture));
-        Field(buf, e.EventType);
-        Field(buf, e.Actor);
-        Field(buf, e.Subject);
-        Field(buf, e.Resource);
-        Field(buf, e.RequestId);
-        Field(buf, e.GrantId);
-        Field(buf, e.Channel);
-        Field(buf, e.Metadata);
+        Framing.Field(buf, Scheme);
+        Framing.Field(buf, prevHash);
+        Framing.Field(buf, e.Seq.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Framing.Field(buf, e.Id);
+        Framing.Field(buf, e.Timestamp.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Framing.Field(buf, e.EventType);
+        Framing.Field(buf, e.Actor);
+        Framing.Field(buf, e.Subject);
+        Framing.Field(buf, e.Resource);
+        Framing.Field(buf, e.RequestId);
+        Framing.Field(buf, e.GrantId);
+        Framing.Field(buf, e.Channel);
+        Framing.Field(buf, e.Metadata);
+        // NB: AuditEvent.Proof is deliberately NOT in the chain hash — it rides on the event through
+        // the same atomic append, and its integrity is bound by a short commitment folded into the
+        // hashed Metadata (see DecisionEvent). Adding a field here would rewrite every existing hash.
         return Convert.ToHexString(SHA256.HashData(buf.WrittenSpan));
     }
 
@@ -47,15 +50,6 @@ public static class AuditHash
     {
         var linked = e with { Seq = headSeq + 1, PrevHash = headHash };
         return linked with { Hash = Compute(linked, headHash) };
-    }
-
-    private static void Field(ArrayBufferWriter<byte> buf, string s)
-    {
-        var bytes = Encoding.UTF8.GetBytes(s);
-        var header = buf.GetSpan(4);
-        BinaryPrimitives.WriteUInt32BigEndian(header, (uint)bytes.Length);
-        buf.Advance(4);
-        buf.Write(bytes);
     }
 }
 

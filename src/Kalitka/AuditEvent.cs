@@ -25,6 +25,16 @@ public sealed record AuditEvent(
     public long Seq { get; init; }
     public string PrevHash { get; init; } = "";
     public string Hash { get; init; } = "";
+
+    // ---- Device-signed decision proof (WebAuthn) ----------------------------
+    // A compact, self-describing token ("wa1:<base64url>") carrying the assertion that signed THIS
+    // decision — credential id, authenticator data, clientDataJSON, signature — so an auditor can
+    // re-verify the signature offline against the registered credential. Empty on every event that
+    // was not device-signed. Deliberately NOT part of the chain hash (that would rewrite existing
+    // hashes); its integrity is bound instead by a short commitment folded into the hashed Metadata
+    // (see ApprovalEngine.DecisionEvent). It rides on the event through the same atomic append, so a
+    // decision and its proof still commit together.
+    public string Proof { get; init; } = "";
 }
 
 /// <summary>The result of verifying the audit hash chain: whether it is intact, how many events
@@ -75,6 +85,10 @@ public static class AuditEvents
     public const string PrincipalCreated = "principal.created";
     public const string PrincipalUpdated = "principal.updated";
     public const string PrincipalDeleted = "principal.deleted";
+
+    public const string WebAuthnRegistered = "webauthn.registered";     // a passkey/device was registered to an operator
+    public const string WebAuthnRemoved    = "webauthn.removed";        // a device was revoked
+    public const string WebAuthnCloneAlarm = "webauthn.clone_alarm";    // signature counter went backwards — possible cloned key
 }
 
 /// <summary>A narrow query over the audit log: a few filters and a page.</summary>

@@ -7,6 +7,45 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-09-14
+
+### Added
+
+- **Device-signed approval — a decision signed by a key, not "a button was pressed" (WebAuthn,
+  [[fido2]] slices 1+2).** An approver registers a passkey / security key and confirms a request by
+  touching it; the WebAuthn challenge **is** the decision (an `ApprovalEnvelope` over `{request id,
+  decision, timestamp, policy-context hash, nonce}`, length-prefixed with the same framing as the
+  audit hash), so the assertion is a signature over *this* decision, by a credential we can name.
+  The signed envelope is the reusable core the future native app and the iOS shield's `defer` path
+  will sign too.
+  - **Registration** (`/admin/devices`): RP ID = the gate host, `attestation: none`, ES256/EdDSA.
+    The COSE public key is converted to SPKI and verified through the **same `IAgentSignatureSuite`**
+    that verifies agents — one home for the algorithms, and the provider/assurance vocabulary extends
+    to passkeys. The device is linked to the operator's principal (`app:<id>`), so a device-signed
+    approval counts as that human in the quorum — provably the same person as their admin login.
+  - **Signed decision** (`/admin/requests/decide-signed`): the assertion is verified server-side
+    (origin, RP-ID-hash, `type=webauthn.get`, constant-time challenge compare, UP/UV flags,
+    signature via the suite, signature-counter clone detection), the nonce is burned once
+    (`IReplayStore`), and the proof (credential id, authenticator data, clientDataJSON, signature)
+    is stored on the audit event **inside the same atomic state+audit transaction** — a decision and
+    its proof commit together. The proof rides on a new `AuditEvent.Proof` field (kept out of the
+    chain hash so the existing chain is untouched) and is made tamper-evident by a short commitment
+    folded into the hashed `Metadata`.
+  - **Assurance:** a cloud-synced passkey (WebAuthn BE flag) is *not* device-bound; the UI labels it
+    honestly, and `WebAuthnRequireDeviceBound` lets a high-assurance policy refuse a synced key —
+    the same idea as the TPM assurance level.
+  - **Dependencies:** WebAuthn attestation/COSE parsing uses `System.Formats.Cbor` — a small, stable
+    first-party Microsoft package (not part of the shared framework), taken instead of a whole
+    third-party WebAuthn stack. The ES256 DER→IEEE-P1363 conversion and the SPKI verification reuse
+    existing code; no `Fido2NetLib`.
+  - New `WebAuthnService`/`WebAuthnStore`, `ApprovalEnvelope`/`WebAuthn` helpers, shared `Framing`
+    and `Base64Url`. Options: `WebAuthnRpId`, `WebAuthnOrigin`, `WebAuthnUserVerification`,
+    `WebAuthnRequireDeviceBound`, `WebAuthnChallengeMinutes`. 21 tests (COSE/DER conversion, the two
+    ceremonies end to end against a software authenticator, replay/expiry/policy-drift/clone/origin,
+    HTTP E2E with the proof committed and the chain still intact). Core suite 353.
+  - This is the approval channel that does not need Telegram, an app store, or a legal entity — the
+    PWA shell and Web Push (next slice) layer on top of this same signed decision.
+
 ## [0.37.0] - 2026-09-14
 
 ### Added
