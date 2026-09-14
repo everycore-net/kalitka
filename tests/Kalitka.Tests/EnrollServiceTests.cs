@@ -39,7 +39,7 @@ public class EnrollServiceTests
             var signer = new TokenSigner("unit-test-master-0123456789");
             Principals = new PrincipalService(config, audit, clock);
             Approvers = new OperatorApprovers(config, audit, clock);
-            Enroll = new EnrollService(Google, new OneTimeTokenService(signer, clock), new InMemoryReplayStore(clock),
+            Enroll = new EnrollService(new IdentityProviders(new IIdentityProvider[] { Google }), new OneTimeTokenService(signer, clock), new InMemoryReplayStore(clock),
                 Principals, Approvers, signer, audit, Options.Create(opts), clock);
         }
     }
@@ -52,7 +52,7 @@ public class EnrollServiceTests
     {
         var k = new Kit();
         var link = await k.Enroll.Invite("Bob@Example.com", "Bob", "admin", default);
-        var url = k.Enroll.StartUrl(Param(link, "t"), "nonce1");
+        var url = k.Enroll.StartUrl("google", Param(link, "t"), "nonce1");
         Assert.NotNull(url);
 
         k.Google.Next = ("bob@example.com", "sub-bob");
@@ -69,7 +69,7 @@ public class EnrollServiceTests
     {
         var k = new Kit();
         var link = await k.Enroll.Invite("alice@example.com", "Alice", "admin", default);
-        var url = k.Enroll.StartUrl(Param(link, "t"), "n2");
+        var url = k.Enroll.StartUrl("google", Param(link, "t"), "n2");
 
         k.Google.Next = ("bob@example.com", "sub-bob");   // a different person clicked
         var res = await k.Enroll.Complete("code", Param(url!, "state"), "n2", default);
@@ -84,7 +84,7 @@ public class EnrollServiceTests
     {
         var k = new Kit();
         var link = await k.Enroll.Invite("bob@example.com", "Bob", "admin", default);
-        var state = Param(k.Enroll.StartUrl(Param(link, "t"), "n")!, "state");
+        var state = Param(k.Enroll.StartUrl("google", Param(link, "t"), "n")!, "state");
         k.Google.Next = ("bob@example.com", "sub-bob");
 
         Assert.True((await k.Enroll.Complete("code", state, "n", default)).Ok);
@@ -98,7 +98,7 @@ public class EnrollServiceTests
     {
         var k = new Kit();
         var link = await k.Enroll.Invite("bob@example.com", "Bob", "admin", default);
-        var state = Param(k.Enroll.StartUrl(Param(link, "t"), "the-nonce")!, "state");
+        var state = Param(k.Enroll.StartUrl("google", Param(link, "t"), "the-nonce")!, "state");
         k.Google.Next = ("bob@example.com", "sub-bob");
 
         var res = await k.Enroll.Complete("code", state, "a-different-nonce", default);
@@ -109,6 +109,6 @@ public class EnrollServiceTests
     [Fact]
     public void A_garbage_invite_yields_no_start_url()
     {
-        Assert.Null(new Kit().Enroll.StartUrl("not-a-real-token", "n"));
+        Assert.Null(new Kit().Enroll.StartUrl("google", "not-a-real-token", "n"));
     }
 }

@@ -273,8 +273,8 @@ public sealed class ApprovalEngine
 
     public bool IsCookieValid(string? cookie, string host) => _sessions.IsValid(cookie, host);
 
-    public string BuildState(string target, string nonce) => _sessions.BuildState(target, nonce);
-    public bool TryReadState(string state, string nonce, out string target) => _sessions.TryReadState(state, nonce, out target);
+    public string BuildState(string target, string nonce, string scheme = "google") => _sessions.BuildState(target, nonce, scheme);
+    public bool TryReadState(string state, string nonce, out string target, out string scheme) => _sessions.TryReadState(state, nonce, out target, out scheme);
 
     /// <summary>
     /// A redirect target must be a host kalitka is actually guarding — nothing

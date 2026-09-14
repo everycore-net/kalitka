@@ -52,15 +52,18 @@ public sealed class SessionService
     // two to match, so a state minted for one browser cannot be replayed to force a
     // login in another (login-CSRF). Signed, no server-side storage.
 
-    public string BuildState(string target, string nonce, int minutes = 10)
+    // Carries the sign-in provider scheme too, so the callback (one shared route) knows which
+    // provider to finish with. Target is last (greedy) — a host has no '|'.
+    public string BuildState(string target, string nonce, string scheme = "google", int minutes = 10)
     {
-        var body = $"{_clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds()}|{nonce}|{target}";
+        var body = $"{_clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds()}|{nonce}|{scheme}|{target}";
         return $"{Convert.ToBase64String(Encoding.UTF8.GetBytes(body))}.{Signature(body, _key)}";
     }
 
-    public bool TryReadState(string state, string nonce, out string target)
+    public bool TryReadState(string state, string nonce, out string target, out string scheme)
     {
         target = "";
+        scheme = "google";
         if (string.IsNullOrEmpty(state)) return false;
 
         var parts = state.Split('.');
@@ -72,12 +75,14 @@ public sealed class SessionService
 
         if (!Matches(body, parts[1])) return false;
 
-        var fields = body.Split('|', 3);
-        if (fields.Length != 3 || !long.TryParse(fields[0], out var expiry)) return false;
+        var fields = body.Split('|', 4);
+        // 4 fields (exp|nonce|scheme|target) going forward; 3 (exp|nonce|target) is a pre-seam state.
+        if (fields.Length is not (3 or 4) || !long.TryParse(fields[0], out var expiry)) return false;
         if (_clock.GetUtcNow().ToUnixTimeSeconds() > expiry) return false;
         if (!NonceMatches(fields[1], nonce)) return false;
 
-        target = fields[2];
+        if (fields.Length == 4) { scheme = fields[2]; target = fields[3]; }
+        else target = fields[2];
         return true;
     }
 

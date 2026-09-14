@@ -45,6 +45,17 @@ public static class AppPages
     public static string Notice(string title, string message) =>
         Head + "<div class=\"wrap\"><h1>" + H(title) + "</h1><p class=\"muted\">" + H(message) + "</p></div>" + Foot;
 
+    /// <summary>Provider picker for enrolment when more than one sign-in provider is configured.</summary>
+    public static string EnrollPicker(string token, IReadOnlyList<(string Scheme, string Name)> providers)
+    {
+        var sb = new StringBuilder(Head + "<div class=\"wrap\"><h1>Enrol this device</h1>"
+            + "<p class=\"muted\">Sign in to continue — you must use the account this invite was issued for.</p>"
+            + "<div class=\"btns\">");
+        foreach (var (scheme, name) in providers)
+            sb.Append($"<button onclick=\"location.href='/enroll?idp={H(scheme)}&t='+encodeURIComponent({System.Text.Json.JsonSerializer.Serialize(token)})\">Sign in with {H(name)}</button>");
+        return sb.Append("</div></div>" + Foot).ToString();
+    }
+
     public static string Shell(AdminIdentity who, IReadOnlyList<PendingView> pending, string vapidPublicKey, string csrf)
     {
         var waiting = pending.Where(r => r.State == "waiting").ToList();

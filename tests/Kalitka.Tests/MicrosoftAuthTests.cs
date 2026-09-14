@@ -68,4 +68,30 @@ public class MicrosoftAuthTests
         var id = Auth(tenant: "T1").FromIdToken(IdToken("{\"tid\":\"T1\",\"oid\":\"O1\",\"email\":\"a@b.com\"}"));
         Assert.NotNull(id);
     }
+
+    private static MicrosoftAuth VisitorAuth(string[]? emails = null, string[]? domains = null, string[]? tenants = null) =>
+        new(new HttpClient(), Options.Create(new GateOptions
+        {
+            GateHost = "gate.example.com", MicrosoftClientId = "c", MicrosoftClientSecret = "s",
+            MicrosoftEmails = emails ?? Array.Empty<string>(),
+            MicrosoftDomains = domains ?? Array.Empty<string>(),
+            MicrosoftAllowedTenants = tenants ?? Array.Empty<string>(),
+        }), NullLogger<MicrosoftAuth>.Instance);
+
+    [Fact]
+    public void Visitor_allowlist_matches_email_or_domain()
+    {
+        Assert.True(VisitorAuth(emails: new[] { "bob@corp.com" }).IsPermitted("bob@corp.com"));
+        Assert.True(VisitorAuth(domains: new[] { "corp.com" }).IsPermitted("anyone@corp.com"));
+        Assert.False(VisitorAuth(domains: new[] { "corp.com" }).IsPermitted("x@other.com"));
+    }
+
+    [Fact]
+    public void Visitor_tenant_wide_entry_only_when_the_tenant_is_restricted()
+    {
+        // No address/domain list but tenants restricted → trust the tenant gate.
+        Assert.True(VisitorAuth(tenants: new[] { "T1" }).IsPermitted("anyone@corp.com"));
+        // Nothing configured → fail closed (a multi-tenant authority must not let the world in).
+        Assert.False(VisitorAuth().IsPermitted("anyone@corp.com"));
+    }
 }

@@ -37,6 +37,11 @@ public interface IIdentityProvider
     /// <summary>Exchange the authorization code for a proven identity, or null if the exchange fails
     /// or the caller is not allowed to authenticate here (e.g. an untrusted Entra tenant).</summary>
     Task<ProvenIdentity?> Resolve(string code, string redirectUri, CancellationToken ct);
+
+    /// <summary>The <b>visitor</b> allowlist: may this e-mail pass the gate without a human approval
+    /// (the fast path)? Provider-specific — Google's domains/addresses, Entra's tenant/domain — and
+    /// fail-closed. Not used for the admin plane, which keys on its own AdminEmails allowlist.</summary>
+    bool IsPermitted(string email);
 }
 
 /// <summary>The enabled providers, resolvable by scheme — the registry the admin plane dispatches

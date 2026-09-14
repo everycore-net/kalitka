@@ -18,7 +18,7 @@ public sealed class EnrollService
     private const string StateKey = "enroll-state:v1";
     private const int StateMinutes = 15;
 
-    private readonly GoogleAuth _google;
+    private readonly IdentityProviders _providers;
     private readonly OneTimeTokenService _tokens;
     private readonly IReplayStore _replay;
     private readonly PrincipalService _principals;
@@ -28,11 +28,11 @@ public sealed class EnrollService
     private readonly GateOptions _options;
     private readonly TimeProvider _clock;
 
-    public EnrollService(GoogleAuth google, OneTimeTokenService tokens, IReplayStore replay,
+    public EnrollService(IdentityProviders providers, OneTimeTokenService tokens, IReplayStore replay,
         PrincipalService principals, OperatorApprovers approvers, TokenSigner signer, IAuditStore audit,
         IOptions<GateOptions> options, TimeProvider? clock = null)
     {
-        _google = google;
+        _providers = providers;
         _tokens = tokens;
         _replay = replay;
         _principals = principals;
@@ -43,7 +43,10 @@ public sealed class EnrollService
         _clock = clock ?? TimeProvider.System;
     }
 
-    public bool Enabled => _google.Enabled;
+    public bool Enabled => _providers.Any;
+    public IReadOnlyList<(string Scheme, string Name)> ProviderChoices =>
+        _providers.Enabled.Select(p => (p.Scheme, p.DisplayName)).ToList();
+    private string EnrollRedirectUri => $"https://{_options.GateHost}/enroll/callback";
 
     /// <summary>Mint an invite for <paramref name="email"/> and return the link to send. The display
     /// name rides in the capability so the created principal is labelled.</summary>
@@ -57,13 +60,15 @@ public sealed class EnrollService
 
     /// <summary>The Google URL to send the invitee to, carrying a signed state (the invite token +
     /// browser nonce + expiry). Null if the invite is not a valid, unexpired enrol capability.</summary>
-    public string? StartUrl(string inviteToken, string nonce)
+    public string? StartUrl(string scheme, string inviteToken, string nonce)
     {
+        var provider = _providers.ByScheme(scheme);
+        if (provider is null) return null;
         var cap = _tokens.Read(inviteToken);
         if (cap is null || cap.Purpose != Purpose) return null;
         var exp = _clock.GetUtcNow().AddMinutes(StateMinutes).ToUnixTimeSeconds();
-        var state = _signer.Sign($"{exp}|{nonce}|{inviteToken}", StateKey);
-        return _google.AuthorizationUrl(state, _google.EnrollRedirectUri);
+        var state = _signer.Sign($"{exp}|{nonce}|{scheme}|{inviteToken}", StateKey);
+        return provider.AuthorizationUrl(state, EnrollRedirectUri);
     }
 
     public sealed record EnrollResult(bool Ok, string? Error = null, AdminIdentity? Identity = null);
@@ -75,36 +80,38 @@ public sealed class EnrollService
     {
         if (string.IsNullOrEmpty(code) || !_signer.Verify(state, StateKey, out var payload))
             return new EnrollResult(false, "This enrolment link is invalid.");
-        var parts = payload.Split('|', 3);
-        if (parts.Length != 3 || !long.TryParse(parts[0], out var exp)) return new EnrollResult(false, "This enrolment link is invalid.");
+        var parts = payload.Split('|', 4);
+        if (parts.Length != 4 || !long.TryParse(parts[0], out var exp)) return new EnrollResult(false, "This enrolment link is invalid.");
         if (_clock.GetUtcNow().ToUnixTimeSeconds() > exp) return new EnrollResult(false, "This enrolment link has expired.");
         if (!SessionService.NonceMatches(parts[1], nonce)) return new EnrollResult(false, "Open the invite in the same browser.");
+        var provider = _providers.ByScheme(parts[2]);
+        if (provider is null) return new EnrollResult(false, "This enrolment link is invalid.");
 
-        var cap = _tokens.Read(parts[2]);
+        var cap = _tokens.Read(parts[3]);
         if (cap is null || cap.Purpose != Purpose) return new EnrollResult(false, "This invite has expired.");
 
-        var identity = await _google.ResolveIdentity(code, _google.EnrollRedirectUri, ct);
+        var identity = await provider.Resolve(code, EnrollRedirectUri, ct);
         if (identity is null) return new EnrollResult(false, "Sign-in was not accepted.");
-        if (!string.Equals(Norm(identity.Value.Email), cap.Resource, StringComparison.Ordinal))
+        if (!string.Equals(Norm(identity.Email), cap.Resource, StringComparison.Ordinal))
             return new EnrollResult(false, "This invite is for a different account.");
 
         // One-time: burn the invite so it cannot enrol a second device later.
         if (!await _replay.TryConsumeAsync("enroll:" + cap.Jti, cap.ExpiresAt, ct))
             return new EnrollResult(false, "This invite has already been used.");
 
-        var actor = "google:" + identity.Value.Sub;
-        await _approvers.Grant(identity.Value.Email, actor, ct);
-        await EnsurePrincipal(identity.Value.Sub, identity.Value.Email, cap.Action, ct);
-        await _audit.Append(Ev(AuditEvents.EnrollCompleted, actor, identity.Value.Email), ct);
-        return new EnrollResult(true, Identity: new AdminIdentity(identity.Value.Sub, identity.Value.Email));
+        await _approvers.Grant(identity.Email, identity.Actor, ct);
+        await EnsurePrincipal(identity, cap.Action, ct);
+        await _audit.Append(Ev(AuditEvents.EnrollCompleted, identity.Actor, identity.Email), ct);
+        return new EnrollResult(true, Identity: new AdminIdentity(identity.Subject, identity.Email, identity.Scheme));
     }
 
-    private async Task EnsurePrincipal(string sub, string email, string displayName, CancellationToken ct)
+    private async Task EnsurePrincipal(ProvenIdentity identity, string displayName, CancellationToken ct)
     {
-        var actor = "google:" + sub;
-        if (_principals.Resolve(actor) is not null) return;
-        await _principals.Save("op-" + sub, string.IsNullOrWhiteSpace(displayName) ? email : displayName,
-            new[] { actor }, actor, ct);
+        if (_principals.Resolve(identity.Actor) is not null) return;
+        // A stable principal id per person; the subject is opaque (MS carries a colon), so scope it.
+        var pid = "op-" + identity.Scheme + "-" + identity.Subject;
+        await _principals.Save(pid, string.IsNullOrWhiteSpace(displayName) ? identity.Email : displayName,
+            new[] { identity.Actor }, identity.Actor, ct);
     }
 
     private static string Norm(string email) => (email ?? "").Trim().ToLowerInvariant();

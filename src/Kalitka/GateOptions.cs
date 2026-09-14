@@ -249,6 +249,12 @@ public sealed class GateOptions
     /// it belongs to an allowed tenant (Entra has no verified-domain guarantee across tenants).</summary>
     public string[] MicrosoftAllowedTenants { get; set; } = Array.Empty<string>();
 
+    /// <summary>Who may enter as a <b>visitor</b> via Microsoft (the fast path): whole domains and/or
+    /// single addresses. If both are empty, tenant-wide entry is allowed only when
+    /// <see cref="MicrosoftAllowedTenants"/> restricts the tenant (else the fast path is fail-closed).</summary>
+    public string[] MicrosoftDomains { get; set; } = Array.Empty<string>();
+    public string[] MicrosoftEmails { get; set; } = Array.Empty<string>();
+
     // ---- Web control plane (admin) -----------------------------------------
 
     /// <summary>

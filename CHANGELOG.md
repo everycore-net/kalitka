@@ -7,6 +7,31 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-09-15
+
+### Added
+
+- **Microsoft/Entra for visitors and device enrolment (provider seam, part 2).** 0.43.0 put the
+  provider seam under the admin plane; now the **visitor fast-path** and **device enrolment** run
+  through the same seam, so the M365 case is actually closed — a Microsoft employee at the gate signs
+  in with their work account instead of ringing and waiting.
+  - **Visitor sign-in** is now `/login/{scheme}` (a button per configured provider on the gate form)
+    with one shared `/oauth2/callback` (the provider rides in the signed, browser-bound state). Each
+    provider gates its own visitor allowlist: Google's domains/addresses, and Entra's
+    `MicrosoftEmails`/`MicrosoftDomains` — or, with neither, tenant-wide entry **only** when
+    `MicrosoftAllowedTenants` restricts the tenant (else fail-closed, so a multi-tenant authority
+    never silently admits the world). Identity stays `scheme:subject`, the session is minted per
+    `SessionScope` exactly as before.
+  - **Enrolment** picks the provider too (a picker when more than one is configured); the invite is
+    still bound to an e-mail and matched against the IdP-proven address regardless of provider, and
+    the created principal / granted approver are keyed on the provider-neutral actor.
+  - The invariants were re-checked and hold across providers: per-host `SessionScope` default, revoked
+    key = blocked, `WebAuthnRequireDeviceBound`, and Entra's `tid+oid` keying / tenant gating /
+    single-tenant-default. 5 tests (Entra visitor allowlist incl. the fail-closed multi-tenant case,
+    the form's per-provider buttons, state carrying the scheme). Core suite 407.
+  - **To enable Microsoft for visitors**, register `https://<GateHost>/oauth2/callback` (and
+    `/enroll/callback` for enrolment) in the Entra app, alongside the admin `/admin/oauth2/callback`.
+
 ## [0.43.0] - 2026-09-15
 
 ### Added
