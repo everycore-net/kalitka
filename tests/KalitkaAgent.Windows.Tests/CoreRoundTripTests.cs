@@ -24,7 +24,7 @@ public class CoreRoundTripTests : IClassFixture<CoreRoundTripTests.Factory>
     public CoreRoundTripTests(Factory f) => _f = f;
 
     // A P-256 CNG key, a matching registered agent, and a CoreClient wired to the test server.
-    private (CoreClient client, string agentId, PlatformKey key, string keyName) Seed(string[] caps)
+    private (CoreClient client, string agentId, PlatformKey key, string keyName) Seed(string[] caps, string[]? resources = null)
     {
         var keyName = "kalitka-rt-" + Guid.NewGuid().ToString("N");
         var key = PlatformKey.OpenOrCreate(keyName, preferSoftware: true, machineKey: false);
@@ -32,7 +32,7 @@ public class CoreRoundTripTests : IClassFixture<CoreRoundTripTests.Factory>
         var spki = key.PublicKeySpkiBase64();
         _f.Services.GetRequiredService<IAgentStore>().Create(new Agent(
             agentId, agentId, "windows", "h", AgentStatus.Active, "",
-            caps, new[] { "ssh:*" }, "", _f.Clock.GetUtcNow(), null, "", null)
+            caps, resources ?? new[] { "ssh:*" }, "", _f.Clock.GetUtcNow(), null, "", null)
         {
             Tags = new[] { "env:rt" },
             Keys = new[] { new AgentKey(AgentSignatures.KeyIdFor(spki)!, spki, _f.Clock.GetUtcNow()) },
@@ -48,6 +48,8 @@ public class CoreRoundTripTests : IClassFixture<CoreRoundTripTests.Factory>
     private Task Link(string id, params string[] identities) =>
         _f.Services.GetRequiredService<PrincipalService>().Save(id, id, identities, "google:admin", default);
 
+    private GateService Gate => _f.Services.GetRequiredService<GateService>();
+
     private static CallerSubject Anna =>
         new("S-1-5-21-1-2-3-1001", "CONTOSO\\anna", "anna", "os:CONTOSO\\anna");
 
@@ -62,6 +64,40 @@ public class CoreRoundTripTests : IClassFixture<CoreRoundTripTests.Factory>
             var r = await client.RaiseAsync(agentId, Anna, "ssh:h", command: null, default);
             Assert.Equal(200, r.Status);      // not a 409 refusal
             Assert.Equal("waiting", r.State); // subject asserted, mapped, is the beneficiary
+        }
+        finally { key.Dispose(); PlatformKey.Delete(keyName, preferSoftware: true, machineKey: false); }
+    }
+
+    [Fact]
+    public async Task Rdp_request_is_raised_approved_and_redeemed_with_the_subject_and_expiry()
+    {
+        // The RDP JIT path the Windows agent drives: raise rdp:<host> for the caller, a human
+        // approves, poll yields the grant, redeem returns the Core-approved subject + exact expiry
+        // that the local enforcer then trusts to add the member until.
+        var (client, agentId, key, keyName) = Seed(
+            new[] { AgentCapabilities.Request, AgentCapabilities.Redeem, AgentCapabilities.AssertSubject },
+            new[] { "rdp:*" });
+        try
+        {
+            var raised = await client.RaiseAsync(agentId, Anna, "rdp:hostA", command: null, default);
+            Assert.Equal(200, raised.Status);
+            Assert.Equal("waiting", raised.State);
+
+            // Before approval, polling stays waiting with no grant.
+            var pending = await client.PollAsync(agentId, raised.Id!, default);
+            Assert.Equal("waiting", pending.State);
+            Assert.Null(pending.Grant);
+
+            Assert.Equal(CallbackOutcome.Decided, (await Gate.Decide(raised.Id!, "ok", "google:admin")).Outcome);
+            var approved = await client.PollAsync(agentId, raised.Id!, default);
+            Assert.Equal("approved", approved.State);
+            Assert.False(string.IsNullOrEmpty(approved.Grant));
+
+            var redeemed = await client.RedeemAsync(agentId, approved.Grant!, default);
+            Assert.Equal(200, redeemed.Status);
+            Assert.False(string.IsNullOrEmpty(redeemed.SessionId));
+            Assert.Equal("anna", redeemed.Subject);      // Core-approved beneficiary
+            Assert.NotNull(redeemed.ExpiresAt);           // exact expiry the enforcer removes at
         }
         finally { key.Dispose(); PlatformKey.Delete(keyName, preferSoftware: true, machineKey: false); }
     }

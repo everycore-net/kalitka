@@ -9,6 +9,26 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Windows agent — RDP JIT (`src/KalitkaAgent.Windows` → 0.2.0).** The public agent now grants
+  just-in-time Remote Desktop access: on an approved+redeemed grant it adds the Core-approved
+  subject to the local **Remote Desktop Users** group for the grant's lifetime, then removes
+  them — and survives a restart. This is what makes the public Windows agent useful on its own
+  (per the open-core boundary), alongside the agent protocol and asserted `sid:` subject.
+  - Pipe protocol gains `{"action":"rdp"}` (raise `rdp:<host>` for the caller, subject asserted)
+    and `{"action":"rdp_activate","requestId":...}` (on approval, redeem + add to the group until
+    the exact expiry). The grant's Core-approved subject must be the caller activating, else
+    `beneficiary-mismatch`.
+  - Membership is by **SID** against the group's **well-known SID** (S-1-5-32-555) — locale-safe
+    (the group name is resolved, never assumed) and unspoofable by name.
+  - **A Core outage never extends access:** expiry is a locally known time; a 60 s sweeper removes
+    expired leases with no Core call. **Survives restart:** a write-ahead journal records the lease
+    before the group is changed, and startup reconcile drops expired leases and re-asserts valid
+    ones.
+  - Tests: `RdpEnforcerTests` (add/expire/revoke/reconcile, deterministic against a fake group +
+    clock) and an RDP round-trip in `CoreRoundTripTests` (raise → approve → poll → redeem returns
+    the approved subject + exact expiry). Requires rights to change local group membership
+    (LocalSystem). Not in CI (net10/Windows-only).
+
 - **MCP server onto the control plane — v1 (`src/KalitkaMcp`, 0.1.0).** An MCP server (stdio,
   official `ModelContextProtocol` SDK) that lets an AI talk to Kalitka *itself*: `kalitka.request_access`,
   `kalitka.get_request`, `kalitka.end_session`. There is **no `approve_request` tool, by construction**
