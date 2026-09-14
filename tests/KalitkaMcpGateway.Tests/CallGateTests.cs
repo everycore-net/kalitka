@@ -140,13 +140,14 @@ public class CallGateTests
     }
 
     [Fact]
-    public void Classifier_resolves_absent_tools_as_unclassified()
+    public void Classifier_resolves_absent_or_retyped_tools_as_unclassified()
     {
         var classifier = new DictionaryToolClassifier()
-            .Set("github", "read_issue", ToolClass.NoApproval)
-            .Set("github", "merge_pull_request", ToolClass.Approval(1));
-        Assert.Equal(ClassKind.NoApproval, classifier.Classify("github", "read_issue").Kind);
-        Assert.Equal(ClassKind.NeedsApproval, classifier.Classify("github", "merge_pull_request").Kind);
-        Assert.Equal(ClassKind.Unclassified, classifier.Classify("github", "delete_repository").Kind);   // drift
+            .Set("github", "read_issue", "hashA", ToolClass.NoApproval)
+            .Set("github", "merge_pull_request", "hashB", ToolClass.Approval(1));
+        Assert.Equal(ClassKind.NoApproval, classifier.Classify("github", "read_issue", "hashA").Kind);
+        Assert.Equal(ClassKind.NeedsApproval, classifier.Classify("github", "merge_pull_request", "hashB").Kind);
+        Assert.Equal(ClassKind.Unclassified, classifier.Classify("github", "delete_repository", "hashX").Kind); // new tool
+        Assert.Equal(ClassKind.Unclassified, classifier.Classify("github", "read_issue", "hashZ").Kind);        // schema changed
     }
 }

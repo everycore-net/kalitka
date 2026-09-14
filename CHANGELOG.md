@@ -9,6 +9,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **MCP Gateway — tool inventory, drift detection & proxy orchestration (`src/KalitkaMcpGateway`
+  → 0.3.0).** The gateway now turns a `tools/call` into a decision and forwards it (over an
+  `IUpstream` seam) only after a human approved the exact call.
+  - **`ToolInventory`** snapshots the upstream's tools at a revision; `tool_contract_id` folds in
+    the revision, so bumping it invalidates every not-yet-approved request against the old
+    inventory. `Diff` surfaces added / removed / **retyped** tools for audit.
+  - **Classification is bound to the observed contract** (`IToolClassifier.Classify(alias, tool,
+    contractHash)`): a new, renamed, or schema-changed tool resolves to `Unclassified` — never
+    auto-allowed — until an admin classifies that exact contract. Classifying by name alone would
+    let a retyped tool inherit the old tool's trust.
+  - **`GatewayProxy.HandleAsync`** — canonicalize args → fingerprint → classify → `CallGate` →
+    on approval, **claim once and forward once** (the at-most-once guarantee), completing with the
+    upstream's success/error; `Pending` never forwards (a normal result with a Call ID); unknown/
+    withdrawn tools and unparseable arguments are refused. `RefreshInventoryAsync` bumps the
+    revision on drift and returns the diff.
+  - 12 more tests (73 total in the gateway, in CI), driven by a fake upstream. The real MCP client
+    to a live upstream (stdio/HTTP) and wiring approval to Core's human channels are next.
+
 - **MCP Gateway — decision + execution state machine (`src/KalitkaMcpGateway` → 0.2.0).** The
   gateway's security core on top of the fingerprint: classification from policy and the call
   lifecycle that makes approval mean something.

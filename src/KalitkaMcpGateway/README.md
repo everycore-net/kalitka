@@ -84,7 +84,32 @@ Pending ────────────────────────
   re-issues. Denied stays denied; an unacted approval expires and may be retried fresh.
 
 This slice is in-memory (a clock, no persistence, no wire). Wiring approval to Core's human
-channels, the live upstream MCP proxy, and `tools/list` drift detection are the next slices.
+channels and a real MCP client to the upstream are the next slices.
+
+## Inventory, drift & the proxy (`GatewayProxy`, over `IUpstream`)
+
+`ToolInventory` snapshots the upstream's tools at a **revision**. The revision is folded into
+each `tool_contract_id`, so bumping it (on any drift) invalidates every not-yet-approved request
+against the old inventory — an inventory change never rides silently on an old approval. `Diff`
+reports added / removed / **retyped** tools for audit.
+
+**Classification is bound to the observed contract**, not the name: `IToolClassifier.Classify(alias,
+tool, contractHash)`. A new tool, a renamed tool, or a tool whose schema changed all resolve to
+`Unclassified` — never auto-allowed — until an admin classifies *that exact contract*. Classifying
+by name alone would let a retyped tool inherit the old tool's trust.
+
+`GatewayProxy.HandleAsync(tool, args, subject, workload)` is the orchestration, called every time
+the AI issues the call:
+
+1. Look the tool up in the current inventory (unknown/withdrawn → refused; unparseable args → refused).
+2. Canonicalize args → compute the call fingerprint (with the inventory's `tool_contract_id`).
+3. Classify against the observed contract hash → `CallGate.Evaluate`.
+4. `Pending` → return a Call ID, **forward nothing**. `Denied` → refuse. `Approved` → **claim once
+   and forward once** to the upstream, completing with its success/error.
+
+`RefreshInventoryAsync` snapshots the upstream, bumps the revision on drift, and returns the diff.
+The transport to the upstream is behind `IUpstream`, so the security logic here is independent of
+whether the real client is stdio or HTTP (a later slice).
 
 ## Tests
 
