@@ -86,9 +86,14 @@ public static class AuditEvents
     public const string PrincipalUpdated = "principal.updated";
     public const string PrincipalDeleted = "principal.deleted";
 
-    public const string WebAuthnRegistered = "webauthn.registered";     // a passkey/device was registered to an operator
-    public const string WebAuthnRemoved    = "webauthn.removed";        // a device was revoked
-    public const string WebAuthnCloneAlarm = "webauthn.clone_alarm";    // signature counter went backwards — possible cloned key
+    // Device vocabulary mirrors agent.* so history filters line up (device.enrolled ~ agent.enrolled).
+    public const string WebAuthnRegistered = "device.enrolled";         // a passkey/device was registered to an operator
+    public const string WebAuthnRemoved    = "device.revoked";          // a device was revoked
+    public const string WebAuthnCloneAlarm = "device.clone_alarm";      // signature counter went backwards — possible cloned key
+
+    public const string PasskeyRemembered = "passkey.remembered";   // a visitor bound a passkey after approval
+    public const string PasskeyUsed       = "passkey.used";         // a visitor passed the gate with a passkey
+    public const string PasskeyRevoked    = "passkey.revoked";      // a remembered visitor passkey was revoked (= blocked)
 
     public const string EnrollInvited   = "enroll.invited";     // an admin issued a one-time enrolment invite
     public const string EnrollCompleted = "enroll.completed";   // an invitee signed in via the IdP and enrolled

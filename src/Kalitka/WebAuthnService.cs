@@ -36,9 +36,11 @@ public sealed class WebAuthnService
     private readonly IAuditStore _audit;
     private readonly GateOptions _options;
     private readonly TimeProvider _clock;
+    private readonly PushSubscriptionStore? _push;
 
     public WebAuthnService(WebAuthnStore store, PrincipalService principals, TokenSigner signer,
-        IReplayStore replay, IAuditStore audit, IOptions<GateOptions> options, TimeProvider clock)
+        IReplayStore replay, IAuditStore audit, IOptions<GateOptions> options, TimeProvider clock,
+        PushSubscriptionStore? push = null)
     {
         _store = store;
         _principals = principals;
@@ -47,6 +49,7 @@ public sealed class WebAuthnService
         _audit = audit;
         _options = options.Value;
         _clock = clock;
+        _push = push;
     }
 
     private string RpId => string.IsNullOrEmpty(_options.WebAuthnRpId) ? _options.GateHost : _options.WebAuthnRpId;
@@ -147,7 +150,11 @@ public sealed class WebAuthnService
         if (p is not null)
             await _principals.Save(p.Id, p.DisplayName, p.Identities.Where(i => i != cred.Identity), who.Actor, ct);
         var removed = _store.Remove(credentialId);
-        if (removed) await _audit.Append(Ev(AuditEvents.WebAuthnRemoved, who.Actor, cred.PrincipalId, cred.DisplayName), ct);
+        if (removed)
+        {
+            _push?.RemoveForPrincipal(cred.PrincipalId);   // a revoked device stops receiving pushes
+            await _audit.Append(Ev(AuditEvents.WebAuthnRemoved, who.Actor, cred.PrincipalId, cred.DisplayName), ct);
+        }
         return removed;
     }
 
@@ -164,7 +171,11 @@ public sealed class WebAuthnService
         if (p is not null)
             await _principals.Save(p.Id, p.DisplayName, p.Identities.Where(i => i != cred.Identity), actor, ct);
         var removed = _store.Remove(credentialId);
-        if (removed) await _audit.Append(Ev(AuditEvents.WebAuthnRemoved, actor, cred.PrincipalId, cred.DisplayName), ct);
+        if (removed)
+        {
+            _push?.RemoveForPrincipal(cred.PrincipalId);   // a revoked device stops receiving pushes
+            await _audit.Append(Ev(AuditEvents.WebAuthnRemoved, actor, cred.PrincipalId, cred.DisplayName), ct);
+        }
         return removed;
     }
 

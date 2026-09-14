@@ -49,6 +49,9 @@ public static class L10n
         Tagline = "Knock. Approve. Enter.",
         TargetLabel = "Target",
         SignInGoogle = "Sign in with Google",
+        SignInPasskey = "Sign in with a passkey",
+        RememberDevice = "Remember this device",
+        ContinueIn = "Continue",
         OrAsk = "or ask to be let in",
         NamePlaceholder = "Name or e-mail",
         Ask = "Ask",
@@ -94,6 +97,9 @@ public static class L10n
         Tagline = "Anklopfen. Freigeben. Eintreten.",
         TargetLabel = "Ziel",
         SignInGoogle = "Mit Google anmelden",
+        SignInPasskey = "Mit Passkey anmelden",
+        RememberDevice = "Dieses Gerät merken",
+        ContinueIn = "Weiter",
         OrAsk = "oder um Einlass bitten",
         NamePlaceholder = "Name oder E-Mail",
         Ask = "Anfragen",
@@ -139,6 +145,9 @@ public static class L10n
         Tagline = "Постучись. Одобри. Войди.",
         TargetLabel = "Цель",
         SignInGoogle = "Войти через Google",
+        SignInPasskey = "Войти по passkey",
+        RememberDevice = "Запомнить это устройство",
+        ContinueIn = "Продолжить",
         OrAsk = "или попросить впустить",
         NamePlaceholder = "Имя или e-mail",
         Ask = "Запросить",
@@ -187,6 +196,9 @@ public sealed record Strings
     public required string Tagline { get; init; }
     public required string TargetLabel { get; init; }
     public required string SignInGoogle { get; init; }
+    public required string SignInPasskey { get; init; }
+    public required string RememberDevice { get; init; }
+    public required string ContinueIn { get; init; }
     public required string OrAsk { get; init; }
     public required string NamePlaceholder { get; init; }
     public required string Ask { get; init; }
