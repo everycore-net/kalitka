@@ -94,8 +94,25 @@ Pending ────────────────────────
 - **`pending` never holds a session:** `Evaluate` returns `Pending` + Call ID; the caller polls /
   re-issues. Denied stays denied; an unacted approval expires and may be retried fresh.
 
-This slice is in-memory (a clock, no persistence, no wire). Wiring approval to Core's human
-channels and a real MCP client to the upstream are the next slices.
+`CallGate` is the *local* authority (standalone / tests). In production the authority is **Core**
+(below); either way the gateway drives it through the same `IApprovalAuthority` seam.
+
+## Core as the authority (`IApprovalAuthority`, `CoreAuthority`)
+
+Who decides is separated from the gateway's fingerprint / classification / forwarding via
+`IApprovalAuthority` (`EvaluateAsync` / `ClaimAsync` / `CompleteAsync`). `LocalAuthority` wraps the
+in-process `CallGate`; **`CoreAuthority`** is a signed `/agent/*` client that raises an
+`mcp:<alias>/<tool>` request in Core (carrying the Call ID the approver sees) and lets **Core own**
+the human notification, principals, subject rules, quorum and TTL — the gateway does not
+re-implement any of it.
+
+The once-only execution claim is **Core's redeem-once grant**: even if two gateway instances both
+see the approval, only one `redeem` succeeds, so a destructive call dispatches at most once —
+durable across instances and restarts. On a definite result the Core session is ended with the
+outcome; a transport failure after dispatch is still `OutcomeUnknown`.
+
+The upstream transport is still behind `IUpstream`; a real MCP client (`tools/list` +
+pagination/`list_changed`, then real `tools/call`) is the next slice.
 
 ## Inventory, drift & the proxy (`GatewayProxy`, over `IUpstream`)
 

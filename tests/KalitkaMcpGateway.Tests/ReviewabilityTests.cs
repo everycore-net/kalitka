@@ -42,7 +42,7 @@ public class ReviewabilityTests
         upstream.Tools.Add(new UpstreamTool("bulk_delete", "{\"type\":\"object\"}"));
         var classifier = new DictionaryToolClassifier();
         var gate = new CallGate(new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero)));
-        var proxy = new GatewayProxy(upstream, classifier, gate, "svc", "uid");
+        var proxy = new GatewayProxy(upstream, classifier, new LocalAuthority(gate), "svc", "uid");
         await proxy.RefreshInventoryAsync(default);
         proxy.Inventory.TryGet("bulk_delete", out var t);
         classifier.Set("svc", "bulk_delete", t.ContractHashHex, ToolClass.Approval(1, requireReviewable: true));

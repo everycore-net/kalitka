@@ -9,6 +9,23 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **MCP Gateway — Core as the authority (`src/KalitkaMcpGateway` → 0.5.0).** The gateway no longer
+  decides approvals itself: an `IApprovalAuthority` seam separates *who decides* from the gateway's
+  fingerprint / classification / forwarding. `LocalAuthority` wraps the in-process `CallGate`
+  (standalone / tests); **`CoreAuthority`** makes the gateway a signed `/agent/*` client that raises
+  an `mcp:<alias>/<tool>` request in Core (carrying the Call ID the approver sees) and lets **Core
+  own** the human notification, principals, subject rules, quorum and TTL — the gateway stops
+  re-implementing any of it.
+  - **The once-only execution claim is Core's redeem-once grant** — durable and shared across
+    instances/restarts: even if two gateway instances both see the approval, only one `redeem`
+    succeeds, so a destructive call dispatches at most once. On a definite result the session is
+    ended with the outcome; a transport failure after dispatch is still `OutcomeUnknown`.
+  - Integration-tested end to end against the **real Core pipeline** (`CoreAuthorityTests`): raise →
+    a human `GateService.Decide`s → poll approved → redeem (claim) → forward once; a re-issue after
+    completion cannot re-dispatch (grant spent); a denied request is refused and never forwarded.
+  - 114 gateway tests in CI. **Next:** real MCP discovery (`tools/list` + pagination/`list_changed`)
+    then real `tools/call` over the MCP SDK, behind the existing `IUpstream` seam.
+
 - **MCP Gateway — human-safe renderer + reviewability limits (`src/KalitkaMcpGateway` → 0.4.0).**
   The approval UI must never show a request *less safely than the gateway interprets it*.
   - **`SafeText.Render`** turns an argument value into styled tokens + an overall risk. Control /
