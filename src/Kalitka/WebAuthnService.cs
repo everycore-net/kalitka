@@ -151,6 +151,23 @@ public sealed class WebAuthnService
         return removed;
     }
 
+    /// <summary>Every registered device across all operators — for an admin's device management.</summary>
+    public IReadOnlyList<WebAuthnCredential> AllDevices() => _store.All();
+
+    /// <summary>An admin revokes any device (not just their own): remove it and unlink its identity so
+    /// it no longer resolves in the quorum. Audited under the acting admin.</summary>
+    public async Task<bool> AdminRemove(string credentialId, string actor, CancellationToken ct)
+    {
+        var cred = _store.ByCredentialId(credentialId);
+        if (cred is null) return false;
+        var p = _principals.Get(cred.PrincipalId);
+        if (p is not null)
+            await _principals.Save(p.Id, p.DisplayName, p.Identities.Where(i => i != cred.Identity), actor, ct);
+        var removed = _store.Remove(credentialId);
+        if (removed) await _audit.Append(Ev(AuditEvents.WebAuthnRemoved, actor, cred.PrincipalId, cred.DisplayName), ct);
+        return removed;
+    }
+
     // ---- Signed approval (fido2 slice 2) -----------------------------------
 
     public WebAuthnBegin ApproveBegin(AdminIdentity who, ApprovalContext req, string verb)

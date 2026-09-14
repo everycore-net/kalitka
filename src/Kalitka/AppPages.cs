@@ -41,6 +41,10 @@ public static class AppPages
 
     private const string Foot = "</body></html>";
 
+    /// <summary>A minimal standalone message page (enrolment errors), no session required.</summary>
+    public static string Notice(string title, string message) =>
+        Head + "<div class=\"wrap\"><h1>" + H(title) + "</h1><p class=\"muted\">" + H(message) + "</p></div>" + Foot;
+
     public static string Shell(AdminIdentity who, IReadOnlyList<PendingView> pending, string vapidPublicKey, string csrf)
     {
         var waiting = pending.Where(r => r.State == "waiting").ToList();

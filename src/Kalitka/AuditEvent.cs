@@ -89,6 +89,11 @@ public static class AuditEvents
     public const string WebAuthnRegistered = "webauthn.registered";     // a passkey/device was registered to an operator
     public const string WebAuthnRemoved    = "webauthn.removed";        // a device was revoked
     public const string WebAuthnCloneAlarm = "webauthn.clone_alarm";    // signature counter went backwards — possible cloned key
+
+    public const string EnrollInvited   = "enroll.invited";     // an admin issued a one-time enrolment invite
+    public const string EnrollCompleted = "enroll.completed";   // an invitee signed in via the IdP and enrolled
+    public const string ApproverGranted = "approver.granted";   // an operator was granted approve rights at runtime
+    public const string ApproverRevoked = "approver.revoked";   // ...and revoked
 }
 
 /// <summary>A narrow query over the audit log: a few filters and a page.</summary>

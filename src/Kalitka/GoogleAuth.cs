@@ -39,6 +39,8 @@ public class GoogleAuth
     /// <summary>Where Google sends the visitor back. The admin flow passes its own.</summary>
     public string RedirectUri => $"https://{_options.GateHost}/oauth2/callback";
     public string AdminRedirectUri => $"https://{_options.GateHost}/admin/oauth2/callback";
+    // Device enrolment ends in an IdP sign-in on its own callback (must be registered at Google).
+    public string EnrollRedirectUri => $"https://{_options.GateHost}/enroll/callback";
 
     public string AuthorizationUrl(string state) => AuthorizationUrl(state, RedirectUri);
 

@@ -103,6 +103,7 @@ public static class AdminPages
         + "<a href=\"/admin/devices\">Devices</a>"
         // The installable operator app (Web Push + device-signed approval).
         + "<a href=\"/admin/app\">App</a>"
+        + Nav(who, Perm.PrincipalsManage, "/admin/enroll", "Enrol")
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
         + "<form class=\"inline\" method=\"post\" action=\"/admin/logout\"><button class=\"mut\">Sign out</button></form>"
@@ -230,7 +231,8 @@ public static class AdminPages
 
     // ---- Registered devices (WebAuthn) -------------------------------------
 
-    public static string Devices(AdminIdentity who, IReadOnlyList<WebAuthnCredential> creds, string csrf)
+    public static string Devices(AdminIdentity who, IReadOnlyList<WebAuthnCredential> creds, string csrf,
+        IReadOnlyList<WebAuthnCredential>? allDevices = null)
     {
         var sb = new StringBuilder("<h1>Your devices</h1>");
         sb.Append("<p class=\"muted\">A registered device signs your approvals with a key in its secure hardware — "
@@ -262,8 +264,80 @@ public static class AdminPages
 
         sb.Append("<div class=\"btns\">")
           .Append($"<button class=\"ok\" onclick=\"kalitkaRegister('{H(csrf)}')\">🔑 Register this device</button>")
-          .Append("</div>")
-          .Append(WebAuthnJs);
+          .Append("</div>");
+
+        // Admin view: every registered device across operators, revocable per device.
+        if (who.Can(Perm.PrincipalsManage) && allDevices is not null)
+        {
+            sb.Append("<h2>All registered devices</h2>");
+            if (allDevices.Count == 0)
+                sb.Append("<p class=\"muted\">None.</p>");
+            else
+            {
+                sb.Append("<table><tr><th>Operator</th><th>Device</th><th>Kind</th><th>Added</th><th></th></tr>");
+                foreach (var c in allDevices)
+                    sb.Append("<tr>")
+                      .Append($"<td class=\"muted\">{H(c.PrincipalId)}</td>")
+                      .Append($"<td>{H(c.DisplayName)}</td>")
+                      .Append(c.BackupEligible ? "<td><span class=\"pill waiting\">cloud-synced</span></td>"
+                          : "<td><span class=\"pill approved\">device-bound</span></td>")
+                      .Append($"<td class=\"muted\">{H(ShortWhen(c.CreatedAt))}</td>")
+                      .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/devices/remove-any\" "
+                          + "onsubmit=\"return confirm('Revoke this device?')\">"
+                          + $"<input type=\"hidden\" name=\"credentialId\" value=\"{H(c.CredentialId)}\">"
+                          + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                          + "<button class=\"no\">Revoke</button></form></td>")
+                      .Append("</tr>");
+                sb.Append("</table>");
+            }
+        }
+
+        sb.Append(WebAuthnJs);
+        return Shell(who, sb.ToString());
+    }
+
+    // ---- Device enrolment (invite → IdP → device) --------------------------
+
+    public static string EnrollPage(AdminIdentity who, IReadOnlyList<string> approvers, string csrf, string? issuedLink = null)
+    {
+        var sb = new StringBuilder("<h1>Enrol a device</h1>");
+        sb.Append("<p class=\"muted\">Invite a person to enrol their phone. The link is one-time and must end in a "
+            + "Google sign-in as the invited address, so an intercepted invite cannot enrol a stranger. On enrolment "
+            + "they are granted approve rights and can register a passkey and turn on notifications.</p>");
+
+        if (!string.IsNullOrEmpty(issuedLink))
+            sb.Append("<div class=\"card\" style=\"max-width:640px;margin-bottom:16px\">")
+              .Append("<b style=\"color:#fff\">Invite link (send it to the person, or show as a QR):</b>")
+              .Append($"<p><code style=\"word-break:break-all\">{H(issuedLink)}</code></p>")
+              .Append("<p class=\"muted\">Opens on their phone → Google sign-in → register device.</p></div>");
+
+        sb.Append("<form method=\"post\" action=\"/admin/enroll/invite\">")
+          .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+          .Append("<p><label>Invited e-mail (their Google account)<br>"
+              + "<input name=\"email\" type=\"email\" required style=\"padding:9px;border-radius:8px;border:1px solid #2a3140;background:#0f1117;color:#e6e6e6;min-width:280px\"></label></p>")
+          .Append("<p><label>Display name<br>"
+              + "<input name=\"displayName\" style=\"padding:9px;border-radius:8px;border:1px solid #2a3140;background:#0f1117;color:#e6e6e6;min-width:280px\"></label></p>")
+          .Append("<div class=\"btns\"><button class=\"ok\">Create invite</button></div></form>");
+
+        sb.Append("<h2>Runtime-granted approvers</h2>");
+        sb.Append("<p class=\"muted\">People granted approve rights through enrolment (in addition to the deployment's "
+            + "<code>ApproverEmails</code>). Revoking removes their approve rights at once.</p>");
+        if (approvers.Count == 0)
+            sb.Append("<p class=\"muted\">None.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>E-mail</th><th></th></tr>");
+            foreach (var e in approvers)
+                sb.Append("<tr>")
+                  .Append($"<td>{H(e)}</td>")
+                  .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/approvers/revoke\" "
+                      + "onsubmit=\"return confirm('Revoke approve rights?')\">"
+                      + $"<input type=\"hidden\" name=\"email\" value=\"{H(e)}\">"
+                      + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                      + "<button class=\"no\">Revoke</button></form></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
         return Shell(who, sb.ToString());
     }
 
