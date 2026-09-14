@@ -7,6 +7,32 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-14
+
+### Added
+
+- **Installable PWA approval channel with Web Push — approvals without Telegram, an app store, or a
+  legal entity ([[fido2]] slice B).** The gate now serves an installable web app (`/admin/app`, a
+  `manifest.webmanifest`, a root-scope service worker, an icon) and sends **Web Push** notifications,
+  so an operator gets a push on their phone and confirms with a device signature — the Slice-A
+  ceremony — in a home-screen app. Web push works on Android and iOS 16.4+ (add to Home Screen
+  first), so the same channel serves business (where Telegram is banned), solo, and Family, and is
+  the future receiver for the iOS shield's `defer`.
+  - **Web Push crypto on the BCL, no library:** RFC 8291 message encryption over RFC 8188
+    `aes128gcm` (ECDH P-256 + HKDF-SHA256 + AES-128-GCM) and RFC 8292 VAPID (ES256 JWT), all on the
+    framework's `ECDiffieHellman`/`HKDF`/`AesGcm`/`ECDsa`. Pinned to the **RFC 8291 §5 test vector**:
+    the header frames exactly as the RFC specifies and the body decrypts to the RFC's plaintext with
+    the RFC's user-agent key — spec interop, not a self-consistency check.
+  - **`PushNotifier : INotifier`** plugs into the existing fan-out (Telegram, e-mail, now push) with
+    no engine change: it pushes to the resolved operator's registered devices, or to every device
+    when the routing asks the admins, and prunes any subscription the push service reports as gone.
+    VAPID keys are generated once and kept in the shared config store; subscriptions are bound to the
+    operator's principal, so a push reaches the person, not a global list.
+  - The service worker shows the notification and deep-links the tap into the request's signing UI.
+    New options `VapidSubject`, `PushTtlSeconds`. 13 tests (RFC 8291 vector + round-trip, VAPID JWT
+    verification, subscription store, notifier targeting/pruning, public assets, app-shell auth,
+    subscribe round-trip). Core suite 366.
+
 ## [0.38.0] - 2026-09-14
 
 ### Added

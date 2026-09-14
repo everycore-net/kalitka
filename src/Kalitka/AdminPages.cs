@@ -101,6 +101,8 @@ public static class AdminPages
         + Nav(who, Perm.HistoryRead, "/admin/audit/verify", "Integrity")
         // Self-service for every admin — you register and revoke your own devices.
         + "<a href=\"/admin/devices\">Devices</a>"
+        // The installable operator app (Web Push + device-signed approval).
+        + "<a href=\"/admin/app\">App</a>"
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
         + "<form class=\"inline\" method=\"post\" action=\"/admin/logout\"><button class=\"mut\">Sign out</button></form>"
@@ -270,7 +272,7 @@ public static class AdminPages
 
     // Self-contained WebAuthn client: no bundler, no external asset, in keeping with the rest of the
     // control plane. Base64url <-> ArrayBuffer, then the two ceremonies (register, sign a decision).
-    private const string WebAuthnJs = @"<script>
+    internal const string WebAuthnJs = @"<script>
 function b64uToBuf(s){s=s.replace(/-/g,'+').replace(/_/g,'/');var p=s.length%4;if(p)s+='='.repeat(4-p);var bin=atob(s);var b=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b.buffer;}
 function bufToB64u(buf){var b=new Uint8Array(buf);var s='';for(var i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 async function kalitkaRegister(csrf){
