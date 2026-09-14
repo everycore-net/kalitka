@@ -22,6 +22,15 @@ builder.Services.AddHttpClient<CoreClient>((sp, http) =>
     http.Timeout = TimeSpan.FromSeconds(30);
 });
 
+// RDP JIT enforcement: local Remote Desktop Users membership, a durable lease journal, and the
+// enforcer that adds on redeem / removes on expiry.
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<ILocalGroup, WindowsLocalGroup>();
+builder.Services.AddSingleton(sp =>
+    new RdpJournal(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentConfig>>().Value.RdpJournalPath));
+builder.Services.AddSingleton<RdpEnforcer>();
+
 builder.Services.AddHostedService<Worker>();
+builder.Services.AddHostedService<RdpSweeper>();
 
 builder.Build().Run();

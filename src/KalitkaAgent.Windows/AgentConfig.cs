@@ -24,6 +24,11 @@ public sealed class AgentConfig
     public string StatePath { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Kalitka", "agent.json");
 
+    /// <summary>Write-ahead journal of active RDP leases, so a restart removes expired
+    /// memberships and re-asserts valid ones. Machine-scoped under ProgramData.</summary>
+    public string RdpJournalPath { get; set; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Kalitka", "rdp-leases.json");
+
     /// <summary>A one-time enrollment token, minted by a Core admin, used once on first run
     /// to register this agent's public key. Consumed then ignored. Empty once enrolled.</summary>
     public string EnrollmentToken { get; set; } = "";
