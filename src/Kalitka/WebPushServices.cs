@@ -75,6 +75,20 @@ public sealed class PushSubscriptionStore
         return removed;
     }
 
+    /// <summary>Drop every subscription of an operator — used when a device is revoked, so a revoked
+    /// device stops receiving pushes (they re-enable notifications on a device they still hold).</summary>
+    public int RemoveForPrincipal(string principalId)
+    {
+        var removed = 0;
+        _config.Mutate(Key, cur =>
+        {
+            var list = Parse(cur);
+            removed = list.RemoveAll(s => string.Equals(s.PrincipalId, principalId, StringComparison.OrdinalIgnoreCase));
+            return JsonSerializer.Serialize(list);
+        });
+        return removed;
+    }
+
     private static List<PushSubscription> Parse(string? blob) =>
         string.IsNullOrWhiteSpace(blob) ? new() : (JsonSerializer.Deserialize<List<PushSubscription>>(blob) ?? new());
 }

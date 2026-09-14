@@ -43,6 +43,10 @@ builder.Services.AddSingleton<INotifier, PushNotifier>();
 builder.Services.AddSingleton<OperatorApprovers>(sp => new OperatorApprovers(
     sp.GetRequiredService<IConfigStore>(), sp.GetRequiredService<IAuditStore>(), sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddTransient<EnrollService>();
+// Visitor passkeys (fido2 slice 1): the cryptographic "remember this device", a separate population
+// from operator passkeys and agents — a visitor credential only lets its holder in.
+builder.Services.AddSingleton<VisitorPasskeyStore>(sp => new VisitorPasskeyStore(sp.GetRequiredService<IConfigStore>()));
+builder.Services.AddSingleton<VisitorPasskeyService>();
 builder.Services.AddSingleton<GateService>();
 builder.Services.AddSingleton<TokenSigner>(sp =>
 {
@@ -320,7 +324,8 @@ app.MapPost("/request", async (HttpContext ctx, GateService gate, GoogleAuth goo
         // not learn that they are blocked.
         "blocked" => Results.Content(Pages.Message(lang, s.RefusedTitle, s.AccessDenied), "text/html; charset=utf-8"),
         "invalid" => Results.Content(Pages.Form(lang, target, error: true, google.Enabled), "text/html; charset=utf-8"),
-        _         => Results.Content(Pages.Waiting(lang, id, target), "text/html; charset=utf-8")
+        // Pass the visitor's name as the label so a remembered device (passkey) is recognisable later.
+        _         => Results.Content(Pages.Waiting(lang, id, target, input), "text/html; charset=utf-8")
     };
 });
 
@@ -339,6 +344,50 @@ app.MapGet("/wait/status", (HttpContext ctx, GateService gate) =>
     }
 
     return Results.Json(new { state = state == "denied" ? "denied" : "waiting" });
+});
+
+// ---------------------------------------------------------------------------
+// Passkey as a way past the gate (fido2 slice 1). A visitor cannot self-register:
+// registration requires the session a just-completed approval minted (so it is
+// "remember this device", not an identity provider). Login proves a remembered
+// credential and mints the same session a manual approval would.
+// ---------------------------------------------------------------------------
+app.MapPost("/passkey/login/begin", (HttpContext ctx, GateService gate, VisitorPasskeyService passkeys) =>
+{
+    var target = ctx.Request.Query["target"].ToString();
+    if (!gate.IsGuardedHost(target)) return Results.BadRequest();
+    return WebAuthnJson(passkeys.LoginBegin(target));
+});
+
+app.MapPost("/passkey/login/finish", async (HttpContext ctx, GateService gate, VisitorPasskeyService passkeys) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<PasskeyLoginDto>();
+    if (dto is null || !gate.IsGuardedHost(dto.Target)) return Results.BadRequest();
+    var res = await passkeys.LoginFinish(dto.Target, dto.State, dto.CredentialId, dto.AuthenticatorData,
+        dto.ClientDataJson, dto.Signature, ctx.RequestAborted);
+    if (!res.Ok) return Results.Json(new { error = res.Error }, statusCode: 400);
+    // Mint the same session a manual approval would — per-host, or domain-wide if remembered so.
+    SetSessionCookie(ctx, gate, res.DomainScope ? gate.BuildGlobalCookie() : gate.BuildCookie(dto.Target));
+    return Results.Json(new { ok = true, target = dto.Target });
+});
+
+app.MapPost("/passkey/register/begin", (HttpContext ctx, GateService gate, VisitorPasskeyService passkeys) =>
+{
+    var target = ctx.Request.Query["target"].ToString();
+    // Only a visitor already approved for this host (holds a valid session) may remember a device.
+    if (!gate.IsGuardedHost(target) || !gate.IsCookieValid(ctx.Request.Cookies[gate.CookieName], target))
+        return Results.StatusCode(403);
+    return WebAuthnJson(passkeys.RegisterBegin(target, ctx.Request.Query["label"].ToString()));
+});
+
+app.MapPost("/passkey/register/finish", async (HttpContext ctx, GateService gate, VisitorPasskeyService passkeys) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<PasskeyRegisterDto>();
+    if (dto is null) return Results.BadRequest();
+    if (!gate.IsGuardedHost(dto.Target) || !gate.IsCookieValid(ctx.Request.Cookies[gate.CookieName], dto.Target))
+        return Results.StatusCode(403);
+    var error = await passkeys.RegisterFinish(dto.Target, dto.State, dto.AttestationObject, dto.ClientDataJson, ctx.RequestAborted);
+    return error is null ? Results.Json(new { ok = true }) : Results.Json(new { error }, statusCode: 400);
 });
 
 // ---------------------------------------------------------------------------
@@ -925,6 +974,23 @@ guarded.MapPost("/approvers/revoke", async (HttpContext ctx, AdminAuth auth, Ope
     await approvers.Revoke(form["email"].ToString(), who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/enroll", false);
 }).RequirePermission(Perm.PrincipalsManage);
+
+// ---- Remembered visitor devices (passkeys) — the cryptographic allow list ----
+guarded.MapGet("/passkeys", (HttpContext ctx, AdminAuth auth, VisitorPasskeyStore store) =>
+    Results.Content(AdminPages.VisitorPasskeys(Admin(ctx), store.All(), auth.IssueCsrf(Admin(ctx).Sub)), "text/html; charset=utf-8"))
+    .RequirePermission(Perm.RequestsDecide);
+
+guarded.MapPost("/passkeys/revoke", async (HttpContext ctx, AdminAuth auth, VisitorPasskeyStore store, IAuditStore audit) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var credId = form["credentialId"].ToString();
+    if (store.Revoke(credId))
+        await audit.Append(new AuditEvent(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, AuditEvents.PasskeyRevoked,
+            who.Actor, form["label"].ToString(), "", "", "", "admin", credId), ctx.RequestAborted);
+    return Results.Redirect("/admin/passkeys", false);
+}).RequirePermission(Perm.RequestsDecide);
 
 guarded.MapPost("/devices/register/begin", (HttpContext ctx, AdminAuth auth, WebAuthnService webauthn) =>
 {
@@ -1648,6 +1714,10 @@ internal sealed record RegisterFinishDto(string State, string CredentialId, stri
 internal sealed record DecideSignedDto(string Id, string Verb, string State, string CredentialId,
     string AuthenticatorData, string ClientDataJson, string Signature, string Csrf);
 internal sealed record PushSubscribeDto(string Endpoint, string P256dh, string Auth, string Csrf);
+internal sealed record PasskeyLoginDto(string Target, string State, string CredentialId,
+    string AuthenticatorData, string ClientDataJson, string Signature);
+internal sealed record PasskeyRegisterDto(string Target, string State, string CredentialId,
+    string AttestationObject, string ClientDataJson);
 
 // Exposed so integration tests can host the real pipeline via WebApplicationFactory.
 public partial class Program;

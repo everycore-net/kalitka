@@ -90,6 +90,7 @@ public static class AdminPages
         // Nav mirrors permissions — purely UX; the endpoint guards are the boundary.
         + Nav(who, Perm.RequestsRead, "/admin/requests", "Requests")
         + Nav(who, Perm.RequestsRead, "/admin/sessions", "Sessions")
+        + Nav(who, Perm.RequestsDecide, "/admin/passkeys", "Passkeys")
         + Nav(who, Perm.AgentsRead, "/admin/agents", "Agents")
         + Nav(who, Perm.ProfilesManage, "/admin/profiles", "Profiles")
         + Nav(who, Perm.AgentsRead, "/admin/reconcile", "Reconcile")
@@ -347,6 +348,42 @@ public static class AdminPages
                       + $"<input type=\"hidden\" name=\"email\" value=\"{H(e)}\">"
                       + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
                       + "<button class=\"no\">Revoke</button></form></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
+        return Shell(who, sb.ToString());
+    }
+
+    // ---- Remembered visitor devices (passkeys) -----------------------------
+
+    public static string VisitorPasskeys(AdminIdentity who, IReadOnlyList<VisitorPasskey> creds, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Remembered devices</h1>");
+        sb.Append("<p class=\"muted\">Visitor devices remembered after an approval — the cryptographic version of the "
+            + "allow list (“remember this IP / name”). Revoking blocks the device: it can no longer pass the gate.</p>");
+        if (creds.Count == 0)
+            sb.Append("<p class=\"muted\">None remembered.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Name</th><th>Scope</th><th>Fingerprint</th><th>State</th><th>Added</th><th>Last used</th><th></th></tr>");
+            foreach (var c in creds.OrderByDescending(c => c.CreatedAt))
+                sb.Append("<tr>")
+                  .Append($"<td>{Safe(c.Label, FieldKind.FreeText)}</td>")
+                  .Append($"<td><code>{H(c.Scope)}</code></td>")
+                  .Append($"<td><code>{H(c.Fingerprint)}</code></td>")
+                  .Append(c.Revoked
+                      ? "<td><span class=\"pill denied\">revoked</span></td>"
+                      : (c.BackupEligible ? "<td><span class=\"pill waiting\">synced</span></td>"
+                                          : "<td><span class=\"pill approved\">device-bound</span></td>"))
+                  .Append($"<td class=\"muted\">{H(ShortWhen(c.CreatedAt))}</td>")
+                  .Append($"<td class=\"muted\">{H(ShortWhen(c.LastUsedAt))}</td>")
+                  .Append(c.Revoked ? "<td></td>"
+                      : "<td><form class=\"inline\" method=\"post\" action=\"/admin/passkeys/revoke\" "
+                        + "onsubmit=\"return confirm('Block this device?')\">"
+                        + $"<input type=\"hidden\" name=\"credentialId\" value=\"{H(c.CredentialId)}\">"
+                        + $"<input type=\"hidden\" name=\"label\" value=\"{H(c.Label)}\">"
+                        + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                        + "<button class=\"no\">Revoke</button></form></td>")
                   .Append("</tr>");
             sb.Append("</table>");
         }

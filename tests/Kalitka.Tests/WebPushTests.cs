@@ -38,6 +38,19 @@ public class WebPushTests
     }
 
     [Fact]
+    public void Revoking_a_principals_devices_drops_its_push_subscriptions()
+    {
+        var store = new PushSubscriptionStore(new InMemoryConfigStore());
+        store.Add(new PushSubscription("https://push/1", "p", "a", "op-1", "now"));
+        store.Add(new PushSubscription("https://push/2", "p", "a", "op-1", "now"));
+        store.Add(new PushSubscription("https://push/3", "p", "a", "op-2", "now"));
+
+        Assert.Equal(2, store.RemoveForPrincipal("op-1"));
+        Assert.Empty(store.ForPrincipal("op-1"));
+        Assert.Single(store.ForPrincipal("op-2"));   // another operator's subscription is untouched
+    }
+
+    [Fact]
     public void Vapid_keys_are_generated_once_and_stable_across_instances()
     {
         var config = new InMemoryConfigStore();

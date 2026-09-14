@@ -7,6 +7,43 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-15
+
+### Added
+
+- **Passkey as a way past the gate — visitor login ([[fido2]] slice 1).** A visitor can now pass a
+  guarded host with a **passkey** instead of ringing the bell or Google sign-in — the fast path for
+  people on neither (the target German mid-market usually has Microsoft 365, i.e. no Google fast path
+  today). It is deliberately **not an identity provider**: a passkey recognises a credential *we*
+  registered, a cryptographic allowlist — the crypto version of today's weak "remember this IP /
+  name" (`aip`/`ain`).
+  - **A visitor cannot self-register** (that would be an IdP): "remember this device" is offered only
+    *after* a normal approval — the register endpoints require the session that approval just minted.
+  - **Login** proves a discoverable credential (no `allowCredentials`); on success the gate mints the
+    **same session a manual approval would**, per-host or domain-wide following `SessionScope` (the
+    0.4.0 lesson). Nothing bypasses: unguarded hosts are untouched, a **revoked key is blocked**, and
+    `WebAuthnRequireDeviceBound` refuses a cloud-synced passkey where policy demands a device-bound
+    one. Sign-counter clone detection and one-time login nonces as elsewhere.
+  - Separate `VisitorPasskeyStore`/`VisitorPasskeyService` — a distinct population from operator
+    passkeys (approvers) and agents (requesters): a visitor credential only lets its holder *in* and
+    can raise nothing. Reuses every WebAuthn crypto primitive. Admin `/admin/passkeys` lists
+    remembered devices (name, scope, fingerprint) and revokes them. New audit events
+    `passkey.remembered` / `passkey.used` / `passkey.revoked`. Built provider-neutral — no new
+    `google:` coupling, leaving room for the Microsoft/Entra provider seam next.
+
+### Changed
+
+- **Device audit vocabulary aligned** with `agent.*`: `webauthn.registered`→`device.enrolled`,
+  `webauthn.removed`→`device.revoked`, `webauthn.clone_alarm`→`device.clone_alarm`, so history
+  filters line up.
+- **Revoking a device now also drops that operator's push subscriptions**, so a revoked device stops
+  receiving pushes (they re-enable notifications on a device they still hold) — not just the key.
+
+### Tests
+
+11 new (visitor passkey register→login round-trip, per-host vs domain scope, revoke=blocked, replay,
+tamper, device-bound policy, endpoint auth; per-principal push removal). Core suite 396.
+
 ## [0.41.0] - 2026-09-14
 
 ### Added
