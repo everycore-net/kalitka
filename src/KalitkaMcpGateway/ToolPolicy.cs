@@ -15,27 +15,33 @@ public sealed record ToolClass(ClassKind Kind, int RequiredApprovals = 1)
     public static ToolClass Approval(int required = 1) => new(ClassKind.NeedsApproval, Math.Max(1, required));
 }
 
-/// <summary>Resolves a tool's class from policy. A tool that is not in the policy — including one
-/// that appeared after an upstream update (inventory drift) — resolves to
-/// <see cref="ToolClass.Unclassified"/>, which the gate never auto-allows.</summary>
+/// <summary>
+/// Resolves a tool's class from policy, bound to the exact tool <b>contract</b> an admin
+/// classified (the hash of its canonical input schema). This is how inventory drift stays safe:
+/// a new tool, a renamed tool, or a tool whose schema changed all resolve to
+/// <see cref="ToolClass.Unclassified"/> — which the gate never auto-allows — until an admin
+/// classifies that specific contract. Classifying by name alone would let a retyped tool inherit
+/// the old tool's trust.
+/// </summary>
 public interface IToolClassifier
 {
-    ToolClass Classify(string upstreamAlias, string tool);
+    ToolClass Classify(string upstreamAlias, string tool, string contractHashHex);
 }
 
-/// <summary>A simple table-driven classifier keyed by <c>alias/tool</c>. Absent ⇒ unclassified.</summary>
+/// <summary>A table-driven classifier keyed by <c>alias/tool/contract-hash</c>. Absent ⇒
+/// unclassified.</summary>
 public sealed class DictionaryToolClassifier : IToolClassifier
 {
     private readonly Dictionary<string, ToolClass> _table = new(StringComparer.Ordinal);
 
-    public DictionaryToolClassifier Set(string upstreamAlias, string tool, ToolClass cls)
+    public DictionaryToolClassifier Set(string upstreamAlias, string tool, string contractHashHex, ToolClass cls)
     {
-        _table[Key(upstreamAlias, tool)] = cls;
+        _table[Key(upstreamAlias, tool, contractHashHex)] = cls;
         return this;
     }
 
-    public ToolClass Classify(string upstreamAlias, string tool) =>
-        _table.TryGetValue(Key(upstreamAlias, tool), out var c) ? c : ToolClass.Unclassified;
+    public ToolClass Classify(string upstreamAlias, string tool, string contractHashHex) =>
+        _table.TryGetValue(Key(upstreamAlias, tool, contractHashHex), out var c) ? c : ToolClass.Unclassified;
 
-    private static string Key(string alias, string tool) => alias + "/" + tool;
+    private static string Key(string alias, string tool, string hash) => alias + "/" + tool + "@" + hash;
 }
