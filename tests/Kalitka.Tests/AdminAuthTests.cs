@@ -23,8 +23,10 @@ public class AdminAuthTests
             AdminSessionMinutes = 480,
         });
         var google = new GoogleAuth(new HttpClient(), opts, NullLogger<GoogleAuth>.Instance);
-        return new AdminAuth(google, new TokenSigner(secret), opts, clock);
+        return new AdminAuth(Registry(google), new TokenSigner(secret), opts, clock);
     }
+
+    private static IdentityProviders Registry(IIdentityProvider p) => new(new[] { p });
 
     private static FakeTimeProvider ClockAt() => new(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
 
@@ -135,7 +137,7 @@ public class AdminAuthTests
             ApproverEmails = new[] { "appr@example.com", "both@example.com" },
             AgentAdminEmails = new[] { "agent@example.com", "both@example.com" },
         });
-        var a = new AdminAuth(new GoogleAuth(new HttpClient(), opts, NullLogger<GoogleAuth>.Instance),
+        var a = new AdminAuth(Registry(new GoogleAuth(new HttpClient(), opts, NullLogger<GoogleAuth>.Instance)),
             new TokenSigner(Secret), opts, ClockAt());
 
         Assert.True(a.ResolvePermissions("boss@example.com").SetEquals(Perm.All));           // full admin
@@ -171,7 +173,7 @@ public class AdminAuthTests
             GoogleClientId = "cid", GoogleClientSecret = "csecret",
             AdminEmails = emails, AdminSessionMinutes = 480,
         });
-        return (new AdminAuth(new FakeGoogle(identity, opts), new TokenSigner(Secret), opts, clock), clock);
+        return (new AdminAuth(Registry(new FakeGoogle(identity, opts)), new TokenSigner(Secret), opts, clock), clock);
     }
 
     private static string StateFrom(string authorizationUrl)
@@ -185,7 +187,7 @@ public class AdminAuthTests
     public async Task Login_completes_for_a_permitted_identity_with_the_matching_nonce()
     {
         var (a, _) = LoginAuth(("admin@example.com", "sub-1"), new[] { "admin@example.com" });
-        var state = StateFrom(a.LoginUrl("/admin/agents", "nonce1"));
+        var state = StateFrom(a.LoginUrl("google", "/admin/agents", "nonce1"));
 
         var r = await a.CompleteLogin("code", state, "nonce1", default);
         Assert.True(r.Ok);
@@ -197,7 +199,7 @@ public class AdminAuthTests
     public async Task Login_requires_the_matching_browser_nonce()
     {
         var (a, _) = LoginAuth(("admin@example.com", "sub-1"), new[] { "admin@example.com" });
-        var state = StateFrom(a.LoginUrl("/admin/dashboard", "nonce1"));
+        var state = StateFrom(a.LoginUrl("google", "/admin/dashboard", "nonce1"));
 
         Assert.False((await a.CompleteLogin("code", state, "wrong-nonce", default)).Ok);   // another browser
         Assert.False((await a.CompleteLogin("code", state, "", default)).Ok);              // no login cookie
@@ -207,7 +209,7 @@ public class AdminAuthTests
     public async Task Login_rejects_tampered_or_expired_state_and_empty_code()
     {
         var (a, clock) = LoginAuth(("admin@example.com", "sub-1"), new[] { "admin@example.com" });
-        var state = StateFrom(a.LoginUrl("/admin/dashboard", "n"));
+        var state = StateFrom(a.LoginUrl("google", "/admin/dashboard", "n"));
 
         var tampered = state[..^1] + (state[^1] == 'a' ? 'b' : 'a');
         Assert.False((await a.CompleteLogin("code", tampered, "n", default)).Ok);
@@ -221,17 +223,17 @@ public class AdminAuthTests
     public async Task Login_refuses_an_identity_not_on_the_allowlist_or_unresolved()
     {
         var notListed = LoginAuth(("nope@other.com", "s"), new[] { "admin@example.com" }).auth;
-        Assert.False((await notListed.CompleteLogin("code", StateFrom(notListed.LoginUrl("/", "n")), "n", default)).Ok);
+        Assert.False((await notListed.CompleteLogin("code", StateFrom(notListed.LoginUrl("google", "/", "n")), "n", default)).Ok);
 
         var unresolved = LoginAuth(null, new[] { "admin@example.com" }).auth;   // Google returned nothing
-        Assert.False((await unresolved.CompleteLogin("code", StateFrom(unresolved.LoginUrl("/", "n")), "n", default)).Ok);
+        Assert.False((await unresolved.CompleteLogin("code", StateFrom(unresolved.LoginUrl("google", "/", "n")), "n", default)).Ok);
     }
 
     [Fact]
     public async Task Login_never_returns_to_an_off_site_path()
     {
         var (a, _) = LoginAuth(("admin@example.com", "sub-1"), new[] { "admin@example.com" });
-        var state = StateFrom(a.LoginUrl("//evil.com/x", "n"));   // protocol-relative open redirect
+        var state = StateFrom(a.LoginUrl("google", "//evil.com/x", "n"));   // protocol-relative open redirect
 
         var r = await a.CompleteLogin("code", state, "n", default);
         Assert.True(r.Ok);

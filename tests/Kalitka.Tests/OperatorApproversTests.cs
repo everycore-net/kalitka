@@ -30,8 +30,9 @@ public class OperatorApproversTests
         var store = new InMemoryConfigStore();
         var approvers = Svc(store);
         var opts = Options.Create(new GateOptions());   // no static ApproverEmails
-        var auth = new AdminAuth(new GoogleAuth(new HttpClient(), opts,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<GoogleAuth>.Instance),
+        var google = new GoogleAuth(new HttpClient(), opts,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GoogleAuth>.Instance);
+        var auth = new AdminAuth(new IdentityProviders(new IIdentityProvider[] { google }),
             new TokenSigner("k"), opts, new FakeTimeProvider(), approvers);
 
         Assert.Empty(auth.ResolvePermissions("bob@example.com"));

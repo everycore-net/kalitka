@@ -115,17 +115,23 @@ public static class AdminPages
 
     // ---- Login (unauthenticated) -------------------------------------------
 
-    public static string Login(bool enabled, string? error = null) =>
-        Head + "<div class=\"wrap\"><div class=\"card\">"
-        + $"<div class=\"brand\" style=\"margin-bottom:12px\"><img class=\"mark\" src=\"{Brand.IconDataUri}\" alt=\"\" width=\"28\" height=\"28\" style=\"width:28px;height:28px\"><b style=\"color:#fff;font-size:1.1rem\">kalitka</b></div>"
-        + "<h1>kalitka · control plane</h1>"
-        + (error is null ? "" : $"<p style=\"color:#ff6b6b\">{H(error)}</p>")
-        + (enabled
-            ? "<a class=\"sso\" href=\"/admin/login/google\">Sign in with Google</a>"
-              + "<p class=\"muted\">Only listed administrators may sign in.</p>"
-            : "<p class=\"muted\">The web control plane is not configured. Set "
-              + "<code>AdminEmails</code> (and Google sign-in). Telegram approval works regardless.</p>")
-        + "</div></div>" + Foot;
+    public static string Login(IReadOnlyList<(string Scheme, string Name)> providers, string? error = null)
+    {
+        var sb = new StringBuilder(Head + "<div class=\"wrap\"><div class=\"card\">"
+            + $"<div class=\"brand\" style=\"margin-bottom:12px\"><img class=\"mark\" src=\"{Brand.IconDataUri}\" alt=\"\" width=\"28\" height=\"28\" style=\"width:28px;height:28px\"><b style=\"color:#fff;font-size:1.1rem\">kalitka</b></div>"
+            + "<h1>kalitka · control plane</h1>"
+            + (error is null ? "" : $"<p style=\"color:#ff6b6b\">{H(error)}</p>"));
+        if (providers.Count > 0)
+        {
+            foreach (var (scheme, name) in providers)
+                sb.Append($"<a class=\"sso\" href=\"/admin/login/{H(scheme)}\">Sign in with {H(name)}</a>");
+            sb.Append("<p class=\"muted\">Only listed administrators may sign in.</p>");
+        }
+        else
+            sb.Append("<p class=\"muted\">The web control plane is not configured. Set "
+                + "<code>AdminEmails</code> and a sign-in provider (Google or Microsoft). Telegram approval works regardless.</p>");
+        return sb.Append("</div></div>" + Foot).ToString();
+    }
 
     // ---- Dashboard ----------------------------------------------------------
 

@@ -17,11 +17,23 @@ namespace Kalitka;
 // Not sealed, and ResolveIdentity is virtual, so a test double can supply a verified
 // identity without the real Google round-trip — this is what makes the login callback,
 // the allowlist gate, and the session-cookie attributes testable end to end.
-public class GoogleAuth
+public class GoogleAuth : IIdentityProvider
 {
     private readonly HttpClient _http;
     private readonly GateOptions _options;
     private readonly ILogger<GoogleAuth> _log;
+
+    // ---- IIdentityProvider seam (the provider-neutral face) ----------------
+    public string Scheme => "google";
+    public string DisplayName => "Google";
+
+    /// <summary>The seam's resolve: the existing (virtual) <see cref="ResolveIdentity"/> — so test
+    /// doubles that override it keep working — wrapped into a provider-neutral identity.</summary>
+    public async Task<ProvenIdentity?> Resolve(string code, string redirectUri, CancellationToken ct)
+    {
+        var id = await ResolveIdentity(code, redirectUri, ct);
+        return id is null ? null : new ProvenIdentity(Scheme, id.Value.Sub, id.Value.Email);
+    }
 
     public GoogleAuth(HttpClient http, IOptions<GateOptions> options, ILogger<GoogleAuth> log)
     {
