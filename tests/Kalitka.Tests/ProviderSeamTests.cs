@@ -17,6 +17,7 @@ public class ProviderSeamTests
         public bool Enabled => enabled;
         public string AuthorizationUrl(string state, string redirectUri) => $"https://idp/authorize?state={Uri.EscapeDataString(state)}";
         public Task<ProvenIdentity?> Resolve(string code, string redirectUri, CancellationToken ct) => Task.FromResult(identity);
+        public bool IsPermitted(string email) => true;
     }
 
     [Fact]
@@ -58,6 +59,16 @@ public class ProviderSeamTests
         // The session cookie round-trips the scheme, so the actor is stable across requests.
         var who = auth.ReadCookie(auth.IssueCookie(r.Identity));
         Assert.Equal("ms:T1:O1", who!.Actor);
+    }
+
+    [Fact]
+    public void The_visitor_form_offers_a_button_per_provider()
+    {
+        var html = Pages.Form(Lang.En, "app.example.com", false,
+            new[] { ("google", "Google"), ("ms", "Microsoft") });
+        Assert.Contains("/login/google?target=app.example.com", html);
+        Assert.Contains("/login/ms?target=app.example.com", html);
+        Assert.Contains("Sign in with Microsoft", html);
     }
 
     [Fact]

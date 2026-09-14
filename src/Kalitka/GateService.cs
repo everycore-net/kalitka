@@ -60,8 +60,8 @@ public sealed class GateService
     public string BuildIdentitySession(string target) => _engine.BuildIdentitySession(target);
     public bool IsCookieValid(string? cookie, string host) => _engine.IsCookieValid(cookie, host);
 
-    public string BuildState(string target, string nonce) => _engine.BuildState(target, nonce);
-    public bool TryReadState(string state, string nonce, out string target) => _engine.TryReadState(state, nonce, out target);
+    public string BuildState(string target, string nonce, string scheme = "google") => _engine.BuildState(target, nonce, scheme);
+    public bool TryReadState(string state, string nonce, out string target, out string scheme) => _engine.TryReadState(state, nonce, out target, out scheme);
 
     // ---- Hosts and policies (engine) ----------------------------------------
 

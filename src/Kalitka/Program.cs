@@ -233,8 +233,22 @@ app.MapGet("/icon.png", () =>
 // ---------------------------------------------------------------------------
 app.MapGet("/enroll", (HttpContext ctx, EnrollService enroll) =>
 {
+    var t = ctx.Request.Query["t"].ToString();
+    var idp = ctx.Request.Query["idp"].ToString();
+    var choices = enroll.ProviderChoices;
+
+    // Which provider to sign in with: an explicit ?idp, else the only one, else show a picker.
+    if (string.IsNullOrEmpty(idp))
+    {
+        if (choices.Count == 1) idp = choices[0].Scheme;
+        else if (choices.Count == 0)
+            return Results.Content(AppPages.Notice("Enrolment", "No sign-in provider is configured."), "text/html; charset=utf-8");
+        else
+            return Results.Content(AppPages.EnrollPicker(t, choices), "text/html; charset=utf-8");
+    }
+
     var nonce = NewStateNonce();
-    var url = enroll.StartUrl(ctx.Request.Query["t"].ToString(), nonce);
+    var url = enroll.StartUrl(idp, t, nonce);
     if (url is null)
         return Results.Content(AppPages.Notice("Enrolment", "This enrolment link is invalid or has expired."), "text/html; charset=utf-8");
     SetStateCookie(ctx, "kalitka_enroll_state", "/enroll", nonce);
@@ -302,11 +316,11 @@ app.MapMethods("/authz/{*rest}", new[] { "GET", "HEAD" }, authzCheck);
 // ---------------------------------------------------------------------------
 // What the visitor sees
 // ---------------------------------------------------------------------------
-app.MapGet("/request", (HttpContext ctx, GoogleAuth google) =>
-    Results.Content(Pages.Form(VisitorLang(ctx), ctx.Request.Query["target"].ToString(), false, google.Enabled),
+app.MapGet("/request", (HttpContext ctx, IdentityProviders providers) =>
+    Results.Content(Pages.Form(VisitorLang(ctx), ctx.Request.Query["target"].ToString(), false, VisitorProviders(providers)),
         "text/html; charset=utf-8"));
 
-app.MapPost("/request", async (HttpContext ctx, GateService gate, GoogleAuth google) =>
+app.MapPost("/request", async (HttpContext ctx, GateService gate, IdentityProviders providers) =>
 {
     var form = await ctx.Request.ReadFormAsync();
     var target = form["target"].ToString();
@@ -329,7 +343,7 @@ app.MapPost("/request", async (HttpContext ctx, GateService gate, GoogleAuth goo
         // Refused and blocked look the same on purpose: a blocked caller should
         // not learn that they are blocked.
         "blocked" => Results.Content(Pages.Message(lang, s.RefusedTitle, s.AccessDenied), "text/html; charset=utf-8"),
-        "invalid" => Results.Content(Pages.Form(lang, target, error: true, google.Enabled), "text/html; charset=utf-8"),
+        "invalid" => Results.Content(Pages.Form(lang, target, error: true, VisitorProviders(providers)), "text/html; charset=utf-8"),
         // Pass the visitor's name as the label so a remembered device (passkey) is recognisable later.
         _         => Results.Content(Pages.Waiting(lang, id, target, input), "text/html; charset=utf-8")
     };
@@ -399,19 +413,22 @@ app.MapPost("/passkey/register/finish", async (HttpContext ctx, GateService gate
 // ---------------------------------------------------------------------------
 // Google sign-in: the second way in, for people who should not have to wait
 // ---------------------------------------------------------------------------
-app.MapGet("/google/login", (HttpContext ctx, GateService gate, GoogleAuth google) =>
+app.MapGet("/login/{scheme}", (HttpContext ctx, GateService gate, IdentityProviders providers, string scheme) =>
 {
-    if (!google.Enabled) return Results.NotFound();
+    var provider = providers.ByScheme(scheme);
+    if (provider is null) return Results.NotFound();
 
     var target = ctx.Request.Query["target"].ToString();
     if (!gate.IsGuardedHost(target)) return Results.BadRequest();
 
     var nonce = NewStateNonce();
     SetStateCookie(ctx, "kalitka_oauth_state", "/", nonce);
-    return Results.Redirect(google.AuthorizationUrl(gate.BuildState(target, nonce)), false);
+    // The scheme rides in the signed state; the callback (one shared route) finishes with it.
+    return Results.Redirect(provider.AuthorizationUrl(gate.BuildState(target, nonce, scheme),
+        $"https://{gate.GateHost}/oauth2/callback"), false);
 });
 
-app.MapGet("/oauth2/callback", async (HttpContext ctx, GateService gate, GoogleAuth google) =>
+app.MapGet("/oauth2/callback", async (HttpContext ctx, GateService gate, IdentityProviders providers) =>
 {
     var code = ctx.Request.Query["code"].ToString();
     var state = ctx.Request.Query["state"].ToString();
@@ -419,16 +436,19 @@ app.MapGet("/oauth2/callback", async (HttpContext ctx, GateService gate, GoogleA
     ClearStateCookie(ctx, "kalitka_oauth_state", "/");
 
     var s = L10n.For(VisitorLang(ctx));
-    if (string.IsNullOrEmpty(code) || !gate.TryReadState(state, nonce, out var target) || !gate.IsGuardedHost(target))
+    if (string.IsNullOrEmpty(code) || !gate.TryReadState(state, nonce, out var target, out var scheme) || !gate.IsGuardedHost(target))
         return Results.Content(Pages.Message(VisitorLang(ctx), s.ErrorTitle, s.SigninInvalid),
             "text/html; charset=utf-8");
 
-    var email = await google.ResolveEmail(code, ctx.RequestAborted);
-    if (email is null || !google.IsPermitted(email))
+    var provider = providers.ByScheme(scheme);
+    var identity = provider is null ? null : await provider.Resolve(code, $"https://{gate.GateHost}/oauth2/callback", ctx.RequestAborted);
+    // The provider's own visitor allowlist is the fast-path gate (Google domains/addresses, Entra
+    // tenant/domain). Identity keyed on scheme:subject, never the e-mail.
+    if (identity is null || !provider!.IsPermitted(identity.Email))
         return Results.Content(Pages.Message(VisitorLang(ctx), s.RefusedTitle, s.GoogleNotPermitted),
             "text/html; charset=utf-8");
 
-    Audit.Decision(app.Logger, "approved", target, ResolveIp(ctx, gate), identity: email, reason: "google");
+    Audit.Decision(app.Logger, "approved", target, ResolveIp(ctx, gate), identity: identity.Email, reason: scheme);
 
     // A proven identity earns a session scoped by SessionScope: the one host it
     // signed in for (Application, the default), or every guarded host under the
@@ -1618,6 +1638,10 @@ static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
     || !SecretEquals(ctx.Request.Headers["X-Kalitka-Internal"].ToString(), gate.InternalSecret)
         ? Results.StatusCode(403)
         : null;
+
+// The enabled sign-in providers as (scheme, name) for the visitor form's buttons.
+static IReadOnlyList<(string Scheme, string Name)> VisitorProviders(IdentityProviders providers) =>
+    providers.Enabled.Select(p => (p.Scheme, p.DisplayName)).ToList();
 
 // A WebAuthn "begin" response: the ceremony options (already JSON) plus the stateless state token.
 // The options are embedded raw so they are not double-encoded as a string.

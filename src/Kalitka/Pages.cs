@@ -89,17 +89,19 @@ async function kalitkaPasskeyRemember(target,label,then){
 }
 </script>";
 
-    public static string Form(Lang lang, string target, bool error = false, bool googleEnabled = false)
+    public static string Form(Lang lang, string target, bool error = false,
+        IReadOnlyList<(string Scheme, string Name)>? providers = null)
     {
         var s = L10n.For(lang);
+        // A sign-in button per configured provider (Google, Microsoft, …) — the fast paths.
+        var sso = string.Concat((providers ?? Array.Empty<(string, string)>()).Select(p =>
+            $"<a class=\"sso\" href=\"/login/{H(p.Scheme)}?target={Uri.EscapeDataString(target)}\">Sign in with {H(p.Name)}</a>"));
         return Head(s)
             + $"<h1>{H(s.DocTitle)}</h1>"
             + $"<p class=\"tag\">{H(s.Tagline)}</p>"
             + $"<p>{H(s.TargetLabel)}: <code>{H(target)}</code></p>"
             + (error ? $"<p style=\"color:#ff6b6b\">{H(s.InvalidInput)}</p>" : "")
-            + (googleEnabled
-                ? $"<a class=\"sso\" href=\"/google/login?target={Uri.EscapeDataString(target)}\">{H(s.SignInGoogle)}</a>"
-                : "")
+            + sso
             // A remembered device (passkey) is a fast path like Google, and the first for people with
             // neither. It only works for a device already remembered after an approval; a stranger just
             // rings the bell below.

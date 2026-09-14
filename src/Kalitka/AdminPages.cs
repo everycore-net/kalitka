@@ -317,7 +317,7 @@ public static class AdminPages
     {
         var sb = new StringBuilder("<h1>Enrol a device</h1>");
         sb.Append("<p class=\"muted\">Invite a person to enrol their phone. The link is one-time and must end in a "
-            + "Google sign-in as the invited address, so an intercepted invite cannot enrol a stranger. On enrolment "
+            + "an IdP sign-in as the invited address, so an intercepted invite cannot enrol a stranger. On enrolment "
             + "they are granted approve rights and can register a passkey and turn on notifications.</p>");
 
         if (!string.IsNullOrEmpty(issuedLink))
@@ -327,12 +327,12 @@ public static class AdminPages
               // secret to photograph. Shown only here, to the signed-in admin — never e-mailed.
               .Append($"<div style=\"background:#fff;display:inline-block;padding:10px;border-radius:10px;margin:10px 0\">{Qr.Svg(issuedLink)}</div>")
               .Append($"<p><code style=\"word-break:break-all\">{H(issuedLink)}</code></p>")
-              .Append("<p class=\"muted\">Opens on their phone → Google sign-in as the invited address → register device. "
+              .Append("<p class=\"muted\">Opens on their phone → an IdP sign-in as the invited address → register device. "
                   + "One-time, expires in minutes.</p></div>");
 
         sb.Append("<form method=\"post\" action=\"/admin/enroll/invite\">")
           .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
-          .Append("<p><label>Invited e-mail (their Google account)<br>"
+          .Append("<p><label>Invited e-mail (their Google or Microsoft account)<br>"
               + "<input name=\"email\" type=\"email\" required style=\"padding:9px;border-radius:8px;border:1px solid #2a3140;background:#0f1117;color:#e6e6e6;min-width:280px\"></label></p>")
           .Append("<p><label>Display name<br>"
               + "<input name=\"displayName\" style=\"padding:9px;border-radius:8px;border:1px solid #2a3140;background:#0f1117;color:#e6e6e6;min-width:280px\"></label></p>")

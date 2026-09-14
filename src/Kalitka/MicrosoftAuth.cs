@@ -129,6 +129,22 @@ public class MicrosoftAuth : IIdentityProvider
         return new ProvenIdentity(Scheme, $"{tid}:{oid}", email ?? "");
     }
 
+    /// <summary>Visitor fast-path allowlist. A listed address or domain passes; with neither list,
+    /// tenant-wide entry is allowed only when the tenant is explicitly restricted
+    /// (<see cref="GateOptions.MicrosoftAllowedTenants"/>) — otherwise fail closed, so a multi-tenant
+    /// authority can never silently let the whole world in.</summary>
+    public bool IsPermitted(string email)
+    {
+        email = (email ?? "").Trim().ToLowerInvariant();
+        if (_options.MicrosoftEmails.Any(x => string.Equals(x.Trim(), email, StringComparison.OrdinalIgnoreCase))) return true;
+        var at = email.LastIndexOf('@');
+        if (at >= 0 && _options.MicrosoftDomains.Any(d => string.Equals(d.Trim(), email[(at + 1)..], StringComparison.OrdinalIgnoreCase)))
+            return true;
+        // No address/domain list: trust the tenant gate — but only if it actually restricts tenants.
+        return _options.MicrosoftEmails.Length == 0 && _options.MicrosoftDomains.Length == 0
+            && _options.MicrosoftAllowedTenants.Length > 0;
+    }
+
     private static string? Str(JsonElement o, string name) =>
         o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 }

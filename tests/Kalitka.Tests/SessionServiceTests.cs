@@ -66,13 +66,13 @@ public class SessionServiceTests
         var s = Svc(clock);
 
         var state = s.BuildState("app.example.com", "nonce-abc");
-        Assert.True(s.TryReadState(state, "nonce-abc", out var target));
+        Assert.True(s.TryReadState(state, "nonce-abc", out var target, out _));
         Assert.Equal("app.example.com", target);
 
-        Assert.False(s.TryReadState(state[..^1] + (state[^1] == 'a' ? 'b' : 'a'), "nonce-abc", out _));
+        Assert.False(s.TryReadState(state[..^1] + (state[^1] == 'a' ? 'b' : 'a'), "nonce-abc", out _, out _));
 
         clock.Advance(TimeSpan.FromMinutes(11));   // state lives 10 minutes
-        Assert.False(s.TryReadState(state, "nonce-abc", out _));
+        Assert.False(s.TryReadState(state, "nonce-abc", out _, out _));
     }
 
     [Fact]
@@ -82,9 +82,9 @@ public class SessionServiceTests
         var s = Svc(clock);
 
         var state = s.BuildState("app.example.com", "nonce-abc");
-        Assert.False(s.TryReadState(state, "nonce-xyz", out _));   // wrong browser
-        Assert.False(s.TryReadState(state, "", out _));            // no login cookie
-        Assert.True(s.TryReadState(state, "nonce-abc", out _));    // right browser
+        Assert.False(s.TryReadState(state, "nonce-xyz", out _, out _));   // wrong browser
+        Assert.False(s.TryReadState(state, "", out _, out _));            // no login cookie
+        Assert.True(s.TryReadState(state, "nonce-abc", out _, out _));    // right browser
     }
 
     // ---- rotation overlap: previous secret accepted on verify only --------------
@@ -133,7 +133,7 @@ public class SessionServiceTests
         var state = new SessionService(OldSecret, clock).BuildState("app.example.com", "nonce-abc");
 
         var rotated = new SessionService(NewSecret, clock, previousSecret: OldSecret);
-        Assert.True(rotated.TryReadState(state, "nonce-abc", out var target));
+        Assert.True(rotated.TryReadState(state, "nonce-abc", out var target, out _));
         Assert.Equal("app.example.com", target);
     }
 }
