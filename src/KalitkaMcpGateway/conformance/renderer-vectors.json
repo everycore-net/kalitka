@@ -1,0 +1,12 @@
+{
+  "note": "Conformance vectors for the human-safe renderer (SafeText). kind: 'id' = SecurityIdentifier, 'free' = FreeText. A conforming renderer must produce the given risk, and (where present) the skeleton and weakest-channel text_markers. Pinned to Unicode 15.1 (see Unicode.UnicodeVersion); the confusable table is a curated subset pending the build-generated full UTS #39 table.",
+  "cases": [
+    { "name": "plain ascii identifier", "input": "prod-web-01", "kind": "id", "risk": "None", "skeleton": "prod-web-01", "text_markers": "prod-web-01" },
+    { "name": "single national script is not a warning", "input": "Сергей", "kind": "id", "risk": "None" },
+    { "name": "cyrillic-o spoof of an ascii host", "input": "prоd-web-01", "kind": "id", "risk": "HighRisk", "skeleton": "prod-web-01", "text_markers": "[!] prоd-web-01" },
+    { "name": "latin + han mixed, no confusable", "input": "web中", "kind": "id", "risk": "Warning" },
+    { "name": "cyrillic-a admin spoof", "input": "аdmin", "kind": "id", "risk": "HighRisk", "skeleton": "admin", "text_markers": "[!] аdmin" },
+    { "name": "bidi override in a filename", "input": "file‮gpj.exe", "kind": "id", "risk": "HighRisk", "text_markers": "[!] file[U+202E RLO]gpj.exe" },
+    { "name": "free-text reason with cyrillic is not flagged", "input": "нужно web", "kind": "free", "risk": "None", "text_markers": "нужно web" }
+  ]
+}
