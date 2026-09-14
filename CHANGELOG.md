@@ -7,6 +7,34 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-09-14
+
+### Security
+
+- **`subject.assert` treated as a sudo-grade capability — loud to grant, loud to revoke.**
+  With subject approval live (0.30.1), an agent holding `subject.assert` can assert *who the
+  subject is*, and that assertion feeds both authorization and the quorum. That is authority
+  over the decision, not just the ability to raise a request — so a generic agent must never
+  carry it (only the Windows/macOS trusted executor should), and handing it out or taking it
+  back must never be a quiet line in a diff.
+  - **Its own audit event.** Granting `subject.assert` at agent creation, at enrollment-token
+    mint, or via reconcile now emits a distinct `agent.privileged_capability`
+    event (`granted`/`revoked` <cap>) alongside the ordinary enrollment/profile-applied entry —
+    queryable on its own, not buried in a metadata blob.
+  - **Marked in the reconcile diff and the admin UI.** A privileged capability shows with a
+    `!` marker in the profile-applied audit diff (`caps: +!subject.assert`) and a distinct
+    `privileged` pill / badge on the reconcile overview, the agent detail page, and the
+    profiles table — impossible to miss beside an ordinary capability run.
+  - No new grant path: the 0.16-0.17 snapshot/reconcile model already guarantees that editing
+    a profile never arms an already-enrolled agent. A grant still requires a deliberate,
+    confirmed reconcile (it is an expansion); this slice only makes that grant conspicuous.
+
+### Notes
+
+- No schema change; store layer untouched. `AgentCapabilities.Privileged` is the single
+  source of truth for what counts as sudo-grade (today: `subject.assert`), so future
+  capabilities of this class inherit the audit/diff/UI treatment automatically.
+
 ## [0.30.1] - 2026-09-13
 
 ### Security
