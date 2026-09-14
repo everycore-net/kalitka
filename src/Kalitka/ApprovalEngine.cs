@@ -89,7 +89,11 @@ public sealed class ApprovalEngine
     private readonly HashSet<string> _enforced = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _enforcedLock = new();   // also guards the config cache
     private static readonly TimeSpan ConfigTtl = TimeSpan.FromSeconds(10);
+    // A tightening (a newly armed host) must reach the bypass path faster than the TTL; disarming
+    // (a loosening) tolerates the full TTL. This bounds how fresh the snapshot must be to permit.
+    private static readonly TimeSpan ConfigGenWindow = TimeSpan.FromSeconds(1);
     private DateTimeOffset _configLoadedAt = DateTimeOffset.MinValue;
+    private ConfigGeneration _configGen = null!;   // set in the ctor once _config is known
     private readonly SessionService _sessions;
 
     private readonly List<IPNetwork> _trustedProxies;
@@ -119,6 +123,7 @@ public sealed class ApprovalEngine
         _audit = audit;
         _atomic = atomic;
         _config = config ?? new JsonFileConfigStore(options, log);
+        _configGen = new ConfigGeneration(_config, clock, ConfigGenWindow);
         _policies = policies;
         _principals = principals;
 
@@ -170,6 +175,7 @@ public sealed class ApprovalEngine
         foreach (var h in LoadEnforcedSet()) _enforced.Add(h);
         _sessionMinutes = LoadSessionMinutes();
         _configLoadedAt = _clock.GetUtcNow();
+        _configGen.Mark();   // this snapshot reflects the store's current generation
     }
 
     private IEnumerable<string> LoadEnforcedSet()
@@ -183,7 +189,22 @@ public sealed class ApprovalEngine
         return _options.EnforcedHosts;   // the configured default until the operator changes it
     }
 
-    public bool IsEnforced(string host) { lock (_enforcedLock) { RefreshConfig(); return _enforced.Contains(host); } }
+    public bool IsEnforced(string host)
+    {
+        lock (_enforcedLock)
+        {
+            RefreshConfig();
+            if (_enforced.Contains(host)) return true;   // armed: the safe direction, decide now
+
+            // Not armed → traffic would bypass the gate with no approval. A snapshot that missed an
+            // arming on another instance would wrongly permit, so confirm the generation before
+            // granting the bypass; a bump means reload and re-decide on fresh config.
+            if (_configGen.Fresh()) return false;
+            _configLoadedAt = DateTimeOffset.MinValue;
+            RefreshConfig();
+            return _enforced.Contains(host);
+        }
+    }
 
     public void SetEnforced(string host, bool on)
     {

@@ -536,7 +536,32 @@ public sealed class SqliteConfigStore : IConfigStore
             up.Parameters.AddWithValue("$v", next);
             up.ExecuteNonQuery();
         }
+
+        // Advance the shared generation in the same transaction as the write, so a reader can
+        // confirm its cached snapshot is current before granting authority. Single writer, so
+        // no contention on the counter.
+        using (var gen = conn.CreateCommand())
+        {
+            gen.Transaction = tx;
+            gen.CommandText =
+                "INSERT INTO config(key,value) VALUES($g,'1') " +
+                "ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(config.value AS INTEGER)+1 AS TEXT);";
+            gen.Parameters.AddWithValue("$g", GenerationKey);
+            gen.ExecuteNonQuery();
+        }
         tx.Commit();
+    }
+
+    // Reserved key; never used by callers, so it cannot collide with a real config blob.
+    private const string GenerationKey = "__generation__";
+
+    public long Generation()
+    {
+        using var conn = SqliteState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT value FROM config WHERE key=$k;";
+        cmd.Parameters.AddWithValue("$k", GenerationKey);
+        return cmd.ExecuteScalar() is string s && long.TryParse(s, out var v) ? v : 0;
     }
 }
 

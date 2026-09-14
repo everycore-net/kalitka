@@ -22,6 +22,14 @@ public interface IConfigStore
 {
     string? Get(string key);
     void Mutate(string key, Func<string?, string> update);
+
+    /// <summary>A monotonic counter that advances on every <see cref="Mutate"/>. Cheap to read — a
+    /// reader confirms its cached snapshot has not been superseded without re-reading and re-parsing
+    /// the whole blob, which is how a tightening propagates on the decision path faster than the
+    /// cache TTL (see <see cref="ConfigGeneration"/>). A shared backend (SQLite, Postgres) makes this
+    /// shared and monotonic <i>across instances</i>, advanced in the same transaction as the write;
+    /// the single-node backends keep it in process, which is all their single-instance scope needs.</summary>
+    long Generation();
 }
 
 /// <summary>Single-process config: a dictionary under a lock. For tests and the
@@ -30,6 +38,7 @@ public sealed class InMemoryConfigStore : IConfigStore
 {
     private readonly Dictionary<string, string> _d = new();
     private readonly object _lock = new();
+    private long _gen;
 
     public string? Get(string key)
     {
@@ -42,8 +51,11 @@ public sealed class InMemoryConfigStore : IConfigStore
         {
             _d.TryGetValue(key, out var cur);
             _d[key] = update(cur);
+            _gen++;
         }
     }
+
+    public long Generation() { lock (_lock) return _gen; }
 }
 
 /// <summary>
@@ -60,6 +72,7 @@ public sealed class JsonFileConfigStore : IConfigStore
     private readonly string _baseDir;
     private readonly ILogger _log;
     private readonly object _lock = new();
+    private long _gen;   // single-node: this backend is per-instance (see class remarks), so in-process is enough
 
     public JsonFileConfigStore(GateOptions o, ILogger log)
     {
@@ -108,8 +121,11 @@ public sealed class JsonFileConfigStore : IConfigStore
                 var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 File.WriteAllText(path, next);
+                _gen++;
             }
             catch (Exception e) { _log.LogWarning("Could not write {Path}: {Message}", path, e.Message); }
         }
     }
+
+    public long Generation() { lock (_lock) return _gen; }
 }

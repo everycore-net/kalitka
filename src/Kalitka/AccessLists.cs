@@ -43,11 +43,15 @@ public sealed class AccessLists
 
     private const string Key = "lists";
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(10);
+    // A tightening (a revoked allow) must reach the auto-permit path faster than the TTL; the deny
+    // path tolerates the full TTL. This bounds how fresh the snapshot must be before we auto-permit.
+    private static readonly TimeSpan GenWindow = TimeSpan.FromSeconds(1);
 
     private readonly IConfigStore _store;
     private readonly TimeProvider _clock;
     private readonly ILogger<AccessLists> _log;
     private readonly object _lock = new();
+    private readonly ConfigGeneration _gen;
     private List<Entry> _entries = new();
     private DateTimeOffset _loadedAt = DateTimeOffset.MinValue;
 
@@ -57,6 +61,7 @@ public sealed class AccessLists
         _log = log;
         _clock = clock ?? TimeProvider.System;
         _store = store ?? new JsonFileConfigStore(options.Value, log);
+        _gen = new ConfigGeneration(_store, _clock, GenWindow);
         lock (_lock) Reload();
     }
 
@@ -90,6 +95,7 @@ public sealed class AccessLists
         var (list, migrated) = Parse(blob);
         _entries = list;
         _loadedAt = _clock.GetUtcNow();
+        _gen.Mark();   // this snapshot reflects the store's current generation
 
         // Persist the migration once, atomically (another instance may have already).
         if (migrated)
@@ -138,14 +144,26 @@ public sealed class AccessLists
         return false;
     }
 
+    // A missed block (a tightening not yet seen) does not grant authority — the request is not
+    // auto-denied but still faces normal approval, so this direction rides the cache TTL.
     public bool IsBlocked(string resource, string ip, string subject, string country)
     {
         lock (_lock) { EnsureFresh(); return Matches("block", resource, ip, subject, country); }
     }
 
+    // Auto-permit: this GRANTS authority (straight through, no approval). A revoked allow is a
+    // tightening, so before honouring an allow on a snapshot that might have missed the revocation,
+    // confirm the generation and reload if it was superseded. Not-allowed is the safe direction.
     public bool IsAllowed(string resource, string ip, string subject)
     {
-        lock (_lock) { EnsureFresh(); return Matches("allow", resource, ip, subject, ""); }
+        lock (_lock)
+        {
+            EnsureFresh();
+            if (!Matches("allow", resource, ip, subject, "")) return false;
+            if (_gen.Fresh()) return true;
+            Reload();
+            return Matches("allow", resource, ip, subject, "");
+        }
     }
 
     public void Add(string list, string resource, string type, string value, string added)

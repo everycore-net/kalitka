@@ -84,6 +84,27 @@ public sealed class ConfigStoreTests : IDisposable
     }
 
     [Fact]
+    public void InMemory_generation_advances_on_every_mutate()
+    {
+        var s = new InMemoryConfigStore();
+        Assert.Equal(0, s.Generation());
+        s.Mutate("k", _ => "a");
+        s.Mutate("k", _ => "b");
+        Assert.Equal(2, s.Generation());
+    }
+
+    [Fact]
+    public void Sqlite_generation_advances_and_is_shared_across_instances()
+    {
+        var db = Path.Combine(_dir, "state.db");
+        new SqliteConfigStore(db).Mutate("enforced", _ => "[\"a\"]");
+        var afterOne = new SqliteConfigStore(db).Generation();
+        new SqliteConfigStore(db).Mutate("enforced", _ => "[\"a\",\"b\"]");
+        // A separate instance sees the advanced generation — it lives in the shared backend, not in memory.
+        Assert.Equal(afterOne + 1, new SqliteConfigStore(db).Generation());
+    }
+
+    [Fact]
     public void AccessLists_change_propagates_to_another_instance_within_the_ttl()
     {
         var store = new InMemoryConfigStore();   // shared "backend"
