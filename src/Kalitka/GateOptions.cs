@@ -232,6 +232,23 @@ public sealed class GateOptions
     public string[] GoogleDomains { get; set; } = Array.Empty<string>();
     public string[] GoogleEmails { get; set; } = Array.Empty<string>();
 
+    // ---- Microsoft / Entra sign-in (a second control-plane provider) -------
+    // Each self-hosting installer registers their own app in their Entra tenant and grants consent;
+    // redirect URI is the same /admin/oauth2/callback. Empty client id = the button is not shown.
+    public string MicrosoftClientId { get; set; } = "";
+    public string MicrosoftClientSecret { get; set; } = "";
+
+    /// <summary>The authority segment. A tenant GUID is the <b>safe default</b> (single-tenant: only
+    /// that tenant's users can even authenticate). <c>organizations</c>/<c>common</c> are multi-tenant
+    /// — then <see cref="MicrosoftAllowedTenants"/> is what stops any Microsoft account from signing
+    /// in (the admin allowlist is the only other barrier).</summary>
+    public string MicrosoftTenant { get; set; } = "organizations";
+
+    /// <summary>Tenant ids (<c>tid</c>) allowed to sign in. Required in practice for a multi-tenant
+    /// authority: identity is keyed on <c>tid+oid</c>, and an e-mail domain is only trustworthy when
+    /// it belongs to an allowed tenant (Entra has no verified-domain guarantee across tenants).</summary>
+    public string[] MicrosoftAllowedTenants { get; set; } = Array.Empty<string>();
+
     // ---- Web control plane (admin) -----------------------------------------
 
     /// <summary>

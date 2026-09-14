@@ -3,14 +3,15 @@ using Microsoft.Extensions.Options;
 namespace Kalitka;
 
 /// <summary>The verified operator behind an admin session.</summary>
-public sealed record AdminIdentity(string Sub, string Email)
+public sealed record AdminIdentity(string Sub, string Email, string Scheme = "google")
 {
     /// <summary>
-    /// Typed audit actor keyed on Google's stable <c>sub</c> (e.g.
-    /// <c>google:11476...</c>), not the e-mail — the e-mail is display/audit
-    /// identity and can change; the sub does not.
+    /// Typed audit actor keyed on the provider's stable subject (Google's <c>sub</c>, Microsoft's
+    /// <c>tid:oid</c>) — <c>scheme:sub</c>, e.g. <c>google:11476…</c> or <c>ms:&lt;tid&gt;:&lt;oid&gt;</c>.
+    /// Never the e-mail, which is display/audit identity and can change. Scheme defaults to
+    /// <c>google</c> so pre-provider-seam callers and sessions are unchanged.
     /// </summary>
-    public string Actor => $"google:{Sub}";
+    public string Actor => $"{Scheme}:{Sub}";
 
     /// <summary>Effective permissions for <b>this request</b>, resolved from the
     /// current config at guard time — never frozen into the cookie, so removing an
@@ -40,27 +41,35 @@ public sealed class AdminAuth
     private const int StateMinutes = 10;
 
     private readonly GateOptions _options;
-    private readonly GoogleAuth _google;
+    private readonly IdentityProviders _providers;
     private readonly TokenSigner _signer;
     private readonly TimeProvider _clock;
     private readonly OperatorApprovers? _approvers;
 
-    public AdminAuth(GoogleAuth google, TokenSigner signer, IOptions<GateOptions> options,
+    public AdminAuth(IdentityProviders providers, TokenSigner signer, IOptions<GateOptions> options,
         TimeProvider? clock = null, OperatorApprovers? approvers = null)
     {
-        _google = google;
+        _providers = providers;
         _signer = signer;
         _options = options.Value;
         _clock = clock ?? TimeProvider.System;
         _approvers = approvers;
     }
 
+    /// <summary>Where a provider sends the admin back — the same URI for every provider (each must
+    /// register it), distinguished by the scheme carried in the signed state.</summary>
+    public string AdminRedirectUri => $"https://{_options.GateHost}/admin/oauth2/callback";
+
+    /// <summary>The enabled providers, for the login page's buttons.</summary>
+    public IReadOnlyList<(string Scheme, string Name)> Providers =>
+        _providers.Enabled.Select(p => (p.Scheme, p.DisplayName)).ToList();
+
     /// <summary>
-    /// The plane can log in only if Google is configured and at least one
-    /// allowlist is populated. Neither list means fail closed — no admin login.
+    /// The plane can log in only if some provider is configured and at least one allowlist is
+    /// populated. Neither means fail closed — no admin login.
     /// </summary>
     public bool Enabled =>
-        _google.Enabled && (_options.AdminEmails.Length > 0 || _options.AdminDomains.Length > 0
+        _providers.Any && (_options.AdminEmails.Length > 0 || _options.AdminDomains.Length > 0
             || _options.ApproverEmails.Length > 0 || _options.AgentAdminEmails.Length > 0);
 
     /// <summary>Permitted to reach the control plane at all — i.e. holds at least one
@@ -114,11 +123,13 @@ public sealed class AdminAuth
     /// <summary>Google authorization URL for admin login, carrying a signed state
     /// with a short life, a browser-bound nonce (echoed in a login cookie), and the
     /// page to return to.</summary>
-    public string LoginUrl(string returnPath, string nonce)
+    public string LoginUrl(string scheme, string returnPath, string nonce)
     {
+        var provider = _providers.ByScheme(scheme);
+        if (provider is null) return "/admin/login";   // unknown/disabled provider → back to the picker
         var exp = _clock.GetUtcNow().AddMinutes(StateMinutes).ToUnixTimeSeconds();
-        var state = _signer.Sign($"{exp}|{nonce}|{SafeReturn(returnPath)}", StateKey);
-        return _google.AuthorizationUrl(state, _google.AdminRedirectUri);
+        var state = _signer.Sign($"{exp}|{nonce}|{scheme}|{SafeReturn(returnPath)}", StateKey);
+        return provider.AuthorizationUrl(state, AdminRedirectUri);
     }
 
     public sealed record LoginResult(bool Ok, AdminIdentity? Identity = null, string ReturnPath = "/admin/dashboard");
@@ -134,16 +145,18 @@ public sealed class AdminAuth
         if (string.IsNullOrEmpty(code) || !_signer.Verify(state, StateKey, out var payload))
             return new LoginResult(false);
 
-        var parts = payload.Split('|', 3);
-        if (parts.Length != 3 || !long.TryParse(parts[0], out var exp)) return new LoginResult(false);
+        var parts = payload.Split('|', 4);
+        if (parts.Length != 4 || !long.TryParse(parts[0], out var exp)) return new LoginResult(false);
         if (_clock.GetUtcNow().ToUnixTimeSeconds() > exp) return new LoginResult(false);
         if (!SessionService.NonceMatches(parts[1], nonce)) return new LoginResult(false);
-        var returnPath = SafeReturn(parts[2]);
+        var provider = _providers.ByScheme(parts[2]);
+        if (provider is null) return new LoginResult(false);
+        var returnPath = SafeReturn(parts[3]);
 
-        var identity = await _google.ResolveIdentity(code, _google.AdminRedirectUri, ct);
-        if (identity is null || !IsPermitted(identity.Value.Email)) return new LoginResult(false);
+        var identity = await provider.Resolve(code, AdminRedirectUri, ct);
+        if (identity is null || !IsPermitted(identity.Email)) return new LoginResult(false);
 
-        return new LoginResult(true, new AdminIdentity(identity.Value.Sub, identity.Value.Email), returnPath);
+        return new LoginResult(true, new AdminIdentity(identity.Subject, identity.Email, identity.Scheme), returnPath);
     }
 
     // ---- CSRF (stateless, bound to the session subject, with an expiry) ------
@@ -171,9 +184,9 @@ public sealed class AdminAuth
     public string IssueCookie(AdminIdentity who)
     {
         var exp = _clock.GetUtcNow().AddMinutes(_options.AdminSessionMinutes).ToUnixTimeSeconds();
-        // Email carries a '|'? It cannot — addresses have no pipe; still, sub is
-        // first and email last so a stray separator cannot shift the subject.
-        return _signer.Sign($"{exp}|{who.Sub}|{who.Email}", SessionKey);
+        // exp|scheme|sub|email — email/sub/scheme carry no '|', and email is last (greedy) so a stray
+        // separator cannot shift the earlier fields.
+        return _signer.Sign($"{exp}|{who.Scheme}|{who.Sub}|{who.Email}", SessionKey);
     }
 
     public AdminIdentity? ReadCookie(string? cookie)
@@ -181,16 +194,30 @@ public sealed class AdminAuth
         if (string.IsNullOrEmpty(cookie) || !_signer.Verify(cookie, SessionKey, out var payload))
             return null;
 
-        var parts = payload.Split('|', 3);
-        if (parts.Length != 3 || !long.TryParse(parts[0], out var exp)) return null;
+        // 4 parts (exp|scheme|sub|email) going forward; 3 parts (exp|sub|email) is a pre-seam Google
+        // session, still honoured.
+        var parts = payload.Split('|', 4);
+        string scheme, sub, email;
+        long exp;
+        if (parts.Length == 4)
+        {
+            if (!long.TryParse(parts[0], out exp)) return null;
+            scheme = parts[1]; sub = parts[2]; email = parts[3];
+        }
+        else if (parts.Length == 3)
+        {
+            if (!long.TryParse(parts[0], out exp)) return null;
+            scheme = "google"; sub = parts[1]; email = parts[2];
+        }
+        else return null;
+
         if (_clock.GetUtcNow().ToUnixTimeSeconds() > exp) return null;
 
-        // Re-check the allowlist on every read, not just at login: removing someone
-        // from AdminEmails/AdminDomains revokes their session now, not whenever the
-        // cookie happens to expire.
-        if (!IsPermitted(parts[2])) return null;
+        // Re-check the allowlist on every read, not just at login: removing someone from the lists
+        // revokes their session now, not whenever the cookie happens to expire.
+        if (!IsPermitted(email)) return null;
 
-        return new AdminIdentity(parts[1], parts[2]);
+        return new AdminIdentity(sub, email, scheme);
     }
 
     // Only same-site absolute paths are valid return targets — never an open

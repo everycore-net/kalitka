@@ -28,6 +28,12 @@ builder.Services.AddSingleton<IGeoLookup>(sp =>
     return new NullGeoLookup();
 });
 builder.Services.AddHttpClient<GoogleAuth>();
+// The control-plane sign-in providers behind one seam (Google, Microsoft/Entra). AdminAuth
+// dispatches through the registry; a new provider is one more registration here.
+builder.Services.AddHttpClient<MicrosoftAuth>();
+builder.Services.AddTransient<IIdentityProvider>(sp => sp.GetRequiredService<GoogleAuth>());
+builder.Services.AddTransient<IIdentityProvider>(sp => sp.GetRequiredService<MicrosoftAuth>());
+builder.Services.AddTransient<IdentityProviders>();
 builder.Services.AddSingleton<AccessLists>();
 builder.Services.AddSingleton<Metrics>();
 builder.Services.AddSingleton<WebAuthnStore>(sp => new WebAuthnStore(sp.GetRequiredService<IConfigStore>()));
@@ -842,16 +848,16 @@ adminGroup.MapGet("/login", (HttpContext ctx, AdminAuth auth) =>
     if (auth.ReadCookie(ctx.Request.Cookies[AdminAuth.CookieName]) is not null)
         return Results.Redirect("/admin/dashboard", false);
     var error = ctx.Request.Query["error"].ToString();
-    return Results.Content(AdminPages.Login(auth.Enabled, string.IsNullOrEmpty(error) ? null : error),
-        "text/html; charset=utf-8");
+    return Results.Content(AdminPages.Login(auth.Enabled ? auth.Providers : Array.Empty<(string, string)>(),
+        string.IsNullOrEmpty(error) ? null : error), "text/html; charset=utf-8");
 });
 
-adminGroup.MapGet("/login/google", (HttpContext ctx, AdminAuth auth) =>
+adminGroup.MapGet("/login/{scheme}", (HttpContext ctx, AdminAuth auth, string scheme) =>
 {
     if (!auth.Enabled) return Results.NotFound();
     var nonce = NewStateNonce();
     SetStateCookie(ctx, "kalitka_admin_state", "/admin", nonce);
-    return Results.Redirect(auth.LoginUrl(ctx.Request.Query["return"].ToString(), nonce), false);
+    return Results.Redirect(auth.LoginUrl(scheme, ctx.Request.Query["return"].ToString(), nonce), false);
 });
 
 adminGroup.MapGet("/oauth2/callback", async (HttpContext ctx, AdminAuth auth, GateService gate, IAuditStore audit, ILogger<Program> log) =>

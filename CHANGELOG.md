@@ -7,6 +7,35 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-09-15
+
+### Added
+
+- **Sign-in provider seam + Microsoft/Entra for the control plane.** The admin login was Google-only;
+  the German mid-market it targets usually runs Microsoft 365 and had no fast path. A thin
+  `IIdentityProvider` seam (`AuthorizationUrl` + `Resolve` → a provider-neutral `ProvenIdentity`) now
+  sits behind `AdminAuth`, with `GoogleAuth` and a new `MicrosoftAuth` registered through an
+  `IdentityProviders` registry; the login page shows a button per configured provider. A new provider
+  is one registration, nothing downstream changes.
+  - **Provider-neutral identity.** The audit actor / operator principal / quorum key on
+    `scheme:subject` — `google:<sub>` or `ms:<tid>:<oid>` — never the e-mail. `AdminIdentity` carries
+    its scheme (defaulting to `google`, so pre-seam sessions and callers are unchanged); the admin
+    session cookie round-trips it (legacy 3-field cookies still read as Google). The quorum's
+    "an unlinked console admin counts as itself" rule is now provider-neutral, so a **Microsoft admin
+    is a first-class approver** and can satisfy a quorum.
+  - **Entra safety (owner review).** Identity is keyed on the stable `tid+oid`, not the mutable
+    e-mail/UPN. A multi-tenant authority (`organizations`/`common`) is dangerous — any Microsoft
+    account can complete the flow — so `MicrosoftAllowedTenants` gates the `tid` in the provider, and
+    a single-tenant authority (put your tenant id in `MicrosoftTenant`) is the safe default. The
+    `id_token` is read over the TLS server-to-server exchange (no JWKS handling), the same trust model
+    as the Google path. Each installer registers their own Entra app; redirect URI is the same
+    `/admin/oauth2/callback`. New options `MicrosoftClientId/Secret`, `MicrosoftTenant`,
+    `MicrosoftAllowedTenants`.
+  - Scope: the **admin control plane**. The visitor Google fast-path and device-enrolment sign-in stay
+    Google for now and adopt the same seam next. 8 tests (tenant gating, tid+oid keying, e-mail
+    fallback, registry, a second provider driving login end to end, legacy-cookie compatibility).
+    Core suite 404.
+
 ## [0.42.0] - 2026-09-15
 
 ### Added

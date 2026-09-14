@@ -528,23 +528,30 @@ public sealed class ApprovalEngine
         new(Guid.NewGuid().ToString("N"), _clock.GetUtcNow(), type,
             actor, subject, resource, requestId, "-", channel, metadata);
 
+    // A control-plane (console) sign-in — any OIDC provider. An unlinked such identity counts as
+    // itself in a quorum; the check is provider-neutral, so adding Microsoft/Okta needs no change
+    // beyond this list.
+    private static readonly string[] ConsoleSchemes = { "google:", "ms:" };
+    private static bool IsConsoleActor(string actor) =>
+        ConsoleSchemes.Any(s => actor.StartsWith(s, StringComparison.Ordinal));
+
     /// <summary>The distinct-approver key for a quorum, channel-agnostic. An identity linked
     /// to an operator principal collapses to <c>principal:&lt;id&gt;</c> (so the same human on
-    /// Telegram and the web counts once); an unlinked <c>google:&lt;sub&gt;</c> admin counts as
-    /// itself; anything else unlinked is not eligible (cannot be attributed to a distinct
+    /// Telegram and the web counts once); an unlinked <b>console</b> identity (any OIDC provider)
+    /// counts as itself; anything else unlinked is not eligible (cannot be attributed to a distinct
     /// human). This is the one place the quorum learns about channels — Slack/Teams/app are
     /// just more identity schemes to link, no change here.</summary>
     private (bool eligible, string key) QuorumKey(string actor)
     {
         var principalId = _principals?.Resolve(actor);
         if (principalId is not null) return (true, "principal:" + principalId);
-        if (actor.StartsWith("google:", StringComparison.Ordinal)) return (true, actor);
+        if (IsConsoleActor(actor)) return (true, actor);
         return (false, "");
     }
 
     private static string ChannelOf(string actor) =>
         actor.StartsWith("telegram:", StringComparison.Ordinal) ? "telegram"
-        : actor.StartsWith("google:", StringComparison.Ordinal) ? "web"
+        : IsConsoleActor(actor) ? "web"
         : actor.StartsWith("email:", StringComparison.Ordinal) ? "email"
         : actor.StartsWith("app:", StringComparison.Ordinal) ? "app"
         : "other";
