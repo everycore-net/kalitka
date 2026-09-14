@@ -7,6 +7,36 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-14
+
+### Added
+
+- **Device enrolment — invite → IdP sign-in → device, and admin device management ([[fido2]] slice
+  C, [[product-direction]] onboarding).** An admin invites a person by e-mail; the invite is a
+  **one-time capability** that must end in a **Google sign-in as the invited account** — so an
+  intercepted invite cannot enrol a stranger's device (it is bound to that account and burned once).
+  On success the person is granted approve rights and a session, and lands in the app to register a
+  passkey (Slice A) and enable push (Slice B).
+  - `EnrollService`: mint invite → `/enroll?t=…` link; the landing redirects to the IdP with a
+    signed, browser-bound state; the callback verifies the state, matches the proven e-mail to the
+    invite, burns the invite (`IReplayStore`), grants approve rights and links the principal, then
+    issues a normal operator session — so registration, push and approval reuse everything from
+    Slices A/B unchanged. New `/enroll` + `/enroll/callback` (needs the Google redirect URI
+    `https://<GateHost>/enroll/callback` registered), `/admin/enroll` (issue invites), option
+    `EnrollmentInviteMinutes`.
+  - **Runtime-granted approve rights** (`OperatorApprovers`): the piece that makes enrolment end to
+    end — an operator can be given the ability to approve without editing the deployment's
+    `ApproverEmails` env list. It composes with that list (the union is what
+    `AdminAuth.ResolvePermissions` grants) and is revocable at once; enrolment grants it, and the
+    admin `/admin/enroll` page lists and revokes it.
+  - **Admin device management:** `/admin/devices` now shows every registered device across operators
+    (for admins) with per-device revoke, alongside your own devices. Revoking unlinks the device's
+    identity so it no longer resolves in the quorum.
+  - 11 tests (approver grant/compose/revoke, enrolment happy path + wrong-account + single-use +
+    browser-binding + bad-invite, admin invite issuance and CSRF). Core suite 377.
+  - Deferred to a follow-up: rendering the invite as a **QR image** (shown as a link today), and the
+    iOS-shield **`defer`** receiver.
+
 ## [0.39.0] - 2026-09-14
 
 ### Added

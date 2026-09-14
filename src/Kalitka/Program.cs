@@ -39,6 +39,10 @@ builder.Services.AddSingleton<VapidKeyProvider>(sp => new VapidKeyProvider(sp.Ge
 builder.Services.AddSingleton<PushSubscriptionStore>(sp => new PushSubscriptionStore(sp.GetRequiredService<IConfigStore>()));
 builder.Services.AddSingleton<IWebPushSender, WebPushSender>();
 builder.Services.AddSingleton<INotifier, PushNotifier>();
+// Device enrolment: runtime-granted approve rights + the invite → IdP → device flow.
+builder.Services.AddSingleton<OperatorApprovers>(sp => new OperatorApprovers(
+    sp.GetRequiredService<IConfigStore>(), sp.GetRequiredService<IAuditStore>(), sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddTransient<EnrollService>();
 builder.Services.AddSingleton<GateService>();
 builder.Services.AddSingleton<TokenSigner>(sp =>
 {
@@ -210,6 +214,35 @@ app.MapGet("/icon.png", () =>
 {
     var b64 = Brand.IconDataUri["data:image/png;base64,".Length..];
     return Results.Bytes(Convert.FromBase64String(b64), "image/png");
+});
+
+// ---------------------------------------------------------------------------
+// Device enrolment: a one-time invite that must end in an IdP sign-in as the
+// invited account (so an intercepted invite cannot enrol a stranger). On success
+// the person is granted approve rights and a session, then lands in the app.
+// ---------------------------------------------------------------------------
+app.MapGet("/enroll", (HttpContext ctx, EnrollService enroll) =>
+{
+    var nonce = NewStateNonce();
+    var url = enroll.StartUrl(ctx.Request.Query["t"].ToString(), nonce);
+    if (url is null)
+        return Results.Content(AppPages.Notice("Enrolment", "This enrolment link is invalid or has expired."), "text/html; charset=utf-8");
+    SetStateCookie(ctx, "kalitka_enroll_state", "/enroll", nonce);
+    return Results.Redirect(url, false);
+});
+
+app.MapGet("/enroll/callback", async (HttpContext ctx, EnrollService enroll) =>
+{
+    var nonce = ctx.Request.Cookies["kalitka_enroll_state"] ?? "";
+    ClearStateCookie(ctx, "kalitka_enroll_state", "/enroll");
+    var result = await enroll.Complete(
+        ctx.Request.Query["code"].ToString(), ctx.Request.Query["state"].ToString(), nonce, ctx.RequestAborted);
+    if (!result.Ok || result.Identity is null)
+        return Results.Content(AppPages.Notice("Enrolment", result.Error ?? "Enrolment was not accepted."), "text/html; charset=utf-8");
+
+    // A normal operator session: they are now an approver, so /admin/app and /admin/devices work.
+    SetAdminCookie(ctx, ctx.RequestServices.GetRequiredService<AdminAuth>().IssueCookie(result.Identity));
+    return Results.Redirect("/admin/app", false);
 });
 
 // ---------------------------------------------------------------------------
@@ -851,8 +884,43 @@ guarded.MapPost("/requests/decide", async (HttpContext ctx, AdminAuth auth, Gate
 guarded.MapGet("/devices", (HttpContext ctx, AdminAuth auth, WebAuthnService webauthn) =>
 {
     var who = Admin(ctx);
-    return Results.Content(AdminPages.Devices(who, webauthn.DevicesFor(who), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+    var all = who.Can(Perm.PrincipalsManage) ? webauthn.AllDevices() : null;
+    return Results.Content(AdminPages.Devices(who, webauthn.DevicesFor(who), auth.IssueCsrf(who.Sub), all), "text/html; charset=utf-8");
 });
+
+guarded.MapPost("/devices/remove-any", async (HttpContext ctx, AdminAuth auth, WebAuthnService webauthn) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await webauthn.AdminRemove(form["credentialId"].ToString(), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/devices", false);
+}).RequirePermission(Perm.PrincipalsManage);
+
+// ---- Device enrolment (admin issues invites; runtime approvers) ---------
+guarded.MapGet("/enroll", (HttpContext ctx, AdminAuth auth, OperatorApprovers approvers) =>
+    Results.Content(AdminPages.EnrollPage(Admin(ctx), approvers.All(), auth.IssueCsrf(Admin(ctx).Sub)), "text/html; charset=utf-8"))
+    .RequirePermission(Perm.PrincipalsManage);
+
+guarded.MapPost("/enroll/invite", async (HttpContext ctx, AdminAuth auth, EnrollService enroll, OperatorApprovers approvers) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var email = form["email"].ToString();
+    if (string.IsNullOrWhiteSpace(email)) return Results.Redirect("/admin/enroll", false);
+    var link = await enroll.Invite(email, form["displayName"].ToString(), who.Actor, ctx.RequestAborted);
+    return Results.Content(AdminPages.EnrollPage(who, approvers.All(), auth.IssueCsrf(who.Sub), link), "text/html; charset=utf-8");
+}).RequirePermission(Perm.PrincipalsManage);
+
+guarded.MapPost("/approvers/revoke", async (HttpContext ctx, AdminAuth auth, OperatorApprovers approvers) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await approvers.Revoke(form["email"].ToString(), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/enroll", false);
+}).RequirePermission(Perm.PrincipalsManage);
 
 guarded.MapPost("/devices/register/begin", (HttpContext ctx, AdminAuth auth, WebAuthnService webauthn) =>
 {

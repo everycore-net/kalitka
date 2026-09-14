@@ -43,13 +43,16 @@ public sealed class AdminAuth
     private readonly GoogleAuth _google;
     private readonly TokenSigner _signer;
     private readonly TimeProvider _clock;
+    private readonly OperatorApprovers? _approvers;
 
-    public AdminAuth(GoogleAuth google, TokenSigner signer, IOptions<GateOptions> options, TimeProvider? clock = null)
+    public AdminAuth(GoogleAuth google, TokenSigner signer, IOptions<GateOptions> options,
+        TimeProvider? clock = null, OperatorApprovers? approvers = null)
     {
         _google = google;
         _signer = signer;
         _options = options.Value;
         _clock = clock ?? TimeProvider.System;
+        _approvers = approvers;
     }
 
     /// <summary>
@@ -78,7 +81,9 @@ public sealed class AdminAuth
         if (MatchesFullAdmin(email)) return Perm.All;
 
         var perms = new HashSet<string>();
-        if (InList(_options.ApproverEmails, email)) perms.UnionWith(Perm.Approver);
+        // Static env list, plus operators granted approve rights at runtime (device enrolment).
+        if (InList(_options.ApproverEmails, email) || (_approvers?.Contains(email) ?? false))
+            perms.UnionWith(Perm.Approver);
         if (InList(_options.AgentAdminEmails, email)) perms.UnionWith(Perm.AgentAdmin);
         return perms;
     }

@@ -321,6 +321,10 @@ public sealed class GateOptions
     /// <summary>How long a push service should hold an undelivered notification (seconds). Default 28
     /// days — an approval request is worth keeping until the phone comes back online.</summary>
     public int PushTtlSeconds { get; set; } = 2_419_200;
+
+    /// <summary>Lifetime of a device-enrolment invite. Short: it is a one-time capability that must
+    /// end in an IdP sign-in, so an intercepted invite cannot enrol a stranger later.</summary>
+    public int EnrollmentInviteMinutes { get; set; } = 30;
 }
 
 /// <summary>How wide a Google-proven identity's session reaches. See
