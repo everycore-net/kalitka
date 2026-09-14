@@ -208,17 +208,23 @@ public static class AdminPages
               .Append($"<button class=\"no\" onclick=\"kalitkaApprove('{H(r.Id)}','no','{H(csrf)}')\">🔑 Deny with device</button>")
               .Append("</div>");
 
-            sb.Append("<h2>Or decide from this session</h2>")
-              .Append("<div class=\"btns\">")
-              .Append(Btn(r.Id, csrf, "ok", "Approve", "ok"))
-              .Append(Btn(r.Id, csrf, "aip", "Approve + remember IP", ""))
-              .Append(Btn(r.Id, csrf, "ain", "Approve + remember name", ""))
-              .Append(Btn(r.Id, csrf, "no", "Deny", "no"))
-              .Append(Btn(r.Id, csrf, "bip", "Block IP", "mut"))
-              .Append(Btn(r.Id, csrf, "bin", "Block name", "mut"))
-              .Append(Btn(r.Id, csrf, "bco", "Block country", "mut"))
-              .Append("</div>")
-              .Append(WebAuthnJs);
+            // A deferred request (out-of-band proof of intent) can be approved only by a device
+            // signature — the session buttons cannot satisfy it, so do not offer them.
+            if (r.RequireSignedApproval)
+                sb.Append("<p class=\"muted\">This request requires a <b>device-signed</b> approval — a click in this "
+                    + "session will not be accepted.</p>");
+            else
+                sb.Append("<h2>Or decide from this session</h2>")
+                  .Append("<div class=\"btns\">")
+                  .Append(Btn(r.Id, csrf, "ok", "Approve", "ok"))
+                  .Append(Btn(r.Id, csrf, "aip", "Approve + remember IP", ""))
+                  .Append(Btn(r.Id, csrf, "ain", "Approve + remember name", ""))
+                  .Append(Btn(r.Id, csrf, "no", "Deny", "no"))
+                  .Append(Btn(r.Id, csrf, "bip", "Block IP", "mut"))
+                  .Append(Btn(r.Id, csrf, "bin", "Block name", "mut"))
+                  .Append(Btn(r.Id, csrf, "bco", "Block country", "mut"))
+                  .Append("</div>");
+            sb.Append(WebAuthnJs);
         }
         else
         {
@@ -243,10 +249,11 @@ public static class AdminPages
             sb.Append("<p class=\"muted\">No devices registered yet.</p>");
         else
         {
-            sb.Append("<table><tr><th>Device</th><th>Kind</th><th>Added</th><th>Last used</th><th></th></tr>");
+            sb.Append("<table><tr><th>Device</th><th>Fingerprint</th><th>Kind</th><th>Added</th><th>Last used</th><th></th></tr>");
             foreach (var c in creds)
                 sb.Append("<tr>")
                   .Append($"<td>{H(c.DisplayName)}</td>")
+                  .Append($"<td><code title=\"verify this matches your device\">{H(c.Fingerprint)}</code></td>")
                   // Honest: a cloud-synced passkey (BE flag) is not bound to one device.
                   .Append(c.BackupEligible
                       ? "<td><span class=\"pill waiting\" title=\"synced across the owner's devices\">cloud-synced</span></td>"
@@ -274,11 +281,12 @@ public static class AdminPages
                 sb.Append("<p class=\"muted\">None.</p>");
             else
             {
-                sb.Append("<table><tr><th>Operator</th><th>Device</th><th>Kind</th><th>Added</th><th></th></tr>");
+                sb.Append("<table><tr><th>Operator</th><th>Device</th><th>Fingerprint</th><th>Kind</th><th>Added</th><th></th></tr>");
                 foreach (var c in allDevices)
                     sb.Append("<tr>")
                       .Append($"<td class=\"muted\">{H(c.PrincipalId)}</td>")
                       .Append($"<td>{H(c.DisplayName)}</td>")
+                      .Append($"<td><code>{H(c.Fingerprint)}</code></td>")
                       .Append(c.BackupEligible ? "<td><span class=\"pill waiting\">cloud-synced</span></td>"
                           : "<td><span class=\"pill approved\">device-bound</span></td>")
                       .Append($"<td class=\"muted\">{H(ShortWhen(c.CreatedAt))}</td>")
@@ -307,9 +315,13 @@ public static class AdminPages
 
         if (!string.IsNullOrEmpty(issuedLink))
             sb.Append("<div class=\"card\" style=\"max-width:640px;margin-bottom:16px\">")
-              .Append("<b style=\"color:#fff\">Invite link (send it to the person, or show as a QR):</b>")
+              .Append("<b style=\"color:#fff\">Invite — show this QR to the person (or send the link):</b>")
+              // Inline SVG: the phone camera opens the link; the URL carries a one-time token, not a
+              // secret to photograph. Shown only here, to the signed-in admin — never e-mailed.
+              .Append($"<div style=\"background:#fff;display:inline-block;padding:10px;border-radius:10px;margin:10px 0\">{Qr.Svg(issuedLink)}</div>")
               .Append($"<p><code style=\"word-break:break-all\">{H(issuedLink)}</code></p>")
-              .Append("<p class=\"muted\">Opens on their phone → Google sign-in → register device.</p></div>");
+              .Append("<p class=\"muted\">Opens on their phone → Google sign-in as the invited address → register device. "
+                  + "One-time, expires in minutes.</p></div>");
 
         sb.Append("<form method=\"post\" action=\"/admin/enroll/invite\">")
           .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")

@@ -7,7 +7,7 @@
     <RootNamespace>Kalitka</RootNamespace>
     <AssemblyName>Kalitka</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.40.0</Version>
+    <Version>0.41.0</Version>
     <Copyright>Copyright (C) 2026 everycore</Copyright>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
@@ -22,6 +22,11 @@
     <!-- WebAuthn attestation/COSE parsing. A small, stable first-party Microsoft package, not part
          of the shared framework — taken instead of a whole third-party WebAuthn stack. -->
     <PackageReference Include="System.Formats.Cbor" Version="9.0.0" />
+    <!-- QR encoding for enrolment invites. A single-purpose, pure-managed MIT encoder (no native or
+         image deps) — QR at link sizes needs multi-block Reed-Solomon interleaving and mask
+         optimisation; unlike our JCS/WebPush formalism it has no security surface and no RFC vector to
+         self-test against, so a vetted encoder is proportionate. We render the SVG ourselves. -->
+    <PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="2.0.6" />
     <PackageReference Include="MaxMind.GeoIP2" Version="6.1.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />

@@ -40,6 +40,10 @@ public sealed class PendingRequest
     // approve (four-eyes by others); Optional = no special rule. For Required/Forbidden the
     // subject was trusted-asserted by a capable agent and resolves to a known principal.
     public SubjectApproval Subject = SubjectApproval.Optional;
+    // Out-of-band proof of intent (the iOS-shield "defer" case): when set, this request can be
+    // APPROVED only by a device signature (WebAuthn), never a chat tap or a session click — a denial
+    // stays unsigned (fail-safe). Snapshotted at raise, like the other approval terms.
+    public bool RequireSignedApproval = false;
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.
@@ -56,7 +60,8 @@ public sealed record CallbackResult(CallbackOutcome Outcome, PendingRequest? Req
 public sealed record PendingView(
     string Id, string Target, string Input, string Ip,
     string Country, string CountryCode, string City, DateTimeOffset Raised, string State,
-    int RequiredApprovals = 1, int ApprovalCount = 0, string Command = "", string SourceAddr = "");
+    int RequiredApprovals = 1, int ApprovalCount = 0, string Command = "", string SourceAddr = "",
+    bool RequireSignedApproval = false);
 
 /// <summary>
 /// The decision core, with no idea how it is asked or answered. It owns the
@@ -390,11 +395,11 @@ public sealed class ApprovalEngine
     public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
         string resource, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "",
-        string sourceAddr = "", string subjectIdentity = "", bool subjectTrusted = false)
+        string sourceAddr = "", string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false)
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted);
+        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned);
     }
 
     /// <summary>
@@ -405,7 +410,7 @@ public sealed class ApprovalEngine
     private async Task<(string state, string id, PendingRequest? request)> Raise(
         string resource, string target, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string> agentTags, string profile, int maxUses, string command = "", string sourceAddr = "",
-        string subjectIdentity = "", bool subjectTrusted = false)
+        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false)
     {
         command = (command ?? "").Trim();
         sourceAddr = (sourceAddr ?? "").Trim();
@@ -505,7 +510,7 @@ public sealed class ApprovalEngine
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
             Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required,
             Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command, SourceAddr = sourceAddr,
-            SubjectIdentity = subjectIdentity, Subject = decision.Subject
+            SubjectIdentity = subjectIdentity, Subject = decision.Subject, RequireSignedApproval = requireSigned
         };
         _store.Add(request);
 
@@ -658,7 +663,8 @@ public sealed class ApprovalEngine
 
     private PendingView View(PendingRequest r) =>
         new(r.Id, r.Target, r.Input, r.Ip, r.Country, r.CountryCode, r.City, r.Raised, r.State,
-            r.RequiredApprovals, r.RequiredApprovals > 1 ? _store.ApprovalCount(r.Id) : 0, r.Command, r.SourceAddr);
+            r.RequiredApprovals, r.RequiredApprovals > 1 ? _store.ApprovalCount(r.Id) : 0, r.Command, r.SourceAddr,
+            r.RequireSignedApproval);
 
     private void DropExpired() =>
         _store.DropOlderThan(_clock.GetUtcNow().AddMinutes(-_options.PendingMinutes));
@@ -700,6 +706,12 @@ public sealed class ApprovalEngine
             _                               => null
         };
         if (toState is null) return new CallbackResult(CallbackOutcome.Ignored);
+
+        // Out-of-band proof of intent (defer): an approval must carry a device signature; a chat tap
+        // or session click cannot satisfy it. A denial stays unsigned (one "no" is enough, fail-safe).
+        if (request.RequireSignedApproval && toState == "approved" && string.IsNullOrEmpty(proof))
+            return new CallbackResult(CallbackOutcome.Pending, request,
+                "This request can only be approved with a registered device — open it in the app and approve with your device.");
 
         // Quorum: a tag-driven policy may require several DISTINCT approvers. A denial
         // from any channel still denies at once (one "no" is enough). An approval, when
