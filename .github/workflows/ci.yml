@@ -37,6 +37,10 @@ jobs:
         env:
           KALITKA_TEST_POSTGRES: "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=kalitka"
 
+      # MCP gateway (net9, no external deps): its canonicalization conformance vectors are a
+      # security boundary, so they run in CI. (The net10/Windows agents build separately.)
+      - run: dotnet test tests/KalitkaMcpGateway.Tests/KalitkaMcpGateway.Tests.csproj -c Release
+
   image:
     # Prove the Dockerfile still builds on every change. No push here; that only
     # happens on a tag, in release.yml.

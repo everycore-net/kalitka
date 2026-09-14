@@ -9,6 +9,27 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **MCP Gateway — security foundation (`src/KalitkaMcpGateway`, 0.1.0, public/AGPL).** The first
+  slice of the guarded proxy in front of another MCP server: the canonical **call fingerprint**
+  a grant binds to, so nothing (tool, contract, subject, workload, arguments) can change between
+  approval and execution — a human who approves `restart_vm(dev-01)` can never have
+  `restart_vm(prod-web-01)` execute against it.
+  - **`Jcs.Canonicalize`** implements **RFC 8785** exactly: objects sorted by UTF-16 code units,
+    minimal string escaping (lowercase `\u00xx`), and ECMAScript `Number::toString` for numbers —
+    **not** a platform `ToString`; the formatting is applied per the spec steps and pinned by
+    **V8-derived boundary vectors**. Two v1 rules, both fail-safe: no schema defaults (absent ≠
+    `null`) and no Unicode normalization (NFC ≠ NFD at the byte level; confusables are the
+    renderer's job later). Duplicate keys and non-finite numbers are rejected.
+  - **`CallFingerprint`** — `call_fingerprint = SHA-256(scheme ‖ upstream_alias ‖ tool ‖
+    tool_contract_id ‖ subject ‖ workload ‖ JCS(args))`; `tool_contract_id` binds the *observed*
+    `inputSchema` + inventory revision (excludes description/title/icons and, in v1, outputSchema);
+    a human-quotable Call ID (`7DM4-R9KT-2F81`, Crockford base32) shown everywhere the call is.
+  - **Published conformance vectors** (`conformance/kalitka-mcp-call-v1.json`) run in CI — the
+    test *is* the conformance check, so a third-party gateway can prove identical canonicalization.
+  - net9, no external deps; in CI (unlike the net10/Windows agents). Later slices: the proxy,
+    policy match on `mcp:<server>/<tool>`, the `pending`→…→`Executed` state machine, and the
+    human-safe renderer + reviewability limits.
+
 - **Windows agent — RDP JIT (`src/KalitkaAgent.Windows` → 0.2.0).** The public agent now grants
   just-in-time Remote Desktop access: on an approved+redeemed grant it adds the Core-approved
   subject to the local **Remote Desktop Users** group for the grant's lifetime, then removes
