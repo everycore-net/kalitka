@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace KalitkaMcpGateway;
+namespace Kalitka.Text;
 
 /// <summary>How risky a rendered value looks to a human. Colour is never the only signal — the
 /// class travels in the model so any channel can show it (underline, icon, prefix, tooltip).</summary>

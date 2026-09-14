@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Shared, dependency-free text-safety primitives (SafeText renderer + Unicode facts). Extracted
+    so Core (net9) and the MCP gateway (net10) use ONE implementation — the audit's "one standard of
+    rigour" point. net9.0 so a net10 consumer can reference it (roll-forward).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Kalitka.Text</RootNamespace>
+    <AssemblyName>Kalitka.Text</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

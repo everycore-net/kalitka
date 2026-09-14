@@ -7,6 +7,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-14
+
+### Security
+
+- **SafeText backported to the main approval surface — one standard of rigour.** The audit noted
+  the MCP gateway's human-safe renderer was more formalised than main kalitka; the fix is to use the
+  *same* code, not a second one. `SafeText` + the pinned `Unicode` facts are extracted into a shared,
+  dependency-free `Kalitka.Text` library that both Core (net9) and the gateway (net10) reference.
+  - Core now renders the approver-facing fields — the SSH **command** (the crux of what is approved),
+    the visitor **subject**, the **target** and the **source address** — through `SafeText` in both
+    the **Telegram** approval message and the **admin** request views. A bidi override, invisible
+    character or confusable can no longer reach the human deciding able to reorder or disguise what
+    they read: dangerous characters become explicit `[U+XXXX NAME]` markers (enforced on the weakest
+    channel, Telegram), mixed/confusable scripts are flagged. Previously these were only
+    HTML-encoded, which stops markup injection but not deceptive Unicode.
+  - Pure refactor for the gateway (SafeText/Unicode moved to the shared lib, no behaviour change).
+    3 backport tests (bidi in command, control in subject, plain command unchanged). Core suite 304.
+
 ## [0.33.0] - 2026-09-14
 
 ### Security
