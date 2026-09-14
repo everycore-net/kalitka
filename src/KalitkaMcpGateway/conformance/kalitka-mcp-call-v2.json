@@ -1,0 +1,49 @@
+{
+  "scheme": "kalitka-mcp-call-v2",
+  "note": "Conformance vectors for the canonicalization stage (RFC 8785 / JCS) of the call fingerprint. A conforming gateway must reproduce every 'canonical' output exactly and reject every 'reject' input. Number formatting is the ECMAScript Number::toString production, not any platform ToString. Integers beyond +/-(2^53-1) are rejected and must travel as strings (I-JSON).",
+  "canonicalization": [
+    { "name": "object keys sorted by utf-16", "input": "{\"b\":1,\"a\":2}", "canonical": "{\"a\":2,\"b\":1}" },
+    { "name": "nested object keys sorted", "input": "{\"z\":{\"y\":1,\"x\":2}}", "canonical": "{\"z\":{\"x\":2,\"y\":1}}" },
+    { "name": "array order is preserved", "input": "[3,1,2]", "canonical": "[3,1,2]" },
+    { "name": "insignificant whitespace removed", "input": "{ \"a\" : 1 , \"b\" : 2 }", "canonical": "{\"a\":1,\"b\":2}" },
+    { "name": "1.0 and 1 canonicalize the same", "input": "{\"n\":1.0}", "canonical": "{\"n\":1}" },
+    { "name": "negative zero collapses to zero", "input": "{\"n\":-0}", "canonical": "{\"n\":0}" },
+    { "name": "booleans and null", "input": "{\"a\":true,\"c\":null,\"b\":false}", "canonical": "{\"a\":true,\"b\":false,\"c\":null}" }
+  ],
+  "numbers": [
+    { "input": "0", "canonical": "0" },
+    { "input": "1", "canonical": "1" },
+    { "input": "1.5", "canonical": "1.5" },
+    { "input": "100", "canonical": "100" },
+    { "input": "0.1", "canonical": "0.1" },
+    { "input": "1e20", "canonical": "100000000000000000000" },
+    { "input": "1e21", "canonical": "1e+21" },
+    { "input": "1e-6", "canonical": "0.000001" },
+    { "input": "1e-7", "canonical": "1e-7" },
+    { "input": "9007199254740991", "canonical": "9007199254740991" }
+  ],
+  "reject": [
+    { "name": "duplicate object keys", "input": "{\"a\":1,\"a\":2}" },
+    { "name": "number overflows a double", "input": "1E400" },
+    { "name": "unsafe integer at 2^53", "input": "9007199254740992" },
+    { "name": "unsafe integer well beyond 2^53", "input": "1234567890123456789" },
+    { "name": "trailing second value", "input": "{} {}" },
+    { "name": "lone high surrogate", "input": "\"\\ud800\"" }
+  ],
+  "end_to_end": [
+    {
+      "name": "restart_vm(dev-01), single-tool inventory",
+      "upstream_alias": "azure-prod",
+      "upstream_id": "up-uuid",
+      "tool": "restart_vm",
+      "input_schema": "{\"type\":\"object\",\"properties\":{\"vm\":{\"type\":\"string\"}}}",
+      "subject": { "id": "operator:sergej", "asserted": false },
+      "workload": { "id": "ai:claude:i1", "assurance": "unverified" },
+      "arguments": "{\"vm\":\"dev-01\"}",
+      "canonical_arguments": "{\"vm\":\"dev-01\"}",
+      "inventory_epoch": "4E8C7F93D171B8A1ED2E2426635304A75B503618D688A82C2359F887643AD311",
+      "fingerprint_base64url": "bat7uYiwwPh9EE45eb9Qw2AXUh686iz92QMq1HJC5MU",
+      "call_id": "DPNQ-QEC8-P30F"
+    }
+  ]
+}

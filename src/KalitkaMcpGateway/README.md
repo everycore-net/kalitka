@@ -15,18 +15,25 @@ full design is in `docs/design/mcp.md`.
 let `restart_vm(prod-web-01)` execute against that approval. So the grant is bound to a hash of
 the **canonicalised call**, and only that exact call may run.
 
+Fields are joined with **length-prefixed framing** (4-byte big-endian length ‖ bytes), so a value
+containing a delimiter can never shift a boundary and collide two different calls.
+
 ```
 call_fingerprint = SHA-256(
-    "kalitka-mcp-call-v1" ‖ upstream_alias ‖ tool_name ‖ tool_contract_id
-                          ‖ subject ‖ workload ‖ JCS(arguments) )
+    "kalitka-mcp-call-v2" ‖ upstream_alias ‖ tool_name ‖ tool_contract_id
+      ‖ subject_id ‖ (asserted|claimed) ‖ workload_id ‖ workload_assurance ‖ JCS(arguments) )
 
-tool_contract_id = SHA-256( upstream_id ‖ tool_name ‖ inventory_revision ‖ JCS(inputSchema) )
+tool_contract_id = SHA-256( upstream_id ‖ tool_name ‖ inventory_epoch ‖ JCS(inputSchema) )
 ```
 
 - **`tool_contract_id`** binds the contract the gateway *observed* (the real `inputSchema`, not
-  the server's self-reported version). A changed contract makes an old grant un-redeemable.
+  the server's self-reported version), plus the **inventory epoch** (a digest of the whole
+  snapshot — so any inventory change invalidates all in-flight grants, durably across restarts).
   `description`/`title`/`icons` are excluded (a typo fix must not invalidate live grants);
   `outputSchema` is out in v1 (the authority is over the input operation).
+- **Typed identity in the binding** — `AuthenticatedCallContext`: the subject (id + whether it was
+  *asserted* vs merely *claimed*) and the workload (id + *assurance*). One identity string cannot
+  stand for two trust levels; an approval at one assurance is not reusable at another.
 - **`upstream_alias`** (admin-assigned, stable) is in the fingerprint, so a caller cannot aim
   the same call at a softer policy space by renaming an upstream.
 - **Call ID** — a short Crockford-base32 prefix (`7DM4-R9KT-2F81`) shown identically in the
@@ -51,11 +58,15 @@ Two v1 rules from the design, both fail-safe:
   human-facing renderer (a later slice) is what flags confusables/bidi; the fingerprint stays
   faithful to the bytes.
 
-Duplicate object keys and non-finite numbers are **rejected** (fail closed).
+**Rejected, fail closed:** duplicate object keys; non-finite numbers; **unsafe integers** (beyond
+±(2^53−1) — they must travel as strings, so an `Int64`/`BigInteger` upstream can't see a different
+value than was fingerprinted); lone UTF-16 surrogates; trailing content after the value; and input
+over the limits (256 KiB, 10 000 nodes, 64 KiB per string, depth 32). The gateway then **forwards
+the exact canonical bytes it fingerprinted**, so what a human approved is byte-for-byte what runs.
 
 ## Conformance vectors
 
-`conformance/kalitka-mcp-call-v1.json` is the published contract: a conforming gateway (in any
+`conformance/kalitka-mcp-call-v2.json` is the published contract: a conforming gateway (in any
 language) must reproduce every `canonical` output exactly and reject every `reject` input. The
 test suite runs these vectors, so **the test is the conformance check**. The version prefix
 covers both the envelope and the canonicalization, so any change is a new prefix.
@@ -88,24 +99,27 @@ channels and a real MCP client to the upstream are the next slices.
 
 ## Inventory, drift & the proxy (`GatewayProxy`, over `IUpstream`)
 
-`ToolInventory` snapshots the upstream's tools at a **revision**. The revision is folded into
-each `tool_contract_id`, so bumping it (on any drift) invalidates every not-yet-approved request
-against the old inventory — an inventory change never rides silently on an old approval. `Diff`
-reports added / removed / **retyped** tools for audit.
+`ToolInventory` snapshots the upstream's tools. A **digest epoch** of the whole snapshot is folded
+into each `tool_contract_id`, so any drift shifts every tool's contract id and invalidates every
+not-yet-redeemed grant — durably (a digest is restart-stable, unlike a counter). The upstream is
+not trusted: a **duplicate tool name** or a **non-object `inputSchema`** rejects the whole snapshot.
+`Diff` reports added / removed / **retyped** tools for audit. (`Revision` is a human-facing counter.)
 
 **Classification is bound to the observed contract**, not the name: `IToolClassifier.Classify(alias,
 tool, contractHash)`. A new tool, a renamed tool, or a tool whose schema changed all resolve to
 `Unclassified` — never auto-allowed — until an admin classifies *that exact contract*. Classifying
 by name alone would let a retyped tool inherit the old tool's trust.
 
-`GatewayProxy.HandleAsync(tool, args, subject, workload)` is the orchestration, called every time
-the AI issues the call:
+`GatewayProxy.HandleAsync(tool, args, AuthenticatedCallContext)` is the orchestration, called every
+time the AI issues the call:
 
-1. Look the tool up in the current inventory (unknown/withdrawn → refused; unparseable args → refused).
+1. Look the tool up in the current inventory (unknown/withdrawn → refused; unparseable/unsafe args → refused).
 2. Canonicalize args → compute the call fingerprint (with the inventory's `tool_contract_id`).
 3. Classify against the observed contract hash → `CallGate.Evaluate`.
 4. `Pending` → return a Call ID, **forward nothing**. `Denied` → refuse. `Approved` → **claim once
-   and forward once** to the upstream, completing with its success/error.
+   and forward once** (the exact canonical bytes) to the upstream. A definite result/error →
+   `Executed`/`Failed`; a transport failure after dispatch → **`OutcomeUnknown`** (grant burned, no
+   auto-retry — the call may already have run).
 
 `RefreshInventoryAsync` snapshots the upstream, bumps the revision on drift, and returns the diff.
 The transport to the upstream is behind `IUpstream`, so the security logic here is independent of

@@ -1,45 +1,61 @@
+using System.Buffers;
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 
 namespace KalitkaMcpGateway;
 
-/// <summary>Raised when input cannot be canonicalised (duplicate object keys, a non-finite
-/// number, or malformed JSON). Canonicalisation fails closed: an input that cannot be reduced
-/// to one exact form is rejected, never guessed.</summary>
+/// <summary>Raised when input cannot be canonicalised — duplicate keys, a non-finite or unsafe
+/// number, a lone surrogate, a size/complexity limit, or malformed JSON. Canonicalisation fails
+/// closed: an input that cannot be reduced to one exact, faithfully-representable form is rejected.</summary>
 public sealed class JcsException(string message) : Exception(message);
 
 /// <summary>
-/// RFC 8785 (JSON Canonicalicalization Scheme) — the security boundary of the MCP gateway. The
-/// grant is bound to the SHA-256 of the canonical bytes, so two inputs a human would read as the
-/// same call must produce the same bytes, and two different calls must not collide. Objects are
-/// sorted by key over UTF-16 code units, strings use the minimal JSON escaping, and numbers use
-/// the ECMAScript <c>Number::toString</c> production (not any platform's <c>ToString</c>).
+/// RFC 8785 (JSON Canonicalicalization Scheme) — the security boundary of the MCP gateway, hardened
+/// against hostile input. The grant binds to the SHA-256 of the canonical bytes, and the gateway
+/// forwards <b>those same bytes</b> to the upstream, so what a human approved is exactly what runs.
 ///
-/// Two deliberate v1 rules from the design: <b>no schema defaults are applied</b> (the envelope
-/// is exactly what the gateway received), and <b>Unicode is NOT normalised</b> — so <c>NFC</c>
-/// and <c>NFD</c> forms are different calls at the byte level (the human-facing renderer, a
-/// later slice, is what flags confusables). Duplicate keys are rejected.
+/// Objects are sorted by UTF-16 code units, strings use minimal JSON escaping, and numbers use the
+/// ECMAScript <c>Number::toString</c> production (not any platform <c>ToString</c>). Two v1 rules,
+/// both fail-safe: no schema defaults (absent ≠ null) and no Unicode normalisation (NFC ≠ NFD).
+/// Rejected: duplicate object keys, non-finite numbers, <b>unsafe integers</b> (beyond ±(2^53−1) —
+/// these must travel as strings, per I-JSON), lone UTF-16 surrogates, and anything over the input /
+/// node / string / depth limits.
 /// </summary>
 public static class Jcs
 {
+    public const int MaxInputBytes = 256 * 1024;
+    public const int MaxNodes = 10_000;
+    public const int MaxStringChars = 64 * 1024;
+    public const int MaxDepth = 32;
+    private const long MaxSafeInteger = 9_007_199_254_740_991;   // 2^53 - 1 (I-JSON)
+
     public static byte[] Canonicalize(string rawJson) => Canonicalize(Encoding.UTF8.GetBytes(rawJson));
 
     public static byte[] Canonicalize(ReadOnlySpan<byte> rawUtf8Json)
     {
+        if (rawUtf8Json.Length > MaxInputBytes) throw new JcsException($"input exceeds {MaxInputBytes} bytes");
         var reader = new Utf8JsonReader(rawUtf8Json,
-            new JsonReaderOptions { CommentHandling = JsonCommentHandling.Disallow, AllowTrailingCommas = false, MaxDepth = 128 });
+            new JsonReaderOptions { CommentHandling = JsonCommentHandling.Disallow, AllowTrailingCommas = false, MaxDepth = MaxDepth });
         if (!reader.Read()) throw new JcsException("empty input");
         var sb = new StringBuilder();
-        try { Write(ref reader, sb); }
+        var budget = new Budget();
+        try
+        {
+            Write(ref reader, sb, budget);
+            if (reader.Read()) throw new JcsException("trailing content after the JSON value");
+        }
         catch (JsonException e) { throw new JcsException("malformed JSON: " + e.Message); }
+        catch (InvalidOperationException e) { throw new JcsException("invalid JSON value: " + e.Message); }   // e.g. lone surrogate transcoding
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    // Canonicalise the value the reader is positioned on, leaving the reader on that value's
-    // last token. Objects buffer their members so they can be emitted in sorted key order.
-    private static void Write(ref Utf8JsonReader r, StringBuilder sb)
+    private sealed class Budget { public int Nodes; }
+
+    private static void Write(ref Utf8JsonReader r, StringBuilder sb, Budget budget)
     {
+        if (++budget.Nodes > MaxNodes) throw new JcsException($"input exceeds {MaxNodes} nodes");
         switch (r.TokenType)
         {
             case JsonTokenType.StartObject:
@@ -47,15 +63,14 @@ public static class Jcs
                 var seen = new HashSet<string>(StringComparer.Ordinal);
                 while (r.Read() && r.TokenType != JsonTokenType.EndObject)
                 {
-                    var key = r.GetString()!;                 // TokenType == PropertyName
+                    var key = r.GetString()!;
+                    RejectLoneSurrogates(key);
                     if (!seen.Add(key)) throw new JcsException($"duplicate object key: {key}");
-                    r.Read();                                  // move to the value
+                    r.Read();
                     var child = new StringBuilder();
-                    Write(ref r, child);
+                    Write(ref r, child, budget);
                     members.Add((key, child.ToString()));
                 }
-                // RFC 8785: sort by the UTF-16 code units of the key. Ordinal compares char (a
-                // UTF-16 code unit) values, which is exactly that.
                 members.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
                 sb.Append('{');
                 for (var i = 0; i < members.Count; i++)
@@ -74,19 +89,20 @@ public static class Jcs
                 {
                     if (!first) sb.Append(',');
                     first = false;
-                    Write(ref r, sb);
+                    Write(ref r, sb, budget);
                 }
                 sb.Append(']');
                 break;
 
             case JsonTokenType.String:
-                EscapeString(r.GetString()!, sb);
+                var s = r.GetString()!;
+                if (s.Length > MaxStringChars) throw new JcsException($"string exceeds {MaxStringChars} chars");
+                RejectLoneSurrogates(s);
+                EscapeString(s, sb);
                 break;
 
             case JsonTokenType.Number:
-                if (!r.TryGetDouble(out var d) || !double.IsFinite(d))
-                    throw new JcsException("number is not a finite IEEE-754 double");
-                sb.Append(NumberToJson(d));
+                sb.Append(NumberToJson(SafeNumber(ref r)));
                 break;
 
             case JsonTokenType.True: sb.Append("true"); break;
@@ -98,9 +114,33 @@ public static class Jcs
         }
     }
 
-    // RFC 8785 string escaping: only ", \ and the C0 controls are escaped (short escapes where
-    // ES defines them, else \u00xx with lowercase hex). Everything else — including all non-ASCII
-    // — is emitted literally as UTF-8. No Unicode normalisation.
+    // A number the gateway will faithfully carry: a finite double, and — if written as an integer —
+    // within the I-JSON safe range. An unsafe integer must travel as a string, so that an upstream
+    // reading Int64/BigInteger can never see a value different from what was fingerprinted.
+    private static double SafeNumber(ref Utf8JsonReader r)
+    {
+        if (!r.TryGetDouble(out var d) || !double.IsFinite(d))
+            throw new JcsException("number is not a finite IEEE-754 double");
+        var raw = Encoding.UTF8.GetString(r.HasValueSequence ? r.ValueSequence.ToArray() : r.ValueSpan.ToArray());
+        var isInteger = raw.AsSpan().IndexOfAny('.', 'e', 'E') < 0;
+        if (isInteger && BigInteger.Abs(BigInteger.Parse(raw, CultureInfo.InvariantCulture)) > MaxSafeInteger)
+            throw new JcsException("unsafe integer (beyond 2^53-1); send it as a string");
+        return d;
+    }
+
+    private static void RejectLoneSurrogates(string s)
+    {
+        for (var i = 0; i < s.Length; i++)
+        {
+            if (char.IsHighSurrogate(s[i]))
+            {
+                if (i + 1 >= s.Length || !char.IsLowSurrogate(s[i + 1])) throw new JcsException("lone high surrogate");
+                i++;   // valid pair
+            }
+            else if (char.IsLowSurrogate(s[i])) throw new JcsException("lone low surrogate");
+        }
+    }
+
     private static void EscapeString(string s, StringBuilder sb)
     {
         sb.Append('"');
@@ -126,9 +166,8 @@ public static class Jcs
 
     /// <summary>
     /// The ECMAScript <c>Number::toString</c> (base 10) production, per RFC 8785 §3.2.2.3. The
-    /// shortest round-tripping digits come from the runtime (identical to V8's, both minimal),
-    /// but the <b>formatting</b> — when to use a decimal point, leading zeros, or an exponent —
-    /// is applied here exactly per the spec steps, never delegated to a platform
+    /// shortest round-tripping digits come from the runtime (identical to V8's, both minimal), but
+    /// the <b>formatting</b> is applied here exactly per the spec steps, never delegated to a platform
     /// <c>ToString</c>. Conformance is pinned by V8-derived boundary vectors.
     /// </summary>
     public static string NumberToJson(double value)
@@ -137,22 +176,15 @@ public static class Jcs
         if (value == 0.0) return "0";   // also collapses -0 to 0
 
         var sign = value < 0 ? "-" : "";
-        var m = Math.Abs(value);
-
-        // Shortest round-trippable digits from the runtime (Ryū/Grisu — minimal, == V8's).
-        var (s, n) = ShortestDigits(m);
+        var (s, n) = ShortestDigits(Math.Abs(value));
         var k = s.Length;
 
         string body;
-        if (k <= n && n <= 21)
-            body = s + new string('0', n - k);                        // integer, trailing zeros
-        else if (0 < n && n <= 21)
-            body = s[..n] + "." + s[n..];                             // decimal point inside digits
-        else if (-6 < n && n <= 0)
-            body = "0." + new string('0', -n) + s;                    // small: 0.000…digits
+        if (k <= n && n <= 21) body = s + new string('0', n - k);
+        else if (0 < n && n <= 21) body = s[..n] + "." + s[n..];
+        else if (-6 < n && n <= 0) body = "0." + new string('0', -n) + s;
         else
         {
-            // Exponential: one digit, optional fraction, 'e', signed exponent.
             var mantissa = k == 1 ? s : s[..1] + "." + s[1..];
             var e = n - 1;
             body = mantissa + "e" + (e >= 0 ? "+" : "-") + Math.Abs(e).ToString(CultureInfo.InvariantCulture);
@@ -160,37 +192,25 @@ public static class Jcs
         return sign + body;
     }
 
-    // Decompose |value| into (significant digits s, n) with value = s × 10^(n-k), s having no
-    // leading or trailing zeros. The digit sequence is taken from the runtime's shortest
-    // round-trip form ("R" is shortest on .NET Core 3+), then re-based; only the formatting
-    // above is ours, so the digits match any conforming shortest implementation.
     private static (string s, int n) ShortestDigits(double m)
     {
-        var r = m.ToString("R", CultureInfo.InvariantCulture);   // e.g. "1", "1.5", "1E-07", "1.234E+21"
+        var r = m.ToString("R", CultureInfo.InvariantCulture);
         var exp = 0;
         var ei = r.IndexOf('E');
-        if (ei >= 0)
-        {
-            exp = int.Parse(r[(ei + 1)..], CultureInfo.InvariantCulture);
-            r = r[..ei];
-        }
+        if (ei >= 0) { exp = int.Parse(r[(ei + 1)..], CultureInfo.InvariantCulture); r = r[..ei]; }
         var dot = r.IndexOf('.');
         string intPart, fracPart;
         if (dot >= 0) { intPart = r[..dot]; fracPart = r[(dot + 1)..]; }
         else { intPart = r; fracPart = ""; }
 
         var digits = intPart + fracPart;
-        var point = intPart.Length + exp;   // decimal point sits after this many digits of `digits`
-
-        // Strip leading zeros (each shifts the point left).
+        var point = intPart.Length + exp;
         var start = 0;
         while (start < digits.Length - 1 && digits[start] == '0') { start++; point--; }
         digits = digits[start..];
-        // Strip trailing zeros (do not move the point).
         var end = digits.Length;
         while (end > 1 && digits[end - 1] == '0') end--;
         digits = digits[..end];
-
         return (digits, point);
     }
 }

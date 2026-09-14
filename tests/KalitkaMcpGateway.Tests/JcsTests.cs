@@ -22,7 +22,7 @@ public class JcsTests
 
     private static Vectors Load()
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "kalitka-mcp-call-v1.json");
+        var path = Path.Combine(AppContext.BaseDirectory, "kalitka-mcp-call-v2.json");
         return JsonSerializer.Deserialize<Vectors>(File.ReadAllText(path),
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
     }
@@ -100,6 +100,56 @@ public class JcsTests
     public void Duplicate_keys_are_rejected()
     {
         Assert.Throws<JcsException>(() => Jcs.Canonicalize("{\"a\":1,\"a\":2}"));
+    }
+
+    // ---- hostile-input hardening ----------------------------------------------
+
+    [Theory]
+    [InlineData("9007199254740992")]        // 2^53 — outside the I-JSON safe range
+    [InlineData("1234567890123456789")]     // well beyond 2^53
+    public void Unsafe_integers_are_rejected(string big) =>
+        Assert.Throws<JcsException>(() => Jcs.Canonicalize($"{{\"n\":{big}}}"));
+
+    [Fact]
+    public void A_safe_integer_at_the_boundary_is_accepted()
+    {
+        Assert.Equal("{\"n\":9007199254740991}", Canon("{\"n\":9007199254740991}"));
+    }
+
+    [Fact]
+    public void Trailing_content_after_the_value_is_rejected()
+    {
+        Assert.Throws<JcsException>(() => Jcs.Canonicalize("{} {}"));
+        Assert.Throws<JcsException>(() => Jcs.Canonicalize("1 2"));
+    }
+
+    [Fact]
+    public void Lone_surrogates_are_rejected_but_valid_pairs_pass()
+    {
+        Assert.Throws<JcsException>(() => Jcs.Canonicalize("\"\\ud800\""));    // lone high
+        Assert.Throws<JcsException>(() => Jcs.Canonicalize("\"\\udc00x\""));   // lone low
+        _ = Canon("\"\\ud83d\\ude00\"");                                       // a valid pair (emoji) does not throw
+    }
+
+    [Fact]
+    public void Oversize_input_is_rejected()
+    {
+        var big = "\"" + new string('a', Jcs.MaxInputBytes) + "\"";
+        Assert.Throws<JcsException>(() => Jcs.Canonicalize(big));
+    }
+
+    [Fact]
+    public void Too_many_nodes_is_rejected()
+    {
+        var arr = "[" + string.Join(",", Enumerable.Repeat("1", Jcs.MaxNodes + 5)) + "]";
+        Assert.Throws<JcsException>(() => Jcs.Canonicalize(arr));
+    }
+
+    [Fact]
+    public void Too_deep_nesting_is_rejected()
+    {
+        var deep = new string('[', Jcs.MaxDepth + 2) + new string(']', Jcs.MaxDepth + 2);
+        Assert.Throws<JcsException>(() => Jcs.Canonicalize(deep));
     }
 
     [Fact]
