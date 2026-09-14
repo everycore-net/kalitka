@@ -91,6 +91,7 @@ public static class AdminPages
         + Nav(who, Perm.PoliciesManage, "/admin/policies/copilot", "Copilot")
         + Nav(who, Perm.PrincipalsRead, "/admin/principals", "Operators")
         + Nav(who, Perm.HistoryRead, "/admin/history", "History")
+        + Nav(who, Perm.HistoryRead, "/admin/audit/verify", "Integrity")
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
         + "<form class=\"inline\" method=\"post\" action=\"/admin/logout\"><button class=\"mut\">Sign out</button></form>"
@@ -624,6 +625,40 @@ public static class AdminPages
                   : d.Class == PolicyImpactClass.MixedChange ? "<span class=\"pill priv\">mixed</span> " : "")
               .Append("<br>");
         return sb.ToString();
+    }
+
+    /// <summary>Audit integrity: the hash-chain verification result and a signed checkpoint over the
+    /// head — the exportable proof that the log has not been altered, reordered or truncated.</summary>
+    public static string AuditIntegrity(AdminIdentity who, AuditVerification v, Kalitka.AuditIntegrity.Checkpoint? checkpoint)
+    {
+        var sb = new StringBuilder("<h1>Audit integrity</h1>")
+          .Append("<p class=\"muted\">Every audit event is chained to the one before it by hash, so the "
+              + "history cannot be altered or reordered without breaking the chain. A signed checkpoint over "
+              + "the head also catches truncation. This is what a compliance export rests on.</p>");
+
+        sb.Append("<h2>Chain</h2><table>")
+          .Append($"<tr><th>Status</th><td>{(v.Intact ? "<span class=\"pill approved\">intact</span>" : "<span class=\"pill denied\">TAMPERED</span>")}</td></tr>")
+          .Append($"<tr><th>Events checked</th><td>{v.Checked}</td></tr>")
+          .Append($"<tr><th>Head seq</th><td>{v.HeadSeq}</td></tr>")
+          .Append($"<tr><th>Head hash</th><td><code>{H(v.HeadHash)}</code></td></tr>");
+        if (!v.Intact && v.FirstBadSeq is { } bad)
+            sb.Append($"<tr><th>First bad link</th><td><span class=\"pill denied\">seq {bad}</span></td></tr>");
+        sb.Append("</table>");
+
+        if (checkpoint is not null)
+            sb.Append("<h2>Signed checkpoint</h2>")
+              .Append("<p class=\"muted\">Signed by the server key now; keep it to prove later that the log "
+                  + "up to this point existed and has not been truncated.</p>")
+              .Append("<table>")
+              .Append($"<tr><th>Seq</th><td>{checkpoint.Seq}</td></tr>")
+              .Append($"<tr><th>Hash</th><td><code>{H(checkpoint.Hash)}</code></td></tr>")
+              .Append($"<tr><th>Signed at</th><td class=\"muted\">{checkpoint.SignedAt:yyyy-MM-dd HH:mm} UTC</td></tr>")
+              .Append($"<tr><th>Token</th><td><code style=\"word-break:break-all\">{H(checkpoint.Token)}</code></td></tr>")
+              .Append("</table>");
+        else if (v.Intact)
+            sb.Append("<p class=\"muted\">No events yet — nothing to checkpoint.</p>");
+
+        return Shell(who, sb.ToString());
     }
 
     // ---- Operator principals (who counts as a distinct approver) -------------

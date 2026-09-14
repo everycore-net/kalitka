@@ -12,6 +12,10 @@ public interface IAuditStore
 {
     Task Append(AuditEvent e, CancellationToken ct);
     Task<IReadOnlyList<AuditEvent>> Query(AuditQuery query, CancellationToken ct);
+
+    /// <summary>Recompute the hash chain over the stored events and report whether it is intact.
+    /// The proof a compliance export rests on — a tampered or reordered event breaks it.</summary>
+    Task<AuditVerification> VerifyChain(CancellationToken ct);
 }
 
 /// <summary>
@@ -24,15 +28,32 @@ public sealed class InMemoryAuditStore : IAuditStore
     private const int Cap = 5000;
     private readonly LinkedList<AuditEvent> _events = new();
     private readonly object _lock = new();
+    private long _headSeq;
+    private string _headHash = AuditHash.Genesis;
 
     public Task Append(AuditEvent e, CancellationToken ct)
     {
         lock (_lock)
         {
-            _events.AddFirst(e);                       // newest first
+            var linked = AuditHash.Link(e, _headSeq, _headHash);   // chain under the lock — no gaps or forks
+            _headSeq = linked.Seq;
+            _headHash = linked.Hash;
+            _events.AddFirst(linked);                  // newest first
             while (_events.Count > Cap) _events.RemoveLast();
         }
         return Task.CompletedTask;
+    }
+
+    public Task<AuditVerification> VerifyChain(CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            // Oldest-first over the retained window. Each event's own hash must recompute, and each
+            // must link to the prior one (the very first retained event's PrevHash may point at an
+            // event already dropped from the ring, so only its self-hash is checked).
+            var ordered = _events.Reverse().ToList();
+            return Task.FromResult(AuditChain.Verify(ordered));
+        }
     }
 
     public Task<IReadOnlyList<AuditEvent>> Query(AuditQuery q, CancellationToken ct)
