@@ -48,6 +48,8 @@ builder.Services.AddSingleton<IAuditStore>(sp =>
     var path = sp.GetRequiredService<IOptions<GateOptions>>().Value.AuditDbPath;
     return string.IsNullOrWhiteSpace(path) ? new InMemoryAuditStore() : new SqliteAuditStore(path);
 });
+builder.Services.AddSingleton(sp => new AuditIntegrity(
+    sp.GetRequiredService<IAuditStore>(), sp.GetRequiredService<TokenSigner>(), sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton<IRequestStore>(sp =>
 {
     if (Pg(sp) is { } cs) return new PgRequestStore(cs);
@@ -805,6 +807,15 @@ guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
     return Results.Content(
         AdminPages.History(Admin(ctx), events, actor, resource, eventType, Math.Max(0, offset), limit),
         "text/html; charset=utf-8");
+}).RequirePermission(Perm.HistoryRead);
+
+// Audit integrity: verify the hash chain and (if intact) sign the head — the exportable proof
+// that the log has not been altered, reordered or truncated.
+guarded.MapGet("/audit/verify", async (HttpContext ctx, AuditIntegrity integrity) =>
+{
+    var verification = await integrity.Verify(ctx.RequestAborted);
+    var checkpoint = await integrity.SignHead(ctx.RequestAborted);
+    return Results.Content(AdminPages.AuditIntegrity(Admin(ctx), verification, checkpoint), "text/html; charset=utf-8");
 }).RequirePermission(Perm.HistoryRead);
 
 // ---- Sessions (live view of used grants) -----------------------------------

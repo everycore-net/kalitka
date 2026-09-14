@@ -7,6 +7,31 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-14
+
+### Security
+
+- **Tamper-evident audit log (hash chain + signed checkpoint).** The audit log is what kalitka's
+  whole pitch rests on — *provable* approval (quorum, four-eyes, "who allowed the bank client to
+  start") — and until now append-only was only a convention: anyone with database access could
+  rewrite history. Now every event carries a monotonic `seq` and the SHA-256 hash of the previous
+  event (`AuditHash`, length-prefixed framing backported from the MCP gateway's fingerprint), so
+  altering or reordering any event breaks the chain.
+  - `IAuditStore.VerifyChain` recomputes the chain and reports the first broken `seq`. Implemented
+    across all backends: **SQLite** (chain serialized by SQLite's single writer — the async path
+    opens an IMMEDIATE transaction, the atomic path already holds the write lock), **Postgres**
+    (a transaction-scoped **advisory lock** serializes appends across nodes), and in-memory.
+  - **Existing logs are backfilled** on migration (rows chained in `(ts, id)` order) — a verifiable
+    baseline from which any future tampering is caught, so upgrading a live DB doesn't fail
+    verification.
+  - **`AuditIntegrity`** signs the chain head (seq + hash + time) with the server key — a checkpoint
+    a customer can keep to also catch *truncation* (dropped recent events), not just in-place edits;
+    a broken chain is never signed. Surfaced at **`/admin/audit/verify`** (Integrity nav): chain
+    status, first bad link, and the exportable signed checkpoint.
+  - From the owner's architecture/security audit; this was its #1, "the product's core claim depends
+    on it." 7 tests (in-memory + SQLite chain/tamper/backfill/checkpoint) + a Postgres chain/tamper
+    test in CI. No breaking change (additive columns, backfill).
+
 ## [0.32.0] - 2026-09-14
 
 ### Added

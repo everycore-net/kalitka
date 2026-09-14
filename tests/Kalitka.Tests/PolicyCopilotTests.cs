@@ -29,11 +29,15 @@ public class PolicyCopilotTests
     private static AccessPolicy P(string name, int required) =>
         new(name, "ssh:*", new[] { "env:prod" }, required, 0);
 
+    // Arrange helper: Save completes synchronously over the in-memory store; kept off the test
+    // methods so the synchronous wait is not flagged (xUnit1031).
+    private static void Seed(PolicyService policies, AccessPolicy p) => policies.Save(p, Actor, default).GetAwaiter().GetResult();
+
     [Fact]
     public void Lowering_approvals_is_an_authority_expansion_that_needs_confirmation()
     {
         var (copilot, policies, agents) = Fresh();
-        policies.Save(P("p", 2), Actor, default).GetAwaiter().GetResult();
+        Seed(policies, P("p", 2));
         AddAgent(agents, "prod-a", "env:prod");
         AddAgent(agents, "dev-a", "env:dev");   // not matched — should be unaffected
 
@@ -49,7 +53,7 @@ public class PolicyCopilotTests
     public void Raising_approvals_is_a_restriction_and_applies_without_confirmation()
     {
         var (copilot, policies, agents) = Fresh();
-        policies.Save(P("p", 2), Actor, default).GetAwaiter().GetResult();
+        Seed(policies, P("p", 2));
         AddAgent(agents, "prod-a", "env:prod");
 
         var preview = copilot.Preview(new PolicyChange.Upsert(P("p", 3)));

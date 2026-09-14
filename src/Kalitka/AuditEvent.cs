@@ -16,7 +16,23 @@ public sealed record AuditEvent(
     string RequestId,
     string GrantId,
     string Channel,      // gate | telegram | web | email | ssh | ...
-    string Metadata);
+    string Metadata)
+{
+    // ---- Tamper-evidence (hash chain) ---------------------------------------
+    // Assigned by the store at append time, under its own serialization: a monotonic sequence
+    // number and the hash of this event chained to the previous one. Default (0 / empty) on an
+    // event that has not been appended yet. See AuditHash.
+    public long Seq { get; init; }
+    public string PrevHash { get; init; } = "";
+    public string Hash { get; init; } = "";
+}
+
+/// <summary>The result of verifying the audit hash chain: whether it is intact, how many events
+/// were checked, and — if broken — the sequence number of the first bad link.</summary>
+public sealed record AuditVerification(bool Intact, long Checked, long? FirstBadSeq, string HeadHash, long HeadSeq = 0)
+{
+    public static readonly AuditVerification Empty = new(true, 0, null, "", 0);
+}
 
 /// <summary>Event types. Resource-centric; grant/session reserved for PAM axes.</summary>
 public static class AuditEvents

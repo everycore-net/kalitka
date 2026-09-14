@@ -47,6 +47,32 @@ public sealed class PostgresStoreTests
     private static SessionRecord Session(string id, DateTimeOffset at) =>
         new(id, "g1", "r1", "sergej", "ssh:prod-01", "linux-prod-03", at, null, "", "");
 
+    // ---- Audit tamper-evidence ----------------------------------------------
+
+    [Fact]
+    public async Task Audit_chain_builds_and_detects_tampering_on_postgres()
+    {
+        if (Skip) return;
+        var store = new PgAuditStore(_cs!);
+        for (var i = 0; i < 4; i++) await store.Append(Ev("a" + i, "access.approved", "r1"), default);
+
+        var v = await store.VerifyChain(default);
+        Assert.True(v.Intact);
+        Assert.Equal(4, v.Checked);
+
+        // Tamper directly, then the chain must break at that sequence.
+        await using (var conn = new NpgsqlConnection(_cs!))
+        {
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE audit SET metadata='forged' WHERE seq=2;";
+            await cmd.ExecuteNonQueryAsync();
+        }
+        var broken = await store.VerifyChain(default);
+        Assert.False(broken.Intact);
+        Assert.Equal(2, broken.FirstBadSeq);
+    }
+
     // ---- Requests -----------------------------------------------------------
 
     [Fact]
