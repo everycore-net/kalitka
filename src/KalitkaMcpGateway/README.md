@@ -111,8 +111,19 @@ see the approval, only one `redeem` succeeds, so a destructive call dispatches a
 durable across instances and restarts. On a definite result the Core session is ended with the
 outcome; a transport failure after dispatch is still `OutcomeUnknown`.
 
-The upstream transport is still behind `IUpstream`; a real MCP client (`tools/list` +
-pagination/`list_changed`, then real `tools/call`) is the next slice.
+## Real upstream (`McpUpstream`, over the MCP client SDK)
+
+`McpUpstream` implements `IUpstream` over the official MCP client SDK (`ModelContextProtocol.Core`):
+`ListToolsAsync` (SDK-handled pagination) maps each tool's name + raw input schema into the
+inventory, and `CallToolAsync` forwards the approved **canonical** call to the real server and maps
+its result (a missing `isError` is success, the MCP default). `ConnectStdioAsync(name, command,
+args)` launches a stdio upstream (`HttpClientTransport` is available for HTTP). The SDK owns the
+wire; the adapter is a faithful mapping (unit-tested), and the live stdio path was verified end to
+end against the real `KalitkaMcp` server.
+
+With this the gateway is a working human-in-the-loop MCP enforcement gateway: the first real
+`tools/call` flows **fingerprint → renderer → Core approval → durable claim → upstream**. (Deferred
+nicety: a `list_changed` push subscription; periodic `RefreshInventoryAsync` covers drift meanwhile.)
 
 ## Inventory, drift & the proxy (`GatewayProxy`, over `IUpstream`)
 
