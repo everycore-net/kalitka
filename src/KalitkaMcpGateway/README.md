@@ -60,6 +60,32 @@ language) must reproduce every `canonical` output exactly and reject every `reje
 test suite runs these vectors, so **the test is the conformance check**. The version prefix
 covers both the envelope and the canonicalization, so any change is a new prefix.
 
+## Decision + execution state machine
+
+`CallGate` (keyed by fingerprint) turns a classified call into a decision and drives its
+lifecycle. Classification is **policy's** (`IToolClassifier`), never the guarded server's
+annotations; an **unclassified** tool — including one that appears after an upstream update
+(inventory drift) — is **never auto-allowed** (manual approval by default, deny in strict mode).
+
+```
+                approve (distinct principals)      claim (one wins)     complete
+Pending ─────────────────────────▶ Approved ───────────────▶ ExecutionClaimed ──▶ Executed | Failed
+   │  deny → Denied                    │                              │  claim TTL
+   │  approval TTL → Expired           └── re-issue resolves here     └── no outcome → OutcomeUnknown
+```
+
+- **`ExecutionClaimed` = at-most-once dispatch.** Exactly one claim succeeds, so two automatic
+  retries after an approval cannot run a destructive tool twice.
+- **A claim that never completes → `OutcomeUnknown`** (fail closed; a late success is refused) —
+  the human who approved it sees it ended unknown, never a silent success.
+- **Re-issue-safe.** The AI re-sends the same call after approval; it resolves to the same record
+  by fingerprint. A changed argument is a different fingerprint — a different, un-approved call.
+- **`pending` never holds a session:** `Evaluate` returns `Pending` + Call ID; the caller polls /
+  re-issues. Denied stays denied; an unacted approval expires and may be retried fresh.
+
+This slice is in-memory (a clock, no persistence, no wire). Wiring approval to Core's human
+channels, the live upstream MCP proxy, and `tools/list` drift detection are the next slices.
+
 ## Tests
 
 - `JcsTests` — the published vectors, V8-derived number boundary vectors, and the
@@ -67,3 +93,6 @@ covers both the envelope and the canonicalization, so any change is a new prefix
   order significant, duplicate keys rejected).
 - `FingerprintTests` — identical calls match; every authority dimension (arguments, tool,
   contract, subject, workload, upstream alias) changes the fingerprint; Call ID format.
+- `CallGateTests` — auto-allow runs once; approval flow; **second claim refused** (at-most-once);
+  required-two distinct principals; unclassified → manual / deny; approval + claim expiry
+  (`OutcomeUnknown`, no late success); denied stays denied; fingerprint isolation.

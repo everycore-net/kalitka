@@ -9,6 +9,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **MCP Gateway — decision + execution state machine (`src/KalitkaMcpGateway` → 0.2.0).** The
+  gateway's security core on top of the fingerprint: classification from policy and the call
+  lifecycle that makes approval mean something.
+  - **Classification is policy's, never the guarded server's** (`IToolClassifier` / `ToolClass`):
+    `NoApproval`, `NeedsApproval{required}`, or `Unclassified`. An unclassified tool — including
+    one that appears after an upstream update (inventory drift) — is **never auto-allowed**:
+    manual approval by default, deny in strict mode.
+  - **`CallGate` state machine**, keyed by fingerprint: `Pending → Approved →
+    ExecutionClaimed → Executed | Failed`, plus `Denied`, `Expired`, `OutcomeUnknown`.
+    `ExecutionClaimed` is the **at-most-once** gate — exactly one claim wins, so two retries after
+    an approval can't run a destructive tool twice. A claim that never reports an outcome expires
+    to **`OutcomeUnknown`** (fail closed; a late success is refused) rather than silent success.
+    Approvals count **distinct principals**; an unacted approval expires and may be retried fresh;
+    a **denied** call stays denied on re-issue. Re-issue-safe: the AI re-sends the same call and it
+    resolves by fingerprint (a changed argument is simply a different, un-approved call).
+  - 12 more tests (61 total in the gateway, in CI). In-memory for this slice — the upstream MCP
+    proxy, `tools/list` drift detection, Core-notification and the human-safe renderer are next.
+
 - **MCP Gateway — security foundation (`src/KalitkaMcpGateway`, 0.1.0, public/AGPL).** The first
   slice of the guarded proxy in front of another MCP server: the canonical **call fingerprint**
   a grant binds to, so nothing (tool, contract, subject, workload, arguments) can change between
