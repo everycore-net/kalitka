@@ -122,7 +122,7 @@ public sealed class ApprovalEngine
         _policies = policies;
         _principals = principals;
 
-        _sessions = new SessionService(_options.HmacSecret, clock);
+        _sessions = new SessionService(_options.HmacSecret, clock, _options.HmacSecretPrevious);
         _sessionMinutes = _options.SessionMinutes;
 
         _trustedProxies = ClientIp.ParseNetworks(_options.TrustedProxies,

@@ -7,6 +7,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-14
+
+### Security
+
+- **Session-signing key rotation without logging everyone out (overlap window).** Until now the HMAC
+  master secret was a single value: rotating it (a leak, a scheduled roll) invalidated every session
+  cookie and OAuth state at once — every approver bounced to re-login mid-flight. Now both signers
+  accept a *previous* secret on **verification only**; new tokens are always signed with the current
+  secret. Set the previous to the old value and the current to the new one, and existing sessions stay
+  valid through an overlap window; clear the previous once a session lifetime has passed.
+  - `TokenSigner(master, previousMaster?)` and `SessionService(hmac, clock, previousSecret?)` verify
+    against the current key, then the previous one, both constant-time (`FixedTimeEquals`). Purpose
+    isolation (HKDF per key id) still holds across the overlap — a previous-master token cannot cross
+    purposes. New config key `HmacSecretPrevious` (empty = no overlap), wired through `Program.cs` and
+    `ApprovalEngine`.
+  - 11 rotation tests (TokenSigner + SessionService: previous verifies, current-only signs, purpose
+    isolation across the window, previous rejected once dropped, OAuth state overlap). Core suite 315.
+
 ## [0.34.0] - 2026-09-14
 
 ### Security

@@ -16,11 +16,13 @@ namespace Kalitka;
 public sealed class SessionService
 {
     private readonly byte[] _key;
+    private readonly byte[]? _prevKey;   // accepted on verify only, during a rotation window
     private readonly TimeProvider _clock;
 
-    public SessionService(string hmacSecret, TimeProvider clock)
+    public SessionService(string hmacSecret, TimeProvider clock, string? previousSecret = null)
     {
         _key = Encoding.UTF8.GetBytes(hmacSecret);
+        _prevKey = string.IsNullOrEmpty(previousSecret) ? null : Encoding.UTF8.GetBytes(previousSecret);
         _clock = clock;
     }
 
@@ -42,9 +44,7 @@ public sealed class SessionService
         if (parts[1] != "*" && !string.Equals(parts[1], host, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var expected = Signature($"{parts[0]}:{parts[1]}");
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(parts[2]));
+        return Matches($"{parts[0]}:{parts[1]}", parts[2]);
     }
 
     // ---- OAuth state: carries the target + a browser-bound nonce, signed -----
@@ -55,7 +55,7 @@ public sealed class SessionService
     public string BuildState(string target, string nonce, int minutes = 10)
     {
         var body = $"{_clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds()}|{nonce}|{target}";
-        return $"{Convert.ToBase64String(Encoding.UTF8.GetBytes(body))}.{Signature(body)}";
+        return $"{Convert.ToBase64String(Encoding.UTF8.GetBytes(body))}.{Signature(body, _key)}";
     }
 
     public bool TryReadState(string state, string nonce, out string target)
@@ -70,10 +70,7 @@ public sealed class SessionService
         try { body = Encoding.UTF8.GetString(Convert.FromBase64String(parts[0])); }
         catch { return false; }
 
-        var expected = Signature(body);
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(parts[1])))
-            return false;
+        if (!Matches(body, parts[1])) return false;
 
         var fields = body.Split('|', 3);
         if (fields.Length != 3 || !long.TryParse(fields[0], out var expiry)) return false;
@@ -92,11 +89,20 @@ public sealed class SessionService
 
     private long Expiry(int minutes) => _clock.GetUtcNow().AddMinutes(minutes).ToUnixTimeSeconds();
 
-    private string Sign(string body) => $"{body}:{Signature(body)}";
+    private string Sign(string body) => $"{body}:{Signature(body, _key)}";
 
-    private string Signature(string value)
+    // Verify against the current key, then the previous one during a rotation window. Constant-time.
+    private bool Matches(string value, string providedHex)
     {
-        using var hmac = new HMACSHA256(_key);
+        var provided = Encoding.UTF8.GetBytes(providedHex);
+        if (CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(Signature(value, _key)), provided)) return true;
+        return _prevKey is not null
+            && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(Signature(value, _prevKey)), provided);
+    }
+
+    private static string Signature(string value, byte[] key)
+    {
+        using var hmac = new HMACSHA256(key);
         return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(value)));
     }
 }
