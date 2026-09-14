@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace KalitkaMcpGateway;
+namespace Kalitka.Text;
 
 /// <summary>
 /// The small, <b>pinned</b> Unicode facts the safe renderer needs — script of a code point, whether

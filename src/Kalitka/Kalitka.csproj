@@ -7,7 +7,7 @@
     <RootNamespace>Kalitka</RootNamespace>
     <AssemblyName>Kalitka</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.33.0</Version>
+    <Version>0.34.0</Version>
     <Copyright>Copyright (C) 2026 everycore</Copyright>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
@@ -22,6 +22,10 @@
     <PackageReference Include="MaxMind.GeoIP2" Version="6.1.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Kalitka.Text\Kalitka.Text.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,4 +1,4 @@
-using KalitkaMcpGateway;
+using Kalitka.Text;
 using Xunit;
 
 namespace KalitkaMcpGateway.Tests;

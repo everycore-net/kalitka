@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using Kalitka.Text;
 
 namespace Kalitka;
 
@@ -54,18 +55,25 @@ public sealed class TelegramNotifier : INotifier
 
     private static string H(string s) => WebUtility.HtmlEncode(s);
 
-    private static string Describe(PendingRequest r)
+    // The approver reads these fields to decide — so a bidi override, an invisible character or a
+    // confusable in a command/target/subject must never reach them able to deceive. SafeText turns
+    // dangerous characters into explicit [U+XXXX NAME] markers and flags mixed/confusable scripts;
+    // Telegram is the weakest channel (no per-token styling), so the text-marker form is used and the
+    // invariant holds here. HtmlEncode then only guards the surrounding markup.
+    private static string Safe(string s, FieldKind kind) => H(SafeText.ToTextMarkers(SafeText.Render(s, kind)));
+
+    internal static string Describe(PendingRequest r)
     {
         var place = string.IsNullOrEmpty(r.CountryCode)
             ? "(private/unknown)"
             : $"{H(r.City)}, {H(r.Country)} [{H(r.CountryCode)}]";
 
         return "\U0001F514 <b>Someone is at the door</b>\n"
-             + $"Target: <code>{H(r.Target)}</code>\n"
-             + $"Says: <b>{H(r.Input)}</b>\n"
-             // The command is the crux of what is being approved — show it prominently.
-             + (string.IsNullOrEmpty(r.Command) ? "" : $"Command: <code>{H(r.Command)}</code>\n")
-             + (string.IsNullOrEmpty(r.SourceAddr) ? "" : $"From-addr: <code>{H(r.SourceAddr)}</code>\n")
+             + $"Target: <code>{Safe(r.Target, FieldKind.SecurityIdentifier)}</code>\n"
+             + $"Says: <b>{Safe(r.Input, FieldKind.FreeText)}</b>\n"
+             // The command is the crux of what is being approved — show it prominently, rendered safely.
+             + (string.IsNullOrEmpty(r.Command) ? "" : $"Command: <code>{Safe(r.Command, FieldKind.FreeText)}</code>\n")
+             + (string.IsNullOrEmpty(r.SourceAddr) ? "" : $"From-addr: <code>{Safe(r.SourceAddr, FieldKind.SecurityIdentifier)}</code>\n")
              + $"IP: <code>{H(r.Ip)}</code>\n"
              + $"From: {place}\n"
              + $"<i>{r.Raised:yyyy-MM-dd HH:mm:ss zzz}</i>";

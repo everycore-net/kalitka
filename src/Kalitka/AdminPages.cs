@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using Kalitka.Text;
 
 namespace Kalitka;
 
@@ -45,6 +46,12 @@ public static class AdminPages
     private const string Foot = "</body></html>";
 
     private static string H(string s) => WebUtility.HtmlEncode(s);
+
+    // Approver-facing fields (command, target, subject, source) rendered so a bidi override,
+    // invisible character or confusable cannot deceive the human deciding — dangerous characters
+    // become explicit [U+XXXX NAME] markers, mixed/confusable scripts are flagged. Same SafeText
+    // the MCP gateway uses; HtmlEncode then only guards the surrounding markup.
+    private static string Safe(string s, FieldKind kind) => H(SafeText.ToTextMarkers(SafeText.Render(s, kind)));
 
     // Render a capability list, giving any sudo-grade capability (subject.assert) a
     // distinct badge so it never blends into an ordinary <code> run. A privileged grant
@@ -145,8 +152,8 @@ public static class AdminPages
             sb.Append("<table><tr><th>Target</th><th>Says</th><th>From</th><th>When</th><th></th></tr>");
             foreach (var r in waiting)
                 sb.Append("<tr>")
-                  .Append($"<td><code>{H(r.Target)}</code></td>")
-                  .Append($"<td>{H(r.Input)}</td>")
+                  .Append($"<td><code>{Safe(r.Target, FieldKind.SecurityIdentifier)}</code></td>")
+                  .Append($"<td>{Safe(r.Input, FieldKind.FreeText)}</td>")
                   .Append($"<td>{H(Place(r))}<br><span class=\"muted\">{H(r.Ip)}</span></td>")
                   .Append($"<td class=\"muted\">{r.Raised:HH:mm:ss}</td>")
                   .Append($"<td><a class=\"row\" href=\"/admin/requests/{H(r.Id)}\">open →</a></td>")
@@ -163,14 +170,14 @@ public static class AdminPages
     {
         var sb = new StringBuilder($"<h1>Request <code>{H(r.Id)}</code></h1>");
         sb.Append("<table>")
-          .Append($"<tr><th>Target</th><td><code>{H(r.Target)}</code></td></tr>")
-          .Append($"<tr><th>Says</th><td>{H(r.Input)}</td></tr>")
+          .Append($"<tr><th>Target</th><td><code>{Safe(r.Target, FieldKind.SecurityIdentifier)}</code></td></tr>")
+          .Append($"<tr><th>Says</th><td>{Safe(r.Input, FieldKind.FreeText)}</td></tr>")
           // The exact command being approved (0.26); its presence means access is limited
-          // to this one command (an SSH cert force-command), not an open shell.
+          // to this one command (an SSH cert force-command), not an open shell. Rendered safely.
           .Append(string.IsNullOrEmpty(r.Command) ? ""
-              : $"<tr><th>Command</th><td><code>{H(r.Command)}</code> <span class=\"muted\">(force-command — no open shell)</span></td></tr>")
+              : $"<tr><th>Command</th><td><code>{Safe(r.Command, FieldKind.FreeText)}</code> <span class=\"muted\">(force-command — no open shell)</span></td></tr>")
           .Append(string.IsNullOrEmpty(r.SourceAddr) ? ""
-              : $"<tr><th>From address</th><td><code>{H(r.SourceAddr)}</code> <span class=\"muted\">(cert usable only from here)</span></td></tr>")
+              : $"<tr><th>From address</th><td><code>{Safe(r.SourceAddr, FieldKind.SecurityIdentifier)}</code> <span class=\"muted\">(cert usable only from here)</span></td></tr>")
           .Append($"<tr><th>IP</th><td><code>{H(r.Ip)}</code></td></tr>")
           .Append($"<tr><th>From</th><td>{H(Place(r))}</td></tr>")
           .Append($"<tr><th>Raised</th><td>{r.Raised:yyyy-MM-dd HH:mm:ss}</td></tr>")
