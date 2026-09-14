@@ -9,6 +9,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **MCP Gateway — real upstream MCP client (`src/KalitkaMcpGateway` → 0.6.0).** `McpUpstream`
+  implements the `IUpstream` seam over the official MCP client SDK (`ModelContextProtocol.Core`):
+  `ListToolsAsync` (SDK-handled pagination) maps each tool's name + raw input schema into the
+  inventory, and `CallToolAsync` forwards the approved canonical call to the real server and maps
+  its result (a missing `isError` is success, the MCP default). `ConnectStdioAsync` launches a
+  stdio upstream. The SDK owns the wire; the adapter is a faithful mapping, unit-tested, and the
+  live stdio path was verified end to end against the real `KalitkaMcp` server. With this, the
+  first real `tools/call` flows through fingerprint → renderer → Core approval → durable claim →
+  upstream. **This makes the gateway a working human-in-the-loop MCP enforcement gateway**, not
+  just a security foundation. (Deferred nicety: a `list_changed` push subscription; periodic
+  `RefreshInventoryAsync` covers drift meanwhile.) 117 gateway tests in CI.
+
 - **MCP Gateway — Core as the authority (`src/KalitkaMcpGateway` → 0.5.0).** The gateway no longer
   decides approvals itself: an `IApprovalAuthority` seam separates *who decides* from the gateway's
   fingerprint / classification / forwarding. `LocalAuthority` wraps the in-process `CallGate`
