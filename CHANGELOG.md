@@ -9,6 +9,23 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **MCP server onto the control plane — v1 (`src/KalitkaMcp`, 0.1.0).** An MCP server (stdio,
+  official `ModelContextProtocol` SDK) that lets an AI talk to Kalitka *itself*: `kalitka.request_access`,
+  `kalitka.get_request`, `kalitka.end_session`. There is **no `approve_request` tool, by construction**
+  — a workload that both asks and approves makes the human decoration; a reflection test asserts
+  the absence as an invariant. The server is just another signed `/agent/*` client (portable
+  ECDSA P-256, `kalitka-agent-sig-v1`), so the control plane needs no MCP-specific endpoint.
+  - Part 1 of the MCP track (server); part 2 (gateway in front of other MCP servers, with
+    call-fingerprint binding and safe rendering) is separate.
+  - stdio is the first transport, **not an architectural boundary** — tools and the Core client
+    are transport-agnostic, so HTTP/OAuth slots in later. `subject_identity` is claimed (routing
+    only; a desktop host is impersonable → never trusted for self-approval).
+  - Tests: signature parity with Core's `AgentSignatures`; the exact tool surface + no `approve_*`;
+    a real round-trip against the live Core pipeline (enroll → request → stays `waiting` until a
+    human approves → grant; out-of-scope resource is 403); plus a stdio `initialize`/`tools/list`
+    handshake smoke. Not in CI (built separately). Deferred: first-class `reason`,
+    `list_my_grants`, HTTP/OAuth transport.
+
 - **Windows agent — thin end-to-end slice (`src/KalitkaAgent.Windows`, 0.1.0).** A Windows
   Service (net10.0-windows; Core stays on net9, they meet only over the versioned
   `kalitka-agent-sig-v1` HTTP scheme) that makes app-side JIT access *trustworthy*: an
