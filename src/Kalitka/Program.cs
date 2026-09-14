@@ -30,6 +30,8 @@ builder.Services.AddSingleton<IGeoLookup>(sp =>
 builder.Services.AddHttpClient<GoogleAuth>();
 builder.Services.AddSingleton<AccessLists>();
 builder.Services.AddSingleton<Metrics>();
+builder.Services.AddSingleton<WebAuthnStore>(sp => new WebAuthnStore(sp.GetRequiredService<IConfigStore>()));
+builder.Services.AddSingleton<WebAuthnService>();
 builder.Services.AddSingleton<GateService>();
 builder.Services.AddSingleton<TokenSigner>(sp =>
 {
@@ -799,6 +801,67 @@ guarded.MapPost("/requests/decide", async (HttpContext ctx, AdminAuth auth, Gate
     return Results.Redirect("/admin/requests", false);
 }).RequirePermission(Perm.RequestsDecide);
 
+// ---- WebAuthn: registered devices (fido2 slice 1) -----------------------
+// Self-service — any authenticated admin manages their own devices.
+guarded.MapGet("/devices", (HttpContext ctx, AdminAuth auth, WebAuthnService webauthn) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AdminPages.Devices(who, webauthn.DevicesFor(who), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+});
+
+guarded.MapPost("/devices/register/begin", (HttpContext ctx, AdminAuth auth, WebAuthnService webauthn) =>
+{
+    var who = Admin(ctx);
+    if (!auth.ValidateCsrf(ctx.Request.Headers["X-Csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var begin = webauthn.RegisterBegin(who);
+    return WebAuthnJson(begin);
+});
+
+guarded.MapPost("/devices/register/finish", async (HttpContext ctx, AdminAuth auth, WebAuthnService webauthn) =>
+{
+    var who = Admin(ctx);
+    var dto = await ctx.Request.ReadFromJsonAsync<RegisterFinishDto>();
+    if (dto is null || !auth.ValidateCsrf(dto.Csrf, who.Sub)) return Results.StatusCode(403);
+    var error = await webauthn.RegisterFinish(who, dto.State, dto.CredentialId, dto.AttestationObject,
+        dto.ClientDataJson, dto.DisplayName, ctx.RequestAborted);
+    return error is null ? Results.Json(new { ok = true }) : Results.Json(new { error }, statusCode: 400);
+});
+
+guarded.MapPost("/devices/remove", async (HttpContext ctx, AdminAuth auth, WebAuthnService webauthn) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await webauthn.RemoveDevice(who, form["credentialId"].ToString(), ctx.RequestAborted);
+    return Results.Redirect("/admin/devices", false);
+});
+
+// ---- WebAuthn: device-signed decision (fido2 slice 2) -------------------
+guarded.MapPost("/requests/{id}/approve/begin", (HttpContext ctx, string id, AdminAuth auth, GateService gate, WebAuthnService webauthn) =>
+{
+    var who = Admin(ctx);
+    if (!auth.ValidateCsrf(ctx.Request.Headers["X-Csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var verb = ctx.Request.Query["verb"].ToString();
+    var actx = gate.ApprovalContextOf(id);
+    if (actx is null) return Results.Json(new { error = "request not found or already decided" }, statusCode: 404);
+    return WebAuthnJson(webauthn.ApproveBegin(who, actx, verb));
+}).RequirePermission(Perm.RequestsDecide);
+
+guarded.MapPost("/requests/decide-signed", async (HttpContext ctx, AdminAuth auth, GateService gate, WebAuthnService webauthn) =>
+{
+    var who = Admin(ctx);
+    var dto = await ctx.Request.ReadFromJsonAsync<DecideSignedDto>();
+    if (dto is null || !auth.ValidateCsrf(dto.Csrf, who.Sub)) return Results.StatusCode(403);
+    var actx = gate.ApprovalContextOf(dto.Id);
+    if (actx is null) return Results.Json(new { error = "request not found or already decided" }, statusCode: 404);
+    var result = await webauthn.ApproveVerify(who, actx, dto.Verb,
+        new SignedDecisionInput(dto.State, dto.CredentialId, dto.AuthenticatorData, dto.ClientDataJson, dto.Signature),
+        ctx.RequestAborted);
+    if (!result.Ok) return Results.Json(new { error = result.Error }, statusCode: 400);
+    await gate.Decide(dto.Id, dto.Verb, result.Actor, result.Proof);
+    return Results.Json(new { ok = true });
+}).RequirePermission(Perm.RequestsDecide);
+
 guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
 {
     var q = ctx.Request.Query;
@@ -1335,6 +1398,12 @@ static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
         ? Results.StatusCode(403)
         : null;
 
+// A WebAuthn "begin" response: the ceremony options (already JSON) plus the stateless state token.
+// The options are embedded raw so they are not double-encoded as a string.
+static IResult WebAuthnJson(WebAuthnBegin b) =>
+    Results.Content("{\"options\":" + b.OptionsJson + ",\"state\":" + System.Text.Json.JsonSerializer.Serialize(b.State) + "}",
+        "application/json");
+
 // Like InternalGuard, but also accepts the secret as "Authorization: Bearer <secret>" so a stock
 // Prometheus can scrape with authorization.credentials_file — no secret in the scrape config.
 static IResult? MetricsGuard(HttpContext ctx, GateService gate)
@@ -1423,6 +1492,12 @@ static async Task<string> BodyHash(HttpRequest req)
     req.Body.Position = 0;
     return AgentSignatures.Sha256Hex(ms.ToArray());
 }
+
+// WebAuthn ceremony payloads posted by the admin JS (case-insensitive JSON: camelCase on the wire).
+internal sealed record RegisterFinishDto(string State, string CredentialId, string AttestationObject,
+    string ClientDataJson, string DisplayName, string Csrf);
+internal sealed record DecideSignedDto(string Id, string Verb, string State, string CredentialId,
+    string AuthenticatorData, string ClientDataJson, string Signature, string Csrf);
 
 // Exposed so integration tests can host the real pipeline via WebApplicationFactory.
 public partial class Program;

@@ -124,11 +124,13 @@ public sealed class GateService
 
     public IReadOnlyList<PendingView> PendingSnapshot() => _engine.PendingSnapshot();
     public int PendingCount() => _engine.PendingCount();
+    public ApprovalContext? ApprovalContextOf(string id) => _engine.ApprovalContextOf(id);
     public PendingView? RequestView(string id) => _engine.RequestView(id);
 
     /// <summary>Apply a decision from a non-Telegram channel (the web plane). The
     /// actor is typed, e.g. <c>google:sergej@example.com</c>.</summary>
     public Task<CallbackResult> Decide(string id, string verb, string actor) => _engine.Decide(id, verb, actor);
+    public Task<CallbackResult> Decide(string id, string verb, string actor, string proof) => _engine.Decide(id, verb, actor, proof);
 
     // ---- Telegram frontend (notifier) ---------------------------------------
 

@@ -286,6 +286,30 @@ public sealed class GateOptions
     /// <summary>Lifetime of an agent enrollment token. Longer than an approval link:
     /// an operator may create it, then enrol the machine a while later.</summary>
     public int EnrollmentTokenMinutes { get; set; } = 60;
+
+    // ---- WebAuthn: passkey registration and device-signed approval ----------
+
+    /// <summary>The WebAuthn Relying Party id — the registrable domain a credential is bound to.
+    /// A credential registered here is usable for every guarded host, because the gate is the only
+    /// thing that authenticates. Defaults to <see cref="GateHost"/> when empty.</summary>
+    public string WebAuthnRpId { get; set; } = "";
+
+    /// <summary>The exact origin the browser reports in clientDataJSON, checked on every assertion.
+    /// Defaults to <c>https://{GateHost}</c> when empty.</summary>
+    public string WebAuthnOrigin { get; set; } = "";
+
+    /// <summary>User-verification requirement: <c>preferred</c> (default) or <c>required</c>
+    /// (force a PIN/biometric, not mere presence). Enterprise knob.</summary>
+    public string WebAuthnUserVerification { get; set; } = "preferred";
+
+    /// <summary>Require a <b>device-bound</b> credential for a signed approval — reject a
+    /// cloud-synced passkey (WebAuthn BE flag). "Device-signed" only means device-bound for a
+    /// non-syncable key; high-assurance deployments turn this on. Off by default.</summary>
+    public bool WebAuthnRequireDeviceBound { get; set; } = false;
+
+    /// <summary>Lifetime of a WebAuthn registration/approval challenge. Short: the operator is at
+    /// the keyboard.</summary>
+    public int WebAuthnChallengeMinutes { get; set; } = 5;
 }
 
 /// <summary>How wide a Google-proven identity's session reaches. See

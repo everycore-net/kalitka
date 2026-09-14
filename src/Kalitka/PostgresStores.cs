@@ -453,6 +453,7 @@ public sealed class PgAuditStore : IAuditStore
             ALTER TABLE audit ADD COLUMN IF NOT EXISTS seq BIGINT NOT NULL DEFAULT 0;
             ALTER TABLE audit ADD COLUMN IF NOT EXISTS prev_hash TEXT NOT NULL DEFAULT '';
             ALTER TABLE audit ADD COLUMN IF NOT EXISTS hash TEXT NOT NULL DEFAULT '';
+            ALTER TABLE audit ADD COLUMN IF NOT EXISTS proof TEXT NOT NULL DEFAULT '';
             CREATE INDEX IF NOT EXISTS ix_audit_seq ON audit(seq);
             """;
         cmd.ExecuteNonQuery();
@@ -495,8 +496,8 @@ public sealed class PgAuditStore : IAuditStore
     }
 
     private const string InsertSql = """
-        INSERT INTO audit(id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash)
-        VALUES(@id,@ts,@et,@actor,@subject,@resource,@req,@grant,@channel,@meta,@seq,@prev,@hash);
+        INSERT INTO audit(id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash,proof)
+        VALUES(@id,@ts,@et,@actor,@subject,@resource,@req,@grant,@channel,@meta,@seq,@prev,@hash,@proof);
         """;
 
     private static void Bind(NpgsqlCommand cmd, AuditEvent e)
@@ -514,6 +515,7 @@ public sealed class PgAuditStore : IAuditStore
         cmd.Parameters.AddWithValue("seq", e.Seq);
         cmd.Parameters.AddWithValue("prev", e.PrevHash);
         cmd.Parameters.AddWithValue("hash", e.Hash);
+        cmd.Parameters.AddWithValue("proof", e.Proof);
     }
 
     private static void Lock(NpgsqlConnection conn, NpgsqlTransaction tx)
@@ -565,7 +567,7 @@ public sealed class PgAuditStore : IAuditStore
     {
         await using var conn = PgState.Open(_cs);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash FROM audit ORDER BY seq ASC;";
+        cmd.CommandText = "SELECT id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash,proof FROM audit ORDER BY seq ASC;";
         var list = new List<AuditEvent>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct)) list.Add(ReadFull(r));
@@ -578,7 +580,7 @@ public sealed class PgAuditStore : IAuditStore
         await using var cmd = conn.CreateCommand();
 
         var sql = new StringBuilder(
-            "SELECT id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash FROM audit WHERE 1=1");
+            "SELECT id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash,proof FROM audit WHERE 1=1");
 
         // ILIKE for case-insensitive substring, matching SQLite's default LIKE.
         if (!string.IsNullOrEmpty(q.Actor)) { sql.Append(" AND actor ILIKE @actor"); cmd.Parameters.AddWithValue("actor", "%" + q.Actor + "%"); }
@@ -604,7 +606,7 @@ public sealed class PgAuditStore : IAuditStore
 
     private static AuditEvent ReadFull(NpgsqlDataReader r) => Read(r) with
     {
-        Seq = r.GetInt64(10), PrevHash = r.GetString(11), Hash = r.GetString(12),
+        Seq = r.GetInt64(10), PrevHash = r.GetString(11), Hash = r.GetString(12), Proof = r.GetString(13),
     };
 }
 

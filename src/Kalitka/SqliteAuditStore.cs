@@ -31,7 +31,7 @@ public sealed class SqliteAuditStore : IAuditStore
         cmd.ExecuteNonQuery();
 
         // Tamper-evidence columns, added idempotently to an existing table.
-        foreach (var (col, def) in new[] { ("seq", "INTEGER NOT NULL DEFAULT 0"), ("prev_hash", "TEXT NOT NULL DEFAULT ''"), ("hash", "TEXT NOT NULL DEFAULT ''") })
+        foreach (var (col, def) in new[] { ("seq", "INTEGER NOT NULL DEFAULT 0"), ("prev_hash", "TEXT NOT NULL DEFAULT ''"), ("hash", "TEXT NOT NULL DEFAULT ''"), ("proof", "TEXT NOT NULL DEFAULT ''") })
             if (!ColumnExists(conn, col))
             {
                 using var alter = conn.CreateCommand();
@@ -101,8 +101,8 @@ public sealed class SqliteAuditStore : IAuditStore
     }
 
     private const string InsertSql = """
-        INSERT INTO audit(id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash)
-        VALUES($id,$ts,$et,$actor,$subject,$resource,$req,$grant,$channel,$meta,$seq,$prev,$hash);
+        INSERT INTO audit(id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash,proof)
+        VALUES($id,$ts,$et,$actor,$subject,$resource,$req,$grant,$channel,$meta,$seq,$prev,$hash,$proof);
         """;
 
     private static void Bind(SqliteCommand cmd, AuditEvent e)
@@ -120,6 +120,7 @@ public sealed class SqliteAuditStore : IAuditStore
         cmd.Parameters.AddWithValue("$seq", e.Seq);
         cmd.Parameters.AddWithValue("$prev", e.PrevHash);
         cmd.Parameters.AddWithValue("$hash", e.Hash);
+        cmd.Parameters.AddWithValue("$proof", e.Proof);
     }
 
     // (seq, hash) of the last event, or (0, genesis) when empty. Read under the caller's write lock.
@@ -165,7 +166,7 @@ public sealed class SqliteAuditStore : IAuditStore
     {
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash FROM audit ORDER BY seq ASC;";
+        cmd.CommandText = "SELECT id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash,proof FROM audit ORDER BY seq ASC;";
         var list = new List<AuditEvent>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct)) list.Add(ReadFull(r));
@@ -178,7 +179,7 @@ public sealed class SqliteAuditStore : IAuditStore
         await using var cmd = conn.CreateCommand();
 
         var sql = new StringBuilder(
-            "SELECT id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash FROM audit WHERE 1=1");
+            "SELECT id,ts,event_type,actor,subject,resource,request_id,grant_id,channel,metadata,seq,prev_hash,hash,proof FROM audit WHERE 1=1");
 
         if (!string.IsNullOrEmpty(q.Actor)) { sql.Append(" AND actor LIKE $actor"); cmd.Parameters.AddWithValue("$actor", "%" + q.Actor + "%"); }
         if (!string.IsNullOrEmpty(q.Resource)) { sql.Append(" AND resource LIKE $resource"); cmd.Parameters.AddWithValue("$resource", "%" + q.Resource + "%"); }
@@ -203,6 +204,6 @@ public sealed class SqliteAuditStore : IAuditStore
 
     private static AuditEvent ReadFull(SqliteDataReader r) => Read(r) with
     {
-        Seq = r.GetInt64(10), PrevHash = r.GetString(11), Hash = r.GetString(12),
+        Seq = r.GetInt64(10), PrevHash = r.GetString(11), Hash = r.GetString(12), Proof = r.GetString(13),
     };
 }

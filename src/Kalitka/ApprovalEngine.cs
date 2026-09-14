@@ -541,6 +541,7 @@ public sealed class ApprovalEngine
         actor.StartsWith("telegram:", StringComparison.Ordinal) ? "telegram"
         : actor.StartsWith("google:", StringComparison.Ordinal) ? "web"
         : actor.StartsWith("email:", StringComparison.Ordinal) ? "email"
+        : actor.StartsWith("app:", StringComparison.Ordinal) ? "app"
         : "other";
 
     public string? StateOf(string id) => _store.Get(id)?.State;
@@ -551,6 +552,15 @@ public sealed class ApprovalEngine
     public int MaxUsesOf(string id) => _store.Get(id)?.MaxUses ?? 0;
     public string CommandOf(string id) => _store.Get(id)?.Command ?? "";
     public string SourceAddrOf(string id) => _store.Get(id)?.SourceAddr ?? "";
+
+    /// <summary>The approval-defining terms of a waiting request, as an immutable snapshot — for the
+    /// signing layer, which must bind a signature to exactly what is being approved.</summary>
+    public ApprovalContext? ApprovalContextOf(string id)
+    {
+        var r = _store.Get(id);
+        return r is null ? null
+            : new ApprovalContext(r.Id, r.Resource, r.RequiredApprovals, r.Subject.ToString(), r.Command, r.SourceAddr, r.Profile);
+    }
 
     /// <summary>Who to ask for this request (0.30): the request's machine-readable subject
     /// resolved to an operator's channel identities, plus whether the admins are asked too.
@@ -668,7 +678,7 @@ public sealed class ApprovalEngine
     /// approval nobody is waiting for any more is not an approval — hence the
     /// lifetime check as well.
     /// </summary>
-    public async Task<CallbackResult> Decide(string id, string verb, string actor)
+    public async Task<CallbackResult> Decide(string id, string verb, string actor, string proof = "")
     {
         var request = _store.Get(id);
         if (request is null) return new CallbackResult(CallbackOutcome.Expired);
@@ -758,7 +768,7 @@ public sealed class ApprovalEngine
             var resolved = await _atomic.Do(scope =>
             {
                 if (!scope.TryResolve(id, toState, cutoff, out var req) || req is null) return (PendingRequest?)null;
-                scope.AppendAudit(DecisionEvent(toState, actor, req, verb));
+                scope.AppendAudit(DecisionEvent(toState, actor, req, verb, proof));
                 return req;
             }, CancellationToken.None);
             if (resolved is null) return new CallbackResult(CallbackOutcome.AlreadyHandled);
@@ -801,17 +811,22 @@ public sealed class ApprovalEngine
         // step here, so if it fails (disk/IO) the decision stands without it. The
         // transactional path already appended the event inside the resolve above.
         if (_atomic is null)
-            await _audit.Append(DecisionEvent(toState, actor, request, verb), CancellationToken.None);
+            await _audit.Append(DecisionEvent(toState, actor, request, verb, proof), CancellationToken.None);
 
         return new CallbackResult(CallbackOutcome.Decided, request, outcome);
     }
 
     /// <summary>The audit event for a resolved decision — built the same way whether
     /// it is appended inside the transaction or as the best-effort second step.</summary>
-    private AuditEvent DecisionEvent(string toState, string actor, PendingRequest request, string verb) =>
+    private AuditEvent DecisionEvent(string toState, string actor, PendingRequest request, string verb, string proof = "") =>
         Event(toState == "approved" ? AuditEvents.AccessApproved : AuditEvents.AccessDenied,
             actor: actor, subject: request.Input, resource: request.Resource,
-            requestId: request.Id, channel: ChannelOf(actor), metadata: verb);
+            requestId: request.Id, channel: ChannelOf(actor),
+            // A device-signed decision folds a short commitment to its proof into the hashed Metadata
+            // (the proof itself rides on AuditEvent.Proof, outside the chain hash), so the proof is
+            // tamper-evident without rewriting the chain's field set.
+            metadata: proof.Length == 0 ? verb : $"{verb} p={WebAuthnProof.Commitment(proof)}")
+        with { Proof = proof };
 
     // ---- Lists: read and mutate (formatting lives in the notifier) ----------
 

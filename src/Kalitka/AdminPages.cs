@@ -99,6 +99,8 @@ public static class AdminPages
         + Nav(who, Perm.PrincipalsRead, "/admin/principals", "Operators")
         + Nav(who, Perm.HistoryRead, "/admin/history", "History")
         + Nav(who, Perm.HistoryRead, "/admin/audit/verify", "Integrity")
+        // Self-service for every admin — you register and revoke your own devices.
+        + "<a href=\"/admin/devices\">Devices</a>"
         + "<span class=\"spacer\"></span>"
         + $"<span class=\"who\">{H(who.Email)}</span>"
         + "<form class=\"inline\" method=\"post\" action=\"/admin/logout\"><button class=\"mut\">Sign out</button></form>"
@@ -192,7 +194,19 @@ public static class AdminPages
             if (r.RequiredApprovals > 1)
                 sb.Append($"<p class=\"muted\">This resource needs {r.RequiredApprovals} distinct approvers. "
                     + "Your approval counts once; a second person must also approve here.</p>");
-            sb.Append("<div class=\"btns\">")
+
+            // Device-signed decision (fido2 slice 2): the assertion signs THIS request id + decision,
+            // so history holds a signature bound to a named credential, not "a session pressed approve".
+            sb.Append("<h2>Sign this decision with a device</h2>")
+              .Append("<p class=\"muted\">Uses a registered passkey / security key. "
+                  + "<a class=\"row\" href=\"/admin/devices\">Manage devices →</a></p>")
+              .Append("<div class=\"btns\">")
+              .Append($"<button class=\"ok\" onclick=\"kalitkaApprove('{H(r.Id)}','ok','{H(csrf)}')\">🔑 Approve with device</button>")
+              .Append($"<button class=\"no\" onclick=\"kalitkaApprove('{H(r.Id)}','no','{H(csrf)}')\">🔑 Deny with device</button>")
+              .Append("</div>");
+
+            sb.Append("<h2>Or decide from this session</h2>")
+              .Append("<div class=\"btns\">")
               .Append(Btn(r.Id, csrf, "ok", "Approve", "ok"))
               .Append(Btn(r.Id, csrf, "aip", "Approve + remember IP", ""))
               .Append(Btn(r.Id, csrf, "ain", "Approve + remember name", ""))
@@ -200,7 +214,8 @@ public static class AdminPages
               .Append(Btn(r.Id, csrf, "bip", "Block IP", "mut"))
               .Append(Btn(r.Id, csrf, "bin", "Block name", "mut"))
               .Append(Btn(r.Id, csrf, "bco", "Block country", "mut"))
-              .Append("</div>");
+              .Append("</div>")
+              .Append(WebAuthnJs);
         }
         else
         {
@@ -210,6 +225,82 @@ public static class AdminPages
         sb.Append("<p style=\"margin-top:18px\"><a class=\"row\" href=\"/admin/requests\">← back</a></p>");
         return Shell(who, sb.ToString());
     }
+
+    // ---- Registered devices (WebAuthn) -------------------------------------
+
+    public static string Devices(AdminIdentity who, IReadOnlyList<WebAuthnCredential> creds, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Your devices</h1>");
+        sb.Append("<p class=\"muted\">A registered device signs your approvals with a key in its secure hardware — "
+            + "a decision bound to a credential we can name, not just a button press. Passkeys and platform "
+            + "authenticators work; on a phone, add kalitka to the home screen first.</p>");
+
+        if (creds.Count == 0)
+            sb.Append("<p class=\"muted\">No devices registered yet.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Device</th><th>Kind</th><th>Added</th><th>Last used</th><th></th></tr>");
+            foreach (var c in creds)
+                sb.Append("<tr>")
+                  .Append($"<td>{H(c.DisplayName)}</td>")
+                  // Honest: a cloud-synced passkey (BE flag) is not bound to one device.
+                  .Append(c.BackupEligible
+                      ? "<td><span class=\"pill waiting\" title=\"synced across the owner's devices\">cloud-synced</span></td>"
+                      : "<td><span class=\"pill approved\" title=\"non-syncable, bound to this device\">device-bound</span></td>")
+                  .Append($"<td class=\"muted\">{H(ShortWhen(c.CreatedAt))}</td>")
+                  .Append($"<td class=\"muted\">{H(ShortWhen(c.LastUsedAt))}</td>")
+                  .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/devices/remove\" "
+                      + "onsubmit=\"return confirm('Revoke this device?')\">"
+                      + $"<input type=\"hidden\" name=\"credentialId\" value=\"{H(c.CredentialId)}\">"
+                      + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                      + "<button class=\"no\">Revoke</button></form></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
+
+        sb.Append("<div class=\"btns\">")
+          .Append($"<button class=\"ok\" onclick=\"kalitkaRegister('{H(csrf)}')\">🔑 Register this device</button>")
+          .Append("</div>")
+          .Append(WebAuthnJs);
+        return Shell(who, sb.ToString());
+    }
+
+    private static string ShortWhen(string iso) =>
+        DateTimeOffset.TryParse(iso, out var d) ? d.ToString("yyyy-MM-dd HH:mm") : iso;
+
+    // Self-contained WebAuthn client: no bundler, no external asset, in keeping with the rest of the
+    // control plane. Base64url <-> ArrayBuffer, then the two ceremonies (register, sign a decision).
+    private const string WebAuthnJs = @"<script>
+function b64uToBuf(s){s=s.replace(/-/g,'+').replace(/_/g,'/');var p=s.length%4;if(p)s+='='.repeat(4-p);var bin=atob(s);var b=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b.buffer;}
+function bufToB64u(buf){var b=new Uint8Array(buf);var s='';for(var i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+async function kalitkaRegister(csrf){
+ try{
+  var r=await fetch('/admin/devices/register/begin',{method:'POST',headers:{'X-Csrf':csrf}});
+  if(!r.ok){alert('Could not start registration ('+r.status+')');return;}
+  var d=await r.json();var o=d.options;
+  o.challenge=b64uToBuf(o.challenge);o.user.id=b64uToBuf(o.user.id);
+  if(o.excludeCredentials)o.excludeCredentials=o.excludeCredentials.map(function(c){return{type:c.type,id:b64uToBuf(c.id)};});
+  var cred=await navigator.credentials.create({publicKey:o});
+  var name=prompt('Name this device','my phone')||'device';
+  var body={state:d.state,credentialId:bufToB64u(cred.rawId),attestationObject:bufToB64u(cred.response.attestationObject),clientDataJson:bufToB64u(cred.response.clientDataJSON),displayName:name,csrf:csrf};
+  var f=await fetch('/admin/devices/register/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  var j=await f.json();if(j.ok)location.reload();else alert('Registration failed: '+(j.error||''));
+ }catch(e){alert('Registration cancelled: '+e);}
+}
+async function kalitkaApprove(id,verb,csrf){
+ try{
+  var r=await fetch('/admin/requests/'+encodeURIComponent(id)+'/approve/begin?verb='+encodeURIComponent(verb),{method:'POST',headers:{'X-Csrf':csrf}});
+  if(!r.ok){var je=await r.json().catch(function(){return{};});alert('Could not start: '+(je.error||r.status));return;}
+  var d=await r.json();var o=d.options;
+  o.challenge=b64uToBuf(o.challenge);
+  if(o.allowCredentials)o.allowCredentials=o.allowCredentials.map(function(c){return{type:c.type,id:b64uToBuf(c.id)};});
+  var asr=await navigator.credentials.get({publicKey:o});
+  var body={id:id,verb:verb,state:d.state,credentialId:bufToB64u(asr.rawId),authenticatorData:bufToB64u(asr.response.authenticatorData),clientDataJson:bufToB64u(asr.response.clientDataJSON),signature:bufToB64u(asr.response.signature),csrf:csrf};
+  var f=await fetch('/admin/requests/decide-signed',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  var j=await f.json();if(j.ok)location.href='/admin/requests';else alert('Signature failed: '+(j.error||''));
+ }catch(e){alert('Approval cancelled: '+e);}
+}
+</script>";
 
     private static string Btn(string id, string csrf, string verb, string label, string cls) =>
         "<form class=\"inline\" method=\"post\" action=\"/admin/requests/decide\">"
