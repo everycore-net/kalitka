@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only, net10 like the agent. References the net9 Core (Kalitka) to prove wire
+    parity: a signature the CNG platform key produces must verify under Core's own
+    AgentSignatures. net10 consuming a net9 assembly is fine (roll-forward), and this is why
+    the two processes can live on different runtimes.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KalitkaAgent.Windows\KalitkaAgent.Windows.csproj" />
+    <ProjectReference Include="..\..\src\Kalitka\Kalitka.csproj" />
+  </ItemGroup>
+
+</Project>

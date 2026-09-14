@@ -7,6 +7,27 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Windows agent — thin end-to-end slice (`src/KalitkaAgent.Windows`, 0.1.0).** A Windows
+  Service (net10.0-windows; Core stays on net9, they meet only over the versioned
+  `kalitka-agent-sig-v1` HTTP scheme) that makes app-side JIT access *trustworthy*: an
+  untrusted local process connects over a named pipe, the service impersonates the pipe token
+  to read the caller's SID + account from the OS, and raises a signed request to Core with the
+  **OS-asserted** subject (`os:DOMAIN\user`) — never a caller-typed string. This is why it may
+  carry `subject.assert` where a generic CLI cannot.
+  - ECDSA P-256 key in a CNG provider — Microsoft Platform Crypto Provider (TPM-backed) with a
+    software-KSP fallback; private key non-exportable, signatures IEEE P1363 (64 bytes), which
+    Core's `ecdsa-p256` suite verifies natively.
+  - Enrolls once with a one-time token (registers the SPKI, persists the agent id); every
+    request is signed, no reusable secret is ever sent.
+  - Tests prove the two things that matter: a CNG signature verifies byte-for-byte under
+    Core's `AgentSignatures` (`WireParityTests`), and the agent's `CoreClient` is accepted by
+    the **real Core pipeline** with the subject trusted only when `subject.assert` is held —
+    else `claimed-not-asserted`, and a wrong key is 403 (`CoreRoundTripTests`).
+  - Not in CI (Windows-/net10-only, built separately); deferred: MSI/packaging,
+    session-end/redeem, reconnect/liveness, concurrent connections.
+
 ## [0.30.2] - 2026-09-14
 
 ### Security
