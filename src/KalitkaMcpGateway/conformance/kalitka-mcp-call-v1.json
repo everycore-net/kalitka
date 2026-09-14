@@ -1,0 +1,30 @@
+{
+  "scheme": "kalitka-mcp-call-v1",
+  "note": "Conformance vectors for the canonicalization stage (RFC 8785 / JCS) of the call fingerprint. A conforming gateway must reproduce every 'canonical' output exactly and reject every 'reject' input. Number formatting is the ECMAScript Number::toString production, not any platform ToString.",
+  "canonicalization": [
+    { "name": "object keys sorted by utf-16", "input": "{\"b\":1,\"a\":2}", "canonical": "{\"a\":2,\"b\":1}" },
+    { "name": "nested object keys sorted", "input": "{\"z\":{\"y\":1,\"x\":2}}", "canonical": "{\"z\":{\"x\":2,\"y\":1}}" },
+    { "name": "array order is preserved", "input": "[3,1,2]", "canonical": "[3,1,2]" },
+    { "name": "insignificant whitespace removed", "input": "{ \"a\" : 1 , \"b\" : 2 }", "canonical": "{\"a\":1,\"b\":2}" },
+    { "name": "1.0 and 1 canonicalize the same", "input": "{\"n\":1.0}", "canonical": "{\"n\":1}" },
+    { "name": "negative zero collapses to zero", "input": "{\"n\":-0}", "canonical": "{\"n\":0}" },
+    { "name": "booleans and null", "input": "{\"a\":true,\"c\":null,\"b\":false}", "canonical": "{\"a\":true,\"b\":false,\"c\":null}" }
+  ],
+  "numbers": [
+    { "input": "0", "canonical": "0" },
+    { "input": "1", "canonical": "1" },
+    { "input": "1.5", "canonical": "1.5" },
+    { "input": "100", "canonical": "100" },
+    { "input": "0.1", "canonical": "0.1" },
+    { "input": "1e20", "canonical": "100000000000000000000" },
+    { "input": "1e21", "canonical": "1e+21" },
+    { "input": "1e-6", "canonical": "0.000001" },
+    { "input": "1e-7", "canonical": "1e-7" },
+    { "input": "9007199254740992", "canonical": "9007199254740992" },
+    { "input": "1234567890123456789", "canonical": "1234567890123456800" }
+  ],
+  "reject": [
+    { "name": "duplicate object keys", "input": "{\"a\":1,\"a\":2}" },
+    { "name": "number overflows a double", "input": "1E400" }
+  ]
+}

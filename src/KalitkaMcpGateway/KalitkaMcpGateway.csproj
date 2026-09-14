@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    MCP Gateway (public / AGPL) - the guarded proxy in front of another MCP server. This first
+    slice is the security foundation only: the canonical call fingerprint. Canonicalization is
+    the security boundary (a mismatch = "approved but denied"; a collision = a bypass), so it is
+    its own small, exhaustively tested unit with published conformance vectors.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>KalitkaMcpGateway</RootNamespace>
+    <AssemblyName>KalitkaMcpGateway</AssemblyName>
+    <Version>0.1.0</Version>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Published conformance vectors: a third-party gateway must reproduce these exactly. -->
+    <Content Include="conformance\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
