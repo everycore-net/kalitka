@@ -7,6 +7,32 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-09-14
+
+### Added
+
+- **Enrolment QR, a device fingerprint, and the "defer" (device-signed-only) receiver — the tail of
+  the device-onboarding story ([[fido2]] slice C follow-ups, [[app-launch]]).**
+  - **Invite QR:** the enrolment invite now renders as an inline SVG QR of the invite link (phone
+    camera opens it), shown only to the signed-in admin and never e-mailed; the link carries a
+    one-time token, not a secret to photograph. The QR uses a small, single-purpose MIT encoder
+    (`Net.Codecrete.QrCodeGenerator`, pure-managed, no native/image deps) with our own SVG rendering
+    so the page stays self-contained — QR at link sizes needs multi-block Reed-Solomon interleaving
+    and mask optimisation, which (unlike our JCS/WebPush formalism) has no security surface and no RFC
+    vector to self-test, so a vetted encoder is the proportionate choice.
+  - **Device fingerprint:** every registered device shows a short fingerprint of its key in the same
+    Crockford base32 alphabet as the gateway Call ID (`XXXX-XXXX`), in the device lists, so a person
+    can confirm the right device bound and it is named the same everywhere.
+  - **Defer receiver (device-signed-only approval):** a request can be raised with `require_signed=1`
+    (via `/agent/v1/requests` — the entry the iOS shield uses when it defers a decision) so it can be
+    **approved only by a device signature**, never a chat tap or a session click; a denial stays
+    unsigned (fail-safe). The engine enforces it in `Decide`; the admin UI hides the session-approve
+    buttons for such requests. The rest of the chain — routing the push to the person, the device
+    signature, the caller polling the outcome — already existed (Slices A/B), so `defer` is these
+    parts made to guarantee out-of-band proof of intent.
+  - 8 tests (fingerprint alphabet/shape/stability, QR SVG rendering, defer: unsigned approve refused,
+    device-signed approve accepted, unsigned deny allowed). Core suite 385.
+
 ## [0.40.0] - 2026-09-14
 
 ### Added

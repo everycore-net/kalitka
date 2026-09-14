@@ -23,6 +23,10 @@ public sealed record WebAuthnCredential(
     /// <summary>The channel identity a decision from this device carries, so the quorum counts it
     /// as its owner (linked to the principal at registration).</summary>
     public string Identity => "app:" + CredentialId;
+
+    /// <summary>A short human-quotable fingerprint of the device's key (gateway Call-ID alphabet), so
+    /// the person can verify the right device bound and it is named the same everywhere.</summary>
+    public string Fingerprint => Kalitka.Fingerprint.OfBase64(PublicKeySpki);
 }
 
 /// <summary>

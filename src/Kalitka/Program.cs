@@ -485,12 +485,16 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
     var subjectIdentity = form["subject_identity"].ToString().Trim();
     if (subjectIdentity.Length > 200) return Results.BadRequest();
 
+    // Defer semantics (the iOS-shield case): require the approval to be a device signature, not a
+    // chat tap — out-of-band proof of intent, for a caller that has already gated locally.
+    var requireSigned = form["require_signed"].ToString() == "1";
+
     var (state, id) = await gate.RaiseAction(resource, user, ip, identity.Actor, ctx.RequestAborted, identity.Tags,
         form["profile"].ToString().Trim(), int.TryParse(form["max_uses"].ToString(), out var mu) ? mu : 0, command, sourceAddr,
         // A subject is trusted to gate subject-approval only when THIS agent may assert it
         // (e.g. the Windows agent, from the OS security context) — never a requester-typed
         // string, which could otherwise self-approve someone else's action.
-        subjectIdentity, identity.CanAssertSubject);
+        subjectIdentity, identity.CanAssertSubject, requireSigned);
     // A policy can restrict access up front — forbid an open shell, require a source
     // binding, disallow the requested login, or require the trusted subject to approve.
     // All are refused (409) before anyone is asked to approve access policy disallows.
