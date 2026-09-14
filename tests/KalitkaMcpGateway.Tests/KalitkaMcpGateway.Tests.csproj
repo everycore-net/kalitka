@@ -21,6 +21,7 @@
   <ItemGroup>
     <!-- Run the published vectors from their canonical home, so the test IS the conformance check. -->
     <Content Include="..\..\src\KalitkaMcpGateway\conformance\kalitka-mcp-call-v2.json" Link="kalitka-mcp-call-v2.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\src\KalitkaMcpGateway\conformance\renderer-vectors.json" Link="renderer-vectors.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

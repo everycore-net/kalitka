@@ -7,7 +7,8 @@ public enum HandleKind { Result, Pending, Denied, UnknownTool, BadArguments, Alr
 /// Call ID for the human to approve and for the AI to poll/re-issue against; it is a normal
 /// result, not an error.</summary>
 public sealed record HandleResult(
-    HandleKind Kind, string CallId, CallState? State = null, ToolResult? Result = null, string? Reason = null);
+    HandleKind Kind, string CallId, CallState? State = null, ToolResult? Result = null, string? Reason = null,
+    ArgumentReview? Review = null);
 
 /// <summary>
 /// The gateway proxy: it turns a <c>tools/call</c> into a decision and, only when a human has
@@ -78,15 +79,22 @@ public sealed class GatewayProxy
         var callId = CallFingerprint.CallId(fp);
 
         var cls = _classifier.Classify(_alias, tool, invTool.ContractHashHex);
+        var review = ArgumentReviewer.Review(canonicalArgs);
+
+        // A tool that requires reviewable arguments refuses an opaque/oversized payload rather than
+        // let a human rubber-stamp what they cannot see. (A dedicated artifact-review flow is later.)
+        if (cls.RequireReviewableArguments && review.Verdict == Reviewability.TooLarge)
+            return new HandleResult(HandleKind.Denied, callId, CallState.Denied, Reason: "arguments-not-reviewable", Review: review);
+
         var call = new Call(_alias, tool, ctx.Subject.Id, ctx.Workload.Id, fp64, callId);
         var decision = _gate.Evaluate(call, cls);
 
         switch (decision.Outcome)
         {
             case GatewayOutcome.Pending:
-                return new HandleResult(HandleKind.Pending, callId, decision.State);
+                return new HandleResult(HandleKind.Pending, callId, decision.State, Review: review);
             case GatewayOutcome.Denied:
-                return new HandleResult(HandleKind.Denied, callId, decision.State, Reason: decision.Reason);
+                return new HandleResult(HandleKind.Denied, callId, decision.State, Reason: decision.Reason, Review: review);
         }
 
         // Approved: exactly one claim may forward. A lost race (already claimed/executed) does not

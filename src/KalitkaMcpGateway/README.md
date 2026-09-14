@@ -125,6 +125,26 @@ time the AI issues the call:
 The transport to the upstream is behind `IUpstream`, so the security logic here is independent of
 whether the real client is stdio or HTTP (a later slice).
 
+## Human-safe renderer + reviewability (`SafeText`, `ArgumentReviewer`)
+
+The approval UI must never show a request **less safely than the gateway interprets it**.
+
+- **`SafeText.Render(value, kind)`** → styled tokens + an overall risk. Control / bidi / invisible
+  characters become explicit `[U+XXXX NAME]` tokens (never raw). For a **security identifier**:
+  mixed scripts are a **warning**, mixed + confusable is **high-risk**, a single national script
+  (e.g. «Сергей») is *not* a warning; a **Displayed / Skeleton / Raw** triple is surfaced for
+  suspicious values. For **free-text** reason, only dangerous characters are flagged (no
+  over-colouring). `ToTextMarkers` is the weakest-channel form (Telegram / e-mail) and enforces the
+  invariant: **no raw dangerous character survives**.
+- **Confusables** live in `Unicode`, a pinned self-contained table (Unicode 15.1) — a curated
+  subset plus the UTS #39 skeleton, structured so the full table is *generated from `confusables.txt`
+  at build* later. No runtime Unicode dependency; a Unicode bump is an explicit security change.
+- **`ArgumentReviewer.Review`** — a small payload is shown in full; a large one is `TooLarge` with
+  its size, SHA-256 and a bounded preview, never silently trimmed under an Approve button. A tool
+  with `require_reviewable_arguments` **refuses** an opaque/oversized payload.
+
+Published vectors: `conformance/renderer-vectors.json` (renderer) alongside the call vectors.
+
 ## Tests
 
 - `JcsTests` — the published vectors, V8-derived number boundary vectors, and the

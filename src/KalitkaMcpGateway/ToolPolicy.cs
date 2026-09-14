@@ -7,12 +7,15 @@ namespace KalitkaMcpGateway;
 public enum ClassKind { NoApproval, NeedsApproval, Unclassified }
 
 /// <summary>A tool's approval class. <see cref="RequiredApprovals"/> applies to
-/// <see cref="ClassKind.NeedsApproval"/>.</summary>
-public sealed record ToolClass(ClassKind Kind, int RequiredApprovals = 1)
+/// <see cref="ClassKind.NeedsApproval"/>. <see cref="RequireReviewableArguments"/> refuses a call
+/// whose arguments are too large/opaque for a human to actually review, rather than let them be
+/// rubber-stamped.</summary>
+public sealed record ToolClass(ClassKind Kind, int RequiredApprovals = 1, bool RequireReviewableArguments = false)
 {
     public static readonly ToolClass Unclassified = new(ClassKind.Unclassified);
     public static readonly ToolClass NoApproval = new(ClassKind.NoApproval);
-    public static ToolClass Approval(int required = 1) => new(ClassKind.NeedsApproval, Math.Max(1, required));
+    public static ToolClass Approval(int required = 1, bool requireReviewable = false) =>
+        new(ClassKind.NeedsApproval, Math.Max(1, required), requireReviewable);
 }
 
 /// <summary>

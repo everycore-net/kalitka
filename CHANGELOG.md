@@ -7,6 +7,29 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **MCP Gateway — human-safe renderer + reviewability limits (`src/KalitkaMcpGateway` → 0.4.0).**
+  The approval UI must never show a request *less safely than the gateway interprets it*.
+  - **`SafeText.Render`** turns an argument value into styled tokens + an overall risk. Control /
+    bidi / invisible characters become explicit `[U+XXXX NAME]` tokens (never emitted raw); mixed
+    scripts are a **warning** and mixed + confusable is **high-risk**; a whole word in one national
+    script (e.g. «Сергей») is *not* itself a warning; free-text reason flags only dangerous chars,
+    no over-colouring. A **Displayed / Skeleton / Raw** triple is surfaced for suspicious
+    identifiers. The model is channel-agnostic; `ToTextMarkers` is the weakest-channel form
+    (Telegram / e-mail) and the invariant is enforced there — **no raw dangerous character ever
+    passes through**.
+  - **Confusables via a pinned, self-contained table** (`Unicode`, pinned to 15.1) — a curated
+    subset with the UTS #39 skeleton mechanism, structured so the full table is *generated from
+    `confusables.txt` at build* later; a Unicode bump is then an explicit, reviewed security change,
+    not a surprise runtime-dependency shift. Published **renderer conformance vectors**.
+  - **Reviewability limits** (`ArgumentReviewer`): a small payload is shown in full; a large one is
+    **not silently trimmed under an Approve button** — it is `TooLarge` with its size, SHA-256 and a
+    bounded preview. A tool with `require_reviewable_arguments` (new `ToolClass` flag) **refuses** an
+    opaque/oversized payload rather than let a human rubber-stamp what they cannot see; the verdict
+    is attached to the gateway result for audit.
+  - 17 more tests (112 total in the gateway, in CI).
+
 ### Security
 
 - **MCP Gateway — 0.3.1 security hardening of the fingerprint boundary** (before any live wire,
