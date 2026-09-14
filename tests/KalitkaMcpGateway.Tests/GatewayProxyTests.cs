@@ -49,7 +49,7 @@ public class GatewayProxyTests
         var classifier = new DictionaryToolClassifier();
         var gate = new CallGate(new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero)),
             new CallGateOptions { DenyUnclassified = denyUnclassified });
-        var proxy = new GatewayProxy(upstream, classifier, gate, Alias, UpstreamId);
+        var proxy = new GatewayProxy(upstream, classifier, new LocalAuthority(gate), Alias, UpstreamId);
         await proxy.RefreshInventoryAsync(default);
         return new Harness { Upstream = upstream, Classifier = classifier, Gate = gate, Proxy = proxy };
     }

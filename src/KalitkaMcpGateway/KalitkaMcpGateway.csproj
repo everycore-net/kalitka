@@ -12,7 +12,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>KalitkaMcpGateway</RootNamespace>
     <AssemblyName>KalitkaMcpGateway</AssemblyName>
-    <Version>0.4.0</Version>
+    <Version>0.5.0</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>

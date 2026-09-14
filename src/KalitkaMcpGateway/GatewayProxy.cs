@@ -22,17 +22,17 @@ public sealed class GatewayProxy
 {
     private readonly IUpstream _upstream;
     private readonly IToolClassifier _classifier;
-    private readonly CallGate _gate;
+    private readonly IApprovalAuthority _authority;
     private readonly string _alias;
     private readonly string _upstreamId;
     private readonly object _invGate = new();
     private ToolInventory _inventory;
 
-    public GatewayProxy(IUpstream upstream, IToolClassifier classifier, CallGate gate, string upstreamAlias, string upstreamId)
+    public GatewayProxy(IUpstream upstream, IToolClassifier classifier, IApprovalAuthority authority, string upstreamAlias, string upstreamId)
     {
         _upstream = upstream;
         _classifier = classifier;
-        _gate = gate;
+        _authority = authority;
         _alias = upstreamAlias;
         _upstreamId = upstreamId;
         _inventory = ToolInventory.Empty(upstreamAlias, upstreamId);
@@ -87,34 +87,35 @@ public sealed class GatewayProxy
             return new HandleResult(HandleKind.Denied, callId, CallState.Denied, Reason: "arguments-not-reviewable", Review: review);
 
         var call = new Call(_alias, tool, ctx.Subject.Id, ctx.Workload.Id, fp64, callId);
-        var decision = _gate.Evaluate(call, cls);
+        var decision = await _authority.EvaluateAsync(call, cls, ct);
 
         switch (decision.Outcome)
         {
-            case GatewayOutcome.Pending:
+            case AuthorityOutcome.Pending:
                 return new HandleResult(HandleKind.Pending, callId, decision.State, Review: review);
-            case GatewayOutcome.Denied:
+            case AuthorityOutcome.Denied:
                 return new HandleResult(HandleKind.Denied, callId, decision.State, Reason: decision.Reason, Review: review);
         }
 
-        // Approved: exactly one claim may forward. A lost race (already claimed/executed) does not
-        // forward again — the at-most-once guarantee.
-        var claim = _gate.Claim(fp64);
+        // Approved: exactly one claim may forward. A lost race (already claimed/executed elsewhere)
+        // does not forward again — the at-most-once guarantee, durable across instances when the
+        // authority is Core (a redeem-once grant).
+        var claim = await _authority.ClaimAsync(call, ct);
         if (claim != ClaimOutcome.Claimed)
-            return new HandleResult(HandleKind.AlreadyHandled, callId, _gate.StateOf(fp64));
+            return new HandleResult(HandleKind.AlreadyHandled, callId);
 
         try
         {
             var result = await _upstream.CallToolAsync(tool, canonicalArgsJson, ct);
             // An upstream that returns a definite result — success or an MCP error — is a proven outcome.
-            _gate.Complete(fp64, success: !result.IsError);
-            return new HandleResult(HandleKind.Result, callId, _gate.StateOf(fp64), result);
+            var state = await _authority.CompleteAsync(call, result.IsError ? ExecutionOutcome.Failed : ExecutionOutcome.Executed, ct);
+            return new HandleResult(HandleKind.Result, callId, state, result);
         }
-        catch (Exception e)
+        catch (Exception)
         {
             // A timeout / cancellation / broken connection after dispatch is NOT a proven failure —
             // the call may already have run. Burn the grant as OutcomeUnknown; no automatic retry.
-            var state = _gate.MarkOutcomeUnknown(fp64, "transport error after dispatch: " + e.GetType().Name);
+            var state = await _authority.CompleteAsync(call, ExecutionOutcome.Unknown, ct);
             return new HandleResult(HandleKind.OutcomeUnknown, callId, state,
                 Reason: "dispatch reached the upstream but no definite outcome was received");
         }
