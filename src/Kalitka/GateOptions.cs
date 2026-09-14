@@ -42,6 +42,15 @@ public sealed class GateOptions
     /// </summary>
     public string HmacSecret { get; set; } = "";
 
+    /// <summary>
+    /// The <b>previous</b> signing secret, accepted on verification only, for a graceful key
+    /// rotation. To rotate without logging everyone out: set this to the old <see cref="HmacSecret"/>
+    /// and <see cref="HmacSecret"/> to a new value — existing admin/visitor sessions and OAuth state
+    /// stay valid through the overlap; new tokens use the new key. Clear it once the window (a session
+    /// lifetime) has passed. Empty = no overlap.
+    /// </summary>
+    public string HmacSecretPrevious { get; set; } = "";
+
     public string CookieName { get; set; } = "kalitka";
 
     /// <summary>

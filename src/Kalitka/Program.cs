@@ -31,7 +31,10 @@ builder.Services.AddHttpClient<GoogleAuth>();
 builder.Services.AddSingleton<AccessLists>();
 builder.Services.AddSingleton<GateService>();
 builder.Services.AddSingleton<TokenSigner>(sp =>
-    new TokenSigner(sp.GetRequiredService<IOptions<GateOptions>>().Value.HmacSecret));
+{
+    var o = sp.GetRequiredService<IOptions<GateOptions>>().Value;
+    return new TokenSigner(o.HmacSecret, o.HmacSecretPrevious);
+});
 builder.Services.AddTransient<AdminAuth>();
 builder.Services.AddSingleton<OneTimeTokenService>();
 // Backend precedence for the durable stores: Postgres (multi-node) when a

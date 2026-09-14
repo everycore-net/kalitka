@@ -86,4 +86,54 @@ public class SessionServiceTests
         Assert.False(s.TryReadState(state, "", out _));            // no login cookie
         Assert.True(s.TryReadState(state, "nonce-abc", out _));    // right browser
     }
+
+    // ---- rotation overlap: previous secret accepted on verify only --------------
+
+    private const string OldSecret = "old-secret-aaaaaaaaaaaaaaaaaaaa";
+    private const string NewSecret = "new-secret-bbbbbbbbbbbbbbbbbbbb";
+
+    [Fact]
+    public void A_session_from_the_previous_key_still_verifies_during_the_overlap()
+    {
+        var clock = ClockAt();
+        var oldToken = new SessionService(OldSecret, clock).BuildHost("app.example.com", 60);
+
+        // new master, old kept as previous: existing sessions survive the rotation.
+        var rotated = new SessionService(NewSecret, clock, previousSecret: OldSecret);
+        Assert.True(rotated.IsValid(oldToken, "app.example.com"));
+    }
+
+    [Fact]
+    public void A_new_session_is_signed_with_the_current_key_only()
+    {
+        var clock = ClockAt();
+        var rotated = new SessionService(NewSecret, clock, previousSecret: OldSecret);
+        var fresh = rotated.BuildHost("app.example.com", 60);
+
+        // Signed with the new key, so it verifies under the new key with no previous set...
+        Assert.True(new SessionService(NewSecret, clock).IsValid(fresh, "app.example.com"));
+        // ...and not under the old key.
+        Assert.False(new SessionService(OldSecret, clock).IsValid(fresh, "app.example.com"));
+    }
+
+    [Fact]
+    public void Once_the_overlap_window_closes_previous_sessions_are_rejected()
+    {
+        var clock = ClockAt();
+        var oldToken = new SessionService(OldSecret, clock).BuildHost("app.example.com", 60);
+
+        // previous dropped: only the current key is accepted.
+        Assert.False(new SessionService(NewSecret, clock).IsValid(oldToken, "app.example.com"));
+    }
+
+    [Fact]
+    public void OAuth_state_from_the_previous_key_verifies_during_the_overlap()
+    {
+        var clock = ClockAt();
+        var state = new SessionService(OldSecret, clock).BuildState("app.example.com", "nonce-abc");
+
+        var rotated = new SessionService(NewSecret, clock, previousSecret: OldSecret);
+        Assert.True(rotated.TryReadState(state, "nonce-abc", out var target));
+        Assert.Equal("app.example.com", target);
+    }
 }
