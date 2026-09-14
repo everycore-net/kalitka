@@ -966,6 +966,19 @@ guarded.MapGet("/policies", (HttpContext ctx, AdminAuth auth, PolicyService poli
     return Results.Content(AdminPages.Policies(who, policies.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
 }).RequirePermission(Perm.PoliciesRead);
 
+// Read-only policy explain: a deterministic trace of the effective decision for a concrete
+// request context (resource + agent tags + optional profile). No AI — the same composition
+// the request engine uses, so a trace can never disagree with what would actually happen.
+guarded.MapGet("/policies/explain", (HttpContext ctx, PolicyService policies) =>
+{
+    var who = Admin(ctx);
+    var resource = ctx.Request.Query["resource"].ToString().Trim();
+    var tags = ctx.Request.Query["tags"].ToString().Trim();
+    var profile = ctx.Request.Query["profile"].ToString().Trim();
+    PolicyExplanation? ex = resource.Length == 0 ? null : policies.Explain(resource, Words(tags), profile);
+    return Results.Content(AdminPages.Explain(who, resource, tags, profile, ex), "text/html; charset=utf-8");
+}).RequirePermission(Perm.PoliciesRead);
+
 guarded.MapPost("/policies/create", async (HttpContext ctx, AdminAuth auth, PolicyService policies) =>
 {
     var who = Admin(ctx);

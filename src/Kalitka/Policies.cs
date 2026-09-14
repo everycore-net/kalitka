@@ -121,6 +121,53 @@ public sealed record PolicyDecision(int RequiredApprovals, int? GrantTtlMinutes,
         || allow.Any(p => string.Equals(p, login, StringComparison.OrdinalIgnoreCase));
 }
 
+/// <summary>One policy in an <see cref="PolicyExplanation"/>: whether it matched the request
+/// context and, in plain words, why (the first failing clause, or "matched").</summary>
+public sealed record PolicyMatch(string Name, int Revision, bool Matched, string Reason);
+
+/// <summary>Which matched policy/policies set one effective value — the provenance that turns
+/// a decision into an explanation ("approvals=2 from prod-ddl").</summary>
+public sealed record EffectiveSource(string Field, string Value, string[] FromPolicies);
+
+/// <summary>A deterministic trace of the effective decision for one concrete request context.</summary>
+public sealed record PolicyExplanation(
+    string Resource,
+    string[] AgentTags,
+    string Profile,
+    PolicyMatch[] Considered,
+    PolicyDecision Effective,
+    EffectiveSource[] Sources);
+
+/// <summary>How a proposed change moves effective authority. A policy set only restricts an
+/// agent's own authority, so a change is deterministically one of these — and the last two
+/// (a request that was harder is now easier) are what must earn a separate approval.</summary>
+public enum PolicyImpactClass { NoChange, Restriction, AuthorityExpansion, MixedChange }
+
+/// <summary>A proposed edit to the policy set, evaluated by <see cref="PolicyService.Simulate"/>
+/// without being saved.</summary>
+public abstract record PolicyChange
+{
+    private PolicyChange() { }
+    /// <summary>Create or replace the policy of this name.</summary>
+    public sealed record Upsert(AccessPolicy Policy) : PolicyChange;
+    /// <summary>Delete the policy of this name.</summary>
+    public sealed record Remove(string Name) : PolicyChange;
+}
+
+/// <summary>One field's before/after in an impact analysis and how it moved.</summary>
+public sealed record FieldDelta(string Field, string Before, string After, PolicyImpactClass Class);
+
+/// <summary>The impact of a proposed change on one concrete request context.</summary>
+public sealed record PolicyImpact(
+    string Resource,
+    string[] AgentTags,
+    string Profile,
+    PolicyDecision Before,
+    PolicyDecision After,
+    FieldDelta[] Deltas,
+    PolicyImpactClass Class,
+    bool RequiresApproval);
+
 /// <summary>
 /// Where access policies live — one JSON blob in the shared <see cref="IConfigStore"/>,
 /// so they are durable and cluster-wide, with the same append-only revision history as
@@ -156,10 +203,21 @@ public sealed class PolicyService
     /// approvals wins (<c>max</c>), a shorter grant wins (<c>min</c>) — so there is no
     /// priority or first-match to reason about. Never returns fewer approvals than 1.
     /// </summary>
-    public PolicyDecision Effective(string resource, IReadOnlyCollection<string> agentTags, string profile = "")
+    public PolicyDecision Effective(string resource, IReadOnlyCollection<string> agentTags, string profile = "") =>
+        Compose(All(), resource, agentTags, profile).Decision;
+
+    /// <summary>
+    /// The one composition of policies into an effective decision — the single code path the
+    /// request engine, <see cref="Explain"/> and <see cref="Simulate"/> all go through, so a
+    /// trace or an impact analysis can never disagree with what the engine would actually do.
+    /// Pure over its inputs (takes the policy set explicitly), so <see cref="Simulate"/> can
+    /// run it against a hypothetical set without touching the store.
+    /// </summary>
+    internal static (PolicyDecision Decision, List<AccessPolicy> Matched) Compose(
+        IReadOnlyList<AccessPolicy> policies, string resource, IReadOnlyCollection<string> agentTags, string profile = "")
     {
-        var matched = All().Where(p => p.Matches(resource, agentTags, profile)).ToList();
-        if (matched.Count == 0) return PolicyDecision.None;
+        var matched = policies.Where(p => p.Matches(resource, agentTags, profile)).ToList();
+        if (matched.Count == 0) return (PolicyDecision.None, matched);
 
         var required = Math.Max(1, matched.Max(p => p.RequiredApprovals));
         var ttls = matched.Where(p => p.GrantTtlMinutes > 0).Select(p => p.GrantTtlMinutes).ToList();
@@ -181,8 +239,163 @@ public sealed class PolicyService
         var subject = matched.Any(p => p.Subject == SubjectApproval.Forbidden) ? SubjectApproval.Forbidden
             : matched.Any(p => p.Subject == SubjectApproval.Required) ? SubjectApproval.Required
             : SubjectApproval.Optional;
-        return new PolicyDecision(required, ttl, matched.Select(p => p.Name).OrderBy(n => n).ToArray(),
+        var decision = new PolicyDecision(required, ttl, matched.Select(p => p.Name).OrderBy(n => n).ToArray(),
             requireCommand, requireSource, allowed, subject);
+        return (decision, matched);
+    }
+
+    /// <summary>
+    /// A deterministic, human-readable trace of the decision for one concrete request context:
+    /// which policies were considered and why each did or did not match, the composed effective
+    /// decision, and — the part an operator actually wants — which policy set each strictest
+    /// value. Valuable on its own in the console, and the ground truth a policy copilot may
+    /// only ever retell, never invent.
+    /// </summary>
+    public PolicyExplanation Explain(string resource, IReadOnlyCollection<string> agentTags, string profile = "")
+    {
+        var all = All();
+        var (decision, matched) = Compose(all, resource, agentTags, profile);
+        var matchedNames = matched.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var considered = all.Select(p => new PolicyMatch(
+            p.Name, p.Revision, matchedNames.Contains(p.Name),
+            MatchReason(p, resource, agentTags, profile))).ToArray();
+
+        // Attribution reads the already-composed decision — it never re-derives the numbers,
+        // so it cannot drift from what the engine decided.
+        var sources = matched.Count == 0 ? Array.Empty<EffectiveSource>() : Attribute(decision, matched);
+        return new PolicyExplanation(resource, agentTags.ToArray(), profile, considered, decision, sources);
+    }
+
+    // Why a policy matched or not — the first failing clause, so the trace is actionable.
+    private static string MatchReason(AccessPolicy p, string resource, IReadOnlyCollection<string> tags, string profile)
+    {
+        if (!ResourceGlob.Matches(p.MatchResource, resource))
+            return $"resource {resource} not matched by {p.MatchResource}";
+        var missing = p.MatchTags.FirstOrDefault(t => !tags.Any(x => string.Equals(x, t, StringComparison.OrdinalIgnoreCase)));
+        if (missing is not null) return $"agent lacks tag {missing}";
+        if (p.MatchProfile.Length > 0 && !ResourceGlob.Matches(p.MatchProfile, profile))
+            return $"profile {(profile.Length == 0 ? "(none)" : profile)} not matched by {p.MatchProfile}";
+        return "matched";
+    }
+
+    // Which matched policy/policies is responsible for each strictest effective value.
+    private static EffectiveSource[] Attribute(PolicyDecision d, List<AccessPolicy> matched)
+    {
+        var sources = new List<EffectiveSource>
+        {
+            new("approvals", d.RequiredApprovals.ToString(),
+                From(matched, p => Math.Max(1, p.RequiredApprovals) == d.RequiredApprovals)),
+        };
+        if (d.GrantTtlMinutes is { } ttl)
+            sources.Add(new("grant_ttl_minutes", ttl.ToString(),
+                From(matched, p => p.GrantTtlMinutes == ttl)));
+        if (d.Subject != SubjectApproval.Optional)
+            sources.Add(new("subject", d.Subject.ToString().ToLowerInvariant(),
+                From(matched, p => p.Subject == d.Subject)));
+        if (d.RequireCommand)
+            sources.Add(new("require_command", "true", From(matched, p => p.RequireCommand)));
+        if (d.RequireSourceAddress)
+            sources.Add(new("require_source_address", "true", From(matched, p => p.RequireSourceAddress)));
+        if (d.AllowedPrincipals is { Length: > 0 } allow)
+            sources.Add(new("allowed_principals", string.Join(",", allow),
+                From(matched, p => p.AllowedPrincipals.Length > 0)));
+        return sources.ToArray();
+    }
+
+    private static string[] From(List<AccessPolicy> matched, Func<AccessPolicy, bool> pick) =>
+        matched.Where(pick).Select(p => p.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToArray();
+
+    /// <summary>
+    /// The impact of a proposed policy change on one concrete request context — the before and
+    /// after effective decisions and a deterministic classification. A policy set only ever
+    /// restricts an agent's own authority, so a <i>change</i> to it is comparable field by
+    /// field: it either leaves effective authority unchanged, tightens it, loosens it, or both.
+    /// <see cref="PolicyImpactClass.AuthorityExpansion"/> and <see cref="PolicyImpactClass.MixedChange"/>
+    /// mean a request that was harder is now easier — that is what must earn its own approval.
+    /// </summary>
+    public PolicyImpact Simulate(PolicyChange change, string resource, IReadOnlyCollection<string> agentTags, string profile = "")
+    {
+        var current = All();
+        var proposed = Apply(current, change);
+        var before = Compose(current, resource, agentTags, profile).Decision;
+        var after = Compose(proposed, resource, agentTags, profile).Decision;
+        var deltas = Delta(before, after);
+        var cls = Classify(deltas.Select(x => x.Class));
+        return new PolicyImpact(resource, agentTags.ToArray(), profile, before, after, deltas, cls,
+            RequiresApproval: cls is PolicyImpactClass.AuthorityExpansion or PolicyImpactClass.MixedChange);
+    }
+
+    // The proposed policy set: an upsert replaces the same-named latest, a remove drops it.
+    private static List<AccessPolicy> Apply(IReadOnlyList<AccessPolicy> current, PolicyChange change) => change switch
+    {
+        PolicyChange.Remove r => current.Where(p => !Eq(p.Name, r.Name)).ToList(),
+        PolicyChange.Upsert u => current.Where(p => !Eq(p.Name, u.Policy.Name)).Append(u.Policy).ToList(),
+        _ => current.ToList(),
+    };
+
+    // Field-by-field classification of before -> after. Each field is a restriction, an
+    // expansion, both (only principals can be), or nothing; the overall class combines them.
+    private static FieldDelta[] Delta(PolicyDecision a, PolicyDecision b)
+    {
+        var d = new List<FieldDelta>();
+        Add(d, "approvals", a.RequiredApprovals, b.RequiredApprovals,
+            restricts: b.RequiredApprovals > a.RequiredApprovals, expands: b.RequiredApprovals < a.RequiredApprovals);
+        // TTL: null = no override = the longest life, so least restrictive.
+        var at = a.GrantTtlMinutes ?? int.MaxValue;
+        var bt = b.GrantTtlMinutes ?? int.MaxValue;
+        Add(d, "grant_ttl_minutes", Ttl(a.GrantTtlMinutes), Ttl(b.GrantTtlMinutes),
+            restricts: bt < at, expands: bt > at);
+        var ar = (int)a.Subject; var br = (int)b.Subject;   // Optional<Required<Forbidden
+        Add(d, "subject", a.Subject.ToString().ToLowerInvariant(), b.Subject.ToString().ToLowerInvariant(),
+            restricts: br > ar, expands: br < ar);
+        Add(d, "require_command", a.RequireCommand, b.RequireCommand,
+            restricts: b.RequireCommand && !a.RequireCommand, expands: a.RequireCommand && !b.RequireCommand);
+        Add(d, "require_source_address", a.RequireSourceAddress, b.RequireSourceAddress,
+            restricts: b.RequireSourceAddress && !a.RequireSourceAddress, expands: a.RequireSourceAddress && !b.RequireSourceAddress);
+        AddPrincipals(d, a.AllowedPrincipals, b.AllowedPrincipals);
+        return d.Where(x => x.Class != PolicyImpactClass.NoChange).ToArray();
+    }
+
+    private static string Ttl(int? t) => t is { } v ? v.ToString() : "(none)";
+
+    private static void Add(List<FieldDelta> d, string field, object before, object after, bool restricts, bool expands) =>
+        d.Add(new FieldDelta(field, before.ToString() ?? "", after.ToString() ?? "", ClassOf(restricts, expands)));
+
+    // Allowed-principals is the one field where a single change can both add and remove
+    // permitted logins: a wider set expands (allows more), a narrower set restricts, and an
+    // incomparable set does both.
+    private static void AddPrincipals(List<FieldDelta> d, string[]? aArr, string[]? bArr)
+    {
+        var a = new HashSet<string>(aArr ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        var b = new HashSet<string>(bArr ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        bool aNone = a.Count == 0, bNone = b.Count == 0;
+        bool restricts, expands;
+        if (aNone && bNone) { restricts = expands = false; }
+        else if (aNone) { restricts = true; expands = false; }        // added a constraint where none was
+        else if (bNone) { restricts = false; expands = true; }        // dropped the constraint entirely
+        else { expands = !b.IsSubsetOf(a); restricts = !a.IsSubsetOf(b); }  // superset expands, subset restricts
+        d.Add(new FieldDelta("allowed_principals",
+            aNone ? "(any)" : string.Join(",", a.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
+            bNone ? "(any)" : string.Join(",", b.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
+            ClassOf(restricts, expands)));
+    }
+
+    private static PolicyImpactClass ClassOf(bool restricts, bool expands) =>
+        restricts && expands ? PolicyImpactClass.MixedChange
+        : expands ? PolicyImpactClass.AuthorityExpansion
+        : restricts ? PolicyImpactClass.Restriction
+        : PolicyImpactClass.NoChange;
+
+    private static PolicyImpactClass Classify(IEnumerable<PolicyImpactClass> fields)
+    {
+        bool restricts = false, expands = false;
+        foreach (var c in fields)
+        {
+            if (c is PolicyImpactClass.Restriction or PolicyImpactClass.MixedChange) restricts = true;
+            if (c is PolicyImpactClass.AuthorityExpansion or PolicyImpactClass.MixedChange) expands = true;
+        }
+        return ClassOf(restricts, expands);
     }
 
     public async Task Save(AccessPolicy policy, string actor, CancellationToken ct)
