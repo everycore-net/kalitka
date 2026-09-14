@@ -28,7 +28,7 @@ public sealed class GateService
         IOptions<GateOptions> options, ILogger<GateService> log, TimeProvider? clock = null,
         IEnumerable<INotifier>? extraNotifiers = null, IAuditStore? audit = null,
         IRequestStore? requestStore = null, IAtomicWork? atomic = null, IConfigStore? config = null,
-        PolicyService? policies = null, PrincipalService? principals = null)
+        PolicyService? policies = null, PrincipalService? principals = null, Metrics? metrics = null)
     {
         // DI supplies the request and audit stores (in-memory by default, SQLite
         // when a path is configured), so pending state and history survive a
@@ -40,7 +40,7 @@ public sealed class GateService
         // uses, so all shared config sits in one backend.
         _engine = new ApprovalEngine(geo, lists, options.Value, log,
             clock ?? TimeProvider.System, requestStore ?? new InMemoryRequestStore(),
-            audit ?? new InMemoryAuditStore(), atomic, config, policies, principals);
+            audit ?? new InMemoryAuditStore(), atomic, config, policies, principals, metrics);
         _notifier = new TelegramNotifier(telegram, _engine, options.Value);
         // Telegram is always a channel; DI supplies any others (e.g. e-mail).
         _extra = extraNotifiers?.ToList() ?? new List<INotifier>();
@@ -123,6 +123,7 @@ public sealed class GateService
     public (string grant, bool created) EnsureGrant(string id, string candidate) => _engine.EnsureGrant(id, candidate);
 
     public IReadOnlyList<PendingView> PendingSnapshot() => _engine.PendingSnapshot();
+    public int PendingCount() => _engine.PendingCount();
     public PendingView? RequestView(string id) => _engine.RequestView(id);
 
     /// <summary>Apply a decision from a non-Telegram channel (the web plane). The

@@ -7,6 +7,28 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-14
+
+### Added
+
+- **Operational metrics on a Prometheus `/metrics` endpoint (audit follow-up #6).** The four signals
+  the audit named, with no metrics SDK or exporter dependency — a self-contained registry that
+  renders Prometheus text, the same own-it-outright choice the product makes for its other formalism
+  (JCS, the audit chain):
+  - `kalitka_decisions_total{decision,reason}` — every decision, counted at the *same* seam as the
+    audit log (`MeteredDecision`), so the metric cannot drift from the log. This is the audit's
+    **denial-reason distribution** (filter `decision="denied"`) and gives approval/ask rates too.
+  - `kalitka_time_to_approval_seconds` — a fixed-bucket histogram (5s … 1h) of the time from a
+    request being raised to its approval.
+  - `kalitka_pending_requests` — a gauge of the queue depth, read live from the request store at
+    scrape time.
+  - `kalitka_notify_fallback_total{reason}` — how often approval notification fell back to the admins
+    (`subject-unmapped`, `operator-unreachable`).
+  - The endpoint is **guarded** (Traefik routes the whole host, so an open `/metrics` would be
+    public): it accepts the internal secret via `X-Kalitka-Internal` **or** `Authorization: Bearer`,
+    so a stock Prometheus can scrape with `authorization.credentials_file` — no secret in the scrape
+    config. 13 tests (registry rendering & bucketing, engine wiring, endpoint auth). Core suite 337.
+
 ## [0.36.0] - 2026-09-14
 
 ### Security
