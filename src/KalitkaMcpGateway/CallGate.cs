@@ -25,7 +25,13 @@ public enum ClaimOutcome { Claimed, NotApproved, AlreadyClaimed, Gone }
 /// never acts on expires, and a claim an executor never completes expires to an unknown outcome.</summary>
 public sealed record CallGateOptions
 {
+    /// <summary>How long a raised request may wait for a human before it expires.</summary>
     public TimeSpan ApprovalTtl { get; init; } = TimeSpan.FromMinutes(10);
+    /// <summary>How long an approval stays claimable before it expires — an approval is not a
+    /// standing permission; a call approved now cannot be executed much later.</summary>
+    public TimeSpan ApprovedTtl { get; init; } = TimeSpan.FromMinutes(5);
+    /// <summary>How long a claimed execution has to report an outcome before it becomes
+    /// OutcomeUnknown (the grant is spent).</summary>
     public TimeSpan ClaimTtl { get; init; } = TimeSpan.FromSeconds(60);
     /// <summary>Strict deployments deny an unclassified tool outright; otherwise it needs manual
     /// approval. Either way it is never auto-allowed.</summary>
@@ -48,6 +54,7 @@ public sealed class CallGate
         public required Call Call;
         public CallState State;
         public DateTimeOffset? ApprovalExpiresAt;
+        public DateTimeOffset? ApprovedExpiresAt;
         public DateTimeOffset? ClaimExpiresAt;
         public int RequiredApprovals;
         public readonly HashSet<string> Approvers = new(StringComparer.OrdinalIgnoreCase);
@@ -81,23 +88,27 @@ public sealed class CallGate
             if (effective is null)
                 return new CallDecision(GatewayOutcome.Denied, CallState.Denied, call.CallId, "unclassified");
 
-            // No approval required: still recorded (audit + uniform claim/outcome), auto-approved.
-            if (effective.Kind == ClassKind.NoApproval)
-            {
-                var rec = Fresh(call, requiredApprovals: 0);
-                rec.State = CallState.Approved;
-                rec.Approvers.Add("policy:auto");
-                return new CallDecision(GatewayOutcome.Approved, rec.State, call.CallId);
-            }
-
-            // Needs approval.
+            // Idempotent while a record is active — for BOTH classes. This is what stops two
+            // parallel auto-allowed calls from each overwriting the record and both being dispatched:
+            // the second sees the active record (Approved/ExecutionClaimed) and does not start fresh.
             if (_records.TryGetValue(call.Fingerprint, out var existing) && !IsTerminalForRetry(existing.State))
                 return Map(existing);
 
-            var pending = Fresh(call, effective.RequiredApprovals);
-            pending.State = CallState.Pending;
-            pending.ApprovalExpiresAt = _clock.GetUtcNow() + _opt.ApprovalTtl;
-            return Map(pending);
+            var now = _clock.GetUtcNow();
+            var rec = Fresh(call, effective.Kind == ClassKind.NoApproval ? 0 : effective.RequiredApprovals);
+            if (effective.Kind == ClassKind.NoApproval)
+            {
+                // Recorded (audit + uniform claim/outcome) and auto-approved, but still time-bounded.
+                rec.State = CallState.Approved;
+                rec.Approvers.Add("policy:auto");
+                rec.ApprovedExpiresAt = now + _opt.ApprovedTtl;
+            }
+            else
+            {
+                rec.State = CallState.Pending;
+                rec.ApprovalExpiresAt = now + _opt.ApprovalTtl;
+            }
+            return Map(rec);
         }
     }
 
@@ -111,7 +122,11 @@ public sealed class CallGate
             if (r.State != CallState.Pending) return r.State;
             if (Expired(r.ApprovalExpiresAt)) { r.State = CallState.Expired; return r.State; }
             r.Approvers.Add(approver);
-            if (r.Approvers.Count >= r.RequiredApprovals) r.State = CallState.Approved;
+            if (r.Approvers.Count >= r.RequiredApprovals)
+            {
+                r.State = CallState.Approved;
+                r.ApprovedExpiresAt = _clock.GetUtcNow() + _opt.ApprovedTtl;
+            }
             return r.State;
         }
     }
@@ -136,6 +151,9 @@ public sealed class CallGate
             switch (r.State)
             {
                 case CallState.Approved:
+                    // The approval expiry is checked here, atomically with the claim — an approval is
+                    // not a standing permission, so a stale one cannot be executed.
+                    if (Expired(r.ApprovedExpiresAt)) { r.State = CallState.Expired; return ClaimOutcome.NotApproved; }
                     r.State = CallState.ExecutionClaimed;
                     r.ClaimExpiresAt = _clock.GetUtcNow() + _opt.ClaimTtl;
                     return ClaimOutcome.Claimed;
@@ -162,8 +180,23 @@ public sealed class CallGate
         }
     }
 
-    /// <summary>Time-based transitions, callable on a cadence: expire un-acted approvals, and turn
-    /// a claim that never reported an outcome into OutcomeUnknown (fail closed — the grant is spent).</summary>
+    /// <summary>Mark a claimed execution's outcome as unknown — for when dispatch reached the
+    /// upstream but no definite result came back (a timeout, cancellation, or broken connection
+    /// after the call may already have run). The grant is spent; there is no automatic retry, and
+    /// this is never silently treated as success or as a proven failure.</summary>
+    public CallState MarkOutcomeUnknown(string fingerprint, string? detail = null)
+    {
+        lock (_gate)
+        {
+            if (!_records.TryGetValue(fingerprint, out var r)) return CallState.Expired;
+            if (r.State == CallState.ExecutionClaimed) { r.State = CallState.OutcomeUnknown; r.Outcome = detail; }
+            return r.State;
+        }
+    }
+
+    /// <summary>Time-based transitions, callable on a cadence: expire un-acted approvals and stale
+    /// approvals, and turn a claim that never reported an outcome into OutcomeUnknown (fail closed —
+    /// the grant is spent).</summary>
     public int Sweep()
     {
         lock (_gate)
@@ -172,6 +205,7 @@ public sealed class CallGate
             foreach (var r in _records.Values)
             {
                 if (r.State == CallState.Pending && Expired(r.ApprovalExpiresAt)) { r.State = CallState.Expired; n++; }
+                else if (r.State == CallState.Approved && Expired(r.ApprovedExpiresAt)) { r.State = CallState.Expired; n++; }
                 else if (r.State == CallState.ExecutionClaimed && Expired(r.ClaimExpiresAt)) { r.State = CallState.OutcomeUnknown; n++; }
             }
             return n;

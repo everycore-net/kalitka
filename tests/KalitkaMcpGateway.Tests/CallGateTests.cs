@@ -140,6 +140,40 @@ public class CallGateTests
     }
 
     [Fact]
+    public void An_approval_is_not_a_standing_permission_it_expires_before_claim()
+    {
+        var (gate, clock) = Fresh(new CallGateOptions { ApprovedTtl = TimeSpan.FromMinutes(5) });
+        gate.Evaluate(C(), ToolClass.Approval());
+        gate.Approve("fp-1", "operator:anna");
+        clock.Advance(TimeSpan.FromMinutes(6));                // approval went stale before use
+        Assert.Equal(ClaimOutcome.NotApproved, gate.Claim("fp-1"));   // checked atomically at claim
+        Assert.Equal(CallState.Expired, gate.StateOf("fp-1"));
+    }
+
+    [Fact]
+    public void A_transport_unknown_outcome_burns_the_grant_and_refuses_a_late_result()
+    {
+        var (gate, _) = Fresh();
+        gate.Evaluate(C(), ToolClass.Approval());
+        gate.Approve("fp-1", "operator:anna");
+        gate.Claim("fp-1");
+        Assert.Equal(CallState.OutcomeUnknown, gate.MarkOutcomeUnknown("fp-1", "transport"));
+        Assert.Equal(CallState.OutcomeUnknown, gate.Complete("fp-1", success: true));   // no late success
+    }
+
+    [Fact]
+    public void Two_identical_auto_allowed_calls_do_not_both_dispatch()
+    {
+        var (gate, _) = Fresh();
+        Assert.Equal(GatewayOutcome.Approved, gate.Evaluate(C(), ToolClass.NoApproval).Outcome);
+        Assert.Equal(ClaimOutcome.Claimed, gate.Claim("fp-1"));
+        // A second identical call while the first is in flight sees the active record (not a fresh
+        // auto-approval) and cannot claim it again.
+        Assert.Equal(GatewayOutcome.Pending, gate.Evaluate(C(), ToolClass.NoApproval).Outcome);
+        Assert.Equal(ClaimOutcome.AlreadyClaimed, gate.Claim("fp-1"));
+    }
+
+    [Fact]
     public void Classifier_resolves_absent_or_retyped_tools_as_unclassified()
     {
         var classifier = new DictionaryToolClassifier()

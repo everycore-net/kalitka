@@ -10,6 +10,7 @@ public sealed class FakeUpstream : IUpstream
     public int CallCount { get; private set; }
     public List<(string Tool, string Args)> Calls { get; } = new();
     public ToolResult NextResult { get; set; } = new(IsError: false, ContentJson: "{\"ok\":true}");
+    public Exception? ThrowOnCall { get; set; }
 
     public Task<IReadOnlyList<UpstreamTool>> ListToolsAsync(CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<UpstreamTool>>(Tools.ToList());
@@ -18,6 +19,7 @@ public sealed class FakeUpstream : IUpstream
     {
         CallCount++;
         Calls.Add((tool, argumentsJson));
+        if (ThrowOnCall is not null) throw ThrowOnCall;
         return Task.FromResult(NextResult);
     }
 }

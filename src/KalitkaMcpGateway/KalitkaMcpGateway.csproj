@@ -7,12 +7,12 @@
     its own small, exhaustively tested unit with published conformance vectors.
   -->
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>KalitkaMcpGateway</RootNamespace>
     <AssemblyName>KalitkaMcpGateway</AssemblyName>
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>

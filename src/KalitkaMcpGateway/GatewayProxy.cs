@@ -1,7 +1,7 @@
 namespace KalitkaMcpGateway;
 
 /// <summary>What the gateway did with a forwarded call.</summary>
-public enum HandleKind { Result, Pending, Denied, UnknownTool, BadArguments, AlreadyHandled }
+public enum HandleKind { Result, Pending, Denied, UnknownTool, BadArguments, AlreadyHandled, OutcomeUnknown }
 
 /// <summary>The gateway's answer to a <c>tools/call</c>. <see cref="HandleKind.Pending"/> carries a
 /// Call ID for the human to approve and for the AI to poll/re-issue against; it is a normal
@@ -58,7 +58,7 @@ public sealed class GatewayProxy
     /// <summary>Handle one <c>tools/call</c>. Called every time the AI issues the call: the first
     /// time it returns Pending; after a human approves, the re-issued call is claimed and forwarded
     /// exactly once.</summary>
-    public async Task<HandleResult> HandleAsync(string tool, string argumentsJson, string subject, string workload, CancellationToken ct)
+    public async Task<HandleResult> HandleAsync(string tool, string argumentsJson, AuthenticatedCallContext ctx, CancellationToken ct)
     {
         var inv = Inventory;
         if (!inv.TryGet(tool, out var invTool))
@@ -67,14 +67,18 @@ public sealed class GatewayProxy
         byte[] canonicalArgs;
         try { canonicalArgs = Jcs.Canonicalize(argumentsJson); }
         catch (JcsException e) { return new HandleResult(HandleKind.BadArguments, "", Reason: e.Message); }
+        // Forward exactly the bytes that were fingerprinted, not the caller's original text, so what
+        // a human approved is byte-for-byte what runs upstream — no split between fingerprint and
+        // execution (unsafe integers were already rejected by the canonicalizer).
+        var canonicalArgsJson = System.Text.Encoding.UTF8.GetString(canonicalArgs);
 
         var contractId = inv.ContractId(tool);
-        var fp = CallFingerprint.Compute(_alias, tool, contractId, subject, workload, canonicalArgs);
+        var fp = CallFingerprint.Compute(_alias, tool, contractId, ctx, canonicalArgs);
         var fp64 = CallFingerprint.ToBase64Url(fp);
         var callId = CallFingerprint.CallId(fp);
 
         var cls = _classifier.Classify(_alias, tool, invTool.ContractHashHex);
-        var call = new Call(_alias, tool, subject, workload, fp64, callId);
+        var call = new Call(_alias, tool, ctx.Subject.Id, ctx.Workload.Id, fp64, callId);
         var decision = _gate.Evaluate(call, cls);
 
         switch (decision.Outcome)
@@ -93,14 +97,18 @@ public sealed class GatewayProxy
 
         try
         {
-            var result = await _upstream.CallToolAsync(tool, argumentsJson, ct);
+            var result = await _upstream.CallToolAsync(tool, canonicalArgsJson, ct);
+            // An upstream that returns a definite result — success or an MCP error — is a proven outcome.
             _gate.Complete(fp64, success: !result.IsError);
             return new HandleResult(HandleKind.Result, callId, _gate.StateOf(fp64), result);
         }
-        catch
+        catch (Exception e)
         {
-            _gate.Complete(fp64, success: false, "upstream threw");
-            throw;
+            // A timeout / cancellation / broken connection after dispatch is NOT a proven failure —
+            // the call may already have run. Burn the grant as OutcomeUnknown; no automatic retry.
+            var state = _gate.MarkOutcomeUnknown(fp64, "transport error after dispatch: " + e.GetType().Name);
+            return new HandleResult(HandleKind.OutcomeUnknown, callId, state,
+                Reason: "dispatch reached the upstream but no definite outcome was received");
         }
     }
 }

@@ -7,6 +7,37 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **MCP Gateway — 0.3.1 security hardening of the fingerprint boundary** (before any live wire,
+  the cheapest time to fix it). From an owner review of 0.3.0:
+  - **Unambiguous framing (→ `kalitka-mcp-call-v2`).** The fingerprint and `tool_contract_id` now
+    join fields with **length-prefixed** framing, not a `0x00` delimiter — so a value containing a
+    NUL can no longer shift a boundary and collide two different calls.
+  - **Fingerprint == executed args.** The canonicalizer rejects **unsafe integers** (beyond
+    ±(2^53−1); they must travel as strings, per I-JSON), and the gateway now **forwards the exact
+    canonical bytes it fingerprinted** — closing the split where a big integer could hash the same
+    but reach an `Int64`/`BigInteger` upstream as a different value.
+  - **Transport failure after dispatch is `OutcomeUnknown`, not `Failed`.** A timeout / cancel /
+    broken pipe after the call was sent may mean it already ran; the grant is burned as unknown
+    (surfaced to the approver), never auto-retried nor recorded as a proven failure. Only a
+    definite upstream result/error is `Executed`/`Failed`.
+  - **Approval is not a standing permission.** New `ApprovedTtl`, checked **atomically at claim**;
+    a stale approval cannot execute. The `NoApproval` path no longer overwrites an active record,
+    so two identical concurrent auto-allowed calls cannot both dispatch.
+  - **JCS hostile-input limits:** reject trailing content after the value and lone UTF-16
+    surrogates; cap input bytes (256 KiB), nodes (10 000), string length (64 KiB) and depth (32).
+  - **Inventory is not trusted:** a duplicate tool name or a non-object `inputSchema` rejects the
+    whole snapshot; the contract id now folds in a **durable digest epoch** of the whole snapshot
+    (deterministic and restart-stable) instead of a local counter.
+  - **Typed identity in the binding:** `HandleAsync` takes an `AuthenticatedCallContext` (workload
+    id + assurance, subject id + asserted/claimed) and the fingerprint binds all of them, so one
+    identity string can't stand for two trust levels.
+  - **Published end-to-end conformance vectors** (schema → contract id → canonical args →
+    fingerprint → Call ID), so a third-party gateway can prove the whole pipeline, not just JCS.
+  - **Migrated to net10.0** (LTS to Nov 2028); CI now provisions both the .NET 9 and .NET 10 SDKs.
+  - 95 gateway tests in CI.
+
 ### Added
 
 - **MCP Gateway — tool inventory, drift detection & proxy orchestration (`src/KalitkaMcpGateway`
