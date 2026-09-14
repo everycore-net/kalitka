@@ -310,6 +310,17 @@ public sealed class GateOptions
     /// <summary>Lifetime of a WebAuthn registration/approval challenge. Short: the operator is at
     /// the keyboard.</summary>
     public int WebAuthnChallengeMinutes { get; set; } = 5;
+
+    // ---- Web Push (the installable PWA channel) -----------------------------
+
+    /// <summary>The VAPID <c>sub</c> claim — a contact the push service can reach about this sender
+    /// (a <c>mailto:</c> or an <c>https:</c> URL). Defaults to <c>mailto:</c> the first admin, else
+    /// <c>https://{GateHost}</c>.</summary>
+    public string VapidSubject { get; set; } = "";
+
+    /// <summary>How long a push service should hold an undelivered notification (seconds). Default 28
+    /// days — an approval request is worth keeping until the phone comes back online.</summary>
+    public int PushTtlSeconds { get; set; } = 2_419_200;
 }
 
 /// <summary>How wide a Google-proven identity's session reaches. See

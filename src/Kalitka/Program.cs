@@ -32,6 +32,13 @@ builder.Services.AddSingleton<AccessLists>();
 builder.Services.AddSingleton<Metrics>();
 builder.Services.AddSingleton<WebAuthnStore>(sp => new WebAuthnStore(sp.GetRequiredService<IConfigStore>()));
 builder.Services.AddSingleton<WebAuthnService>();
+// Web Push (the installable PWA channel): VAPID identity + subscriptions + a push INotifier that
+// GateService picks up alongside Telegram and e-mail.
+builder.Services.AddHttpClient("webpush");
+builder.Services.AddSingleton<VapidKeyProvider>(sp => new VapidKeyProvider(sp.GetRequiredService<IConfigStore>()));
+builder.Services.AddSingleton<PushSubscriptionStore>(sp => new PushSubscriptionStore(sp.GetRequiredService<IConfigStore>()));
+builder.Services.AddSingleton<IWebPushSender, WebPushSender>();
+builder.Services.AddSingleton<INotifier, PushNotifier>();
 builder.Services.AddSingleton<GateService>();
 builder.Services.AddSingleton<TokenSigner>(sp =>
 {
@@ -166,6 +173,44 @@ if (options.TrustedProxies.Length == 0)
 }
 
 app.MapGet("/health", () => Results.Text("ok"));
+
+// ---------------------------------------------------------------------------
+// PWA assets — public (no secrets): the manifest, the service worker (root scope,
+// so it can receive push and control /app), and the icon. Self-contained, no wwwroot.
+// ---------------------------------------------------------------------------
+app.MapGet("/manifest.webmanifest", () => Results.Content(
+    "{\"name\":\"kalitka\",\"short_name\":\"kalitka\",\"start_url\":\"/admin/app\",\"scope\":\"/\","
+    + "\"display\":\"standalone\",\"background_color\":\"#0f1117\",\"theme_color\":\"#0f1117\","
+    + "\"icons\":[{\"src\":\"/icon.png\",\"sizes\":\"any\",\"type\":\"image/png\",\"purpose\":\"any\"}]}",
+    "application/manifest+json"));
+
+app.MapGet("/sw.js", () =>
+{
+    const string sw = """
+        self.addEventListener('push', function(e){
+          var d = {}; try { d = e.data ? e.data.json() : {}; } catch (x) {}
+          e.waitUntil(self.registration.showNotification(d.title || 'kalitka', {
+            body: d.body || 'An access request is waiting.',
+            data: { url: d.url || '/admin/app' }, icon: '/icon.png', badge: '/icon.png', tag: d.id, renotify: true
+          }));
+        });
+        self.addEventListener('notificationclick', function(e){
+          e.notification.close();
+          e.waitUntil(clients.matchAll({type:'window'}).then(function(cs){
+            for (var i=0;i<cs.length;i++){ if (cs[i].url.indexOf(e.notification.data.url) >= 0 && 'focus' in cs[i]) return cs[i].focus(); }
+            return clients.openWindow(e.notification.data.url);
+          }));
+        });
+        """;
+    // Served at the root, so its scope is already "/" — no Service-Worker-Allowed header needed.
+    return Results.Text(sw, "text/javascript", System.Text.Encoding.UTF8);
+});
+
+app.MapGet("/icon.png", () =>
+{
+    var b64 = Brand.IconDataUri["data:image/png;base64,".Length..];
+    return Results.Bytes(Convert.FromBase64String(b64), "image/png");
+});
 
 // ---------------------------------------------------------------------------
 // The forwardAuth endpoint. Your reverse proxy asks this before every request
@@ -862,6 +907,38 @@ guarded.MapPost("/requests/decide-signed", async (HttpContext ctx, AdminAuth aut
     return Results.Json(new { ok = true });
 }).RequirePermission(Perm.RequestsDecide);
 
+// ---- The installable PWA (Web Push channel) ----------------------------
+guarded.MapGet("/app", (HttpContext ctx, AdminAuth auth, GateService gate, VapidKeyProvider vapid) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AppPages.Shell(who, gate.PendingSnapshot(), vapid.PublicKey, auth.IssueCsrf(who.Sub)),
+        "text/html; charset=utf-8");
+});
+
+guarded.MapPost("/app/subscribe", async (HttpContext ctx, AdminAuth auth, PrincipalService principals, PushSubscriptionStore subs) =>
+{
+    var who = Admin(ctx);
+    var dto = await ctx.Request.ReadFromJsonAsync<PushSubscribeDto>();
+    if (dto is null || !auth.ValidateCsrf(dto.Csrf, who.Sub)) return Results.StatusCode(403);
+    if (string.IsNullOrWhiteSpace(dto.Endpoint) || string.IsNullOrWhiteSpace(dto.P256dh) || string.IsNullOrWhiteSpace(dto.Auth))
+        return Results.Json(new { error = "incomplete subscription" }, statusCode: 400);
+    // Bind the device to the operator (create the principal if this is their first). Push then
+    // reaches the person, not a global list — the same resolution as every other channel.
+    var pid = principals.Resolve(who.Actor);
+    if (pid is null) { pid = "op-" + who.Sub; await principals.Save(pid, who.Email, new[] { who.Actor }, who.Actor, ctx.RequestAborted); }
+    subs.Add(new PushSubscription(dto.Endpoint, dto.P256dh, dto.Auth, pid, DateTimeOffset.UtcNow.ToString("O")));
+    return Results.Json(new { ok = true });
+});
+
+guarded.MapPost("/app/unsubscribe", async (HttpContext ctx, AdminAuth auth, PushSubscriptionStore subs) =>
+{
+    var who = Admin(ctx);
+    var dto = await ctx.Request.ReadFromJsonAsync<PushSubscribeDto>();
+    if (dto is null || !auth.ValidateCsrf(dto.Csrf, who.Sub)) return Results.StatusCode(403);
+    subs.RemoveByEndpoint(dto.Endpoint);
+    return Results.Json(new { ok = true });
+});
+
 guarded.MapGet("/history", async (HttpContext ctx, IAuditStore audit) =>
 {
     var q = ctx.Request.Query;
@@ -1498,6 +1575,7 @@ internal sealed record RegisterFinishDto(string State, string CredentialId, stri
     string ClientDataJson, string DisplayName, string Csrf);
 internal sealed record DecideSignedDto(string Id, string Verb, string State, string CredentialId,
     string AuthenticatorData, string ClientDataJson, string Signature, string Csrf);
+internal sealed record PushSubscribeDto(string Endpoint, string P256dh, string Auth, string Csrf);
 
 // Exposed so integration tests can host the real pipeline via WebApplicationFactory.
 public partial class Program;
