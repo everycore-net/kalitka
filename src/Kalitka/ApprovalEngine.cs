@@ -108,11 +108,12 @@ public sealed class ApprovalEngine
 
     private readonly PolicyService? _policies;
     private readonly PrincipalService? _principals;
+    private readonly Metrics? _metrics;
 
     public ApprovalEngine(IGeoLookup geo, AccessLists lists, GateOptions options,
         ILogger log, TimeProvider clock, IRequestStore store, IAuditStore audit,
         IAtomicWork? atomic = null, IConfigStore? config = null, PolicyService? policies = null,
-        PrincipalService? principals = null)
+        PrincipalService? principals = null, Metrics? metrics = null)
     {
         _geo = geo;
         _lists = lists;
@@ -126,6 +127,7 @@ public sealed class ApprovalEngine
         _configGen = new ConfigGeneration(_config, clock, ConfigGenWindow);
         _policies = policies;
         _principals = principals;
+        _metrics = metrics;
 
         _sessions = new SessionService(_options.HmacSecret, clock, _options.HmacSecretPrevious);
         _sessionMinutes = _options.SessionMinutes;
@@ -332,7 +334,8 @@ public sealed class ApprovalEngine
         return false;
     }
 
-    private int PendingCount() =>
+    // Requests still waiting for a decision (not yet expired) — the pending-queue depth.
+    public int PendingCount() =>
         _store.CountWaiting(_clock.GetUtcNow().AddMinutes(-_options.PendingMinutes));
 
     public bool IsAllowedIp(string host, string ip) => _lists.IsAllowed("web:" + host, ip, "");
@@ -370,7 +373,7 @@ public sealed class ApprovalEngine
 
         if (!IsGuardedHost(target))
         {
-            Audit.Decision(_log, "rejected", target, ip, reason: "target-not-guarded");
+            MeteredDecision("rejected", target, ip, reason: "target-not-guarded");
             return ("invalid", "", null);
         }
 
@@ -412,21 +415,21 @@ public sealed class ApprovalEngine
         // Allow list: straight through, no question asked. Scoped to the resource.
         if (_lists.IsAllowed(resource, ip, subject))
         {
-            Audit.Decision(_log, "allowed", target, ip, identity: subject, reason: "allow-list");
+            MeteredDecision("allowed", target, ip, identity: subject, reason: "allow-list");
             return ("allowed", "", null);
         }
 
         // Block list: silent rejection, and above all no notification.
         if (_lists.IsBlocked(resource, ip, subject, place.CountryCode))
         {
-            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "block-list");
+            MeteredDecision("denied", target, ip, identity: subject, reason: "block-list");
             return ("blocked", "", null);
         }
 
         if (IsMuted)
         {
             _lists.Add("block", resource, "ip", ip, Now());
-            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "muted");
+            MeteredDecision("denied", target, ip, identity: subject, reason: "muted");
             return ("blocked", "", null);
         }
 
@@ -434,7 +437,7 @@ public sealed class ApprovalEngine
         // one: telling them they were throttled only tells them when to retry.
         if (IsRateLimited(ip))
         {
-            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "rate-limited");
+            MeteredDecision("denied", target, ip, identity: subject, reason: "rate-limited");
             return ("blocked", "", null);
         }
 
@@ -442,7 +445,7 @@ public sealed class ApprovalEngine
 
         if (_options.MaxPending > 0 && PendingCount() >= _options.MaxPending)
         {
-            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "pending-limit");
+            MeteredDecision("denied", target, ip, identity: subject, reason: "pending-limit");
             return ("blocked", "", null);
         }
 
@@ -457,17 +460,17 @@ public sealed class ApprovalEngine
         //   principal-not-allowed — the requested login is not on the policy allow-list
         if (decision.RequireCommand && command.Length == 0)
         {
-            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "command-required");
+            MeteredDecision("denied", target, ip, identity: subject, reason: "command-required");
             return ("command-required", "", null);
         }
         if (decision.RequireSourceAddress && sourceAddr.Length == 0)
         {
-            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "source-required");
+            MeteredDecision("denied", target, ip, identity: subject, reason: "source-required");
             return ("source-required", "", null);
         }
         if (!decision.PrincipalAllowed(subject))
         {
-            Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "principal-not-allowed");
+            MeteredDecision("denied", target, ip, identity: subject, reason: "principal-not-allowed");
             return ("principal-not-allowed", "", null);
         }
 
@@ -480,18 +483,18 @@ public sealed class ApprovalEngine
         if (decision.Subject != SubjectApproval.Optional)
         {
             if (subjectIdentity.Length == 0)
-            { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "subject-required"); return ("subject-required", "", null); }
+            { MeteredDecision("denied", target, ip, identity: subject, reason: "subject-required"); return ("subject-required", "", null); }
             if (!subjectTrusted)
-            { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "claimed-not-asserted"); return ("claimed-not-asserted", "", null); }
+            { MeteredDecision("denied", target, ip, identity: subject, reason: "claimed-not-asserted"); return ("claimed-not-asserted", "", null); }
             var sp = _principals?.Resolve(subjectIdentity);
             if (sp is null)
-            { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "subject-unmapped"); return ("subject-unmapped", "", null); }
+            { MeteredDecision("denied", target, ip, identity: subject, reason: "subject-unmapped"); return ("subject-unmapped", "", null); }
             if (decision.Subject == SubjectApproval.Required)
             {
                 if (!BeneficiaryMatches(subject, subjectIdentity))
-                { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "beneficiary-mismatch"); return ("beneficiary-mismatch", "", null); }
+                { MeteredDecision("denied", target, ip, identity: subject, reason: "beneficiary-mismatch"); return ("beneficiary-mismatch", "", null); }
                 if (_principals!.IdentitiesOf(sp).Count == 0)
-                { Audit.Decision(_log, "denied", target, ip, identity: subject, reason: "subject-unreachable"); return ("subject-unreachable", "", null); }
+                { MeteredDecision("denied", target, ip, identity: subject, reason: "subject-unreachable"); return ("subject-unreachable", "", null); }
             }
         }
 
@@ -506,7 +509,7 @@ public sealed class ApprovalEngine
         };
         _store.Add(request);
 
-        Audit.Decision(_log, "asked", target, ip, requestId: id, identity: subject);
+        MeteredDecision("asked", target, ip, requestId: id, identity: subject);
         await _audit.Append(Event(AuditEvents.AccessRequested,
             actor: actor, subject: subject, resource: resource, requestId: id,
             channel: resource.StartsWith("web:", StringComparison.Ordinal) ? "gate" : "agent",
@@ -597,10 +600,22 @@ public sealed class ApprovalEngine
         return acct.Length > 0 && string.Equals(acct, user, StringComparison.OrdinalIgnoreCase);
     }
 
-    private Task AuditNotifyFallback(PendingRequest r, string reason, CancellationToken ct) =>
-        _audit.Append(Event(AuditEvents.NotifyFallback, "system", r.Input, r.Resource, r.Id,
+    private Task AuditNotifyFallback(PendingRequest r, string reason, CancellationToken ct)
+    {
+        _metrics?.RecordNotifyFallback(reason);
+        return _audit.Append(Event(AuditEvents.NotifyFallback, "system", r.Input, r.Resource, r.Id,
             r.Resource.StartsWith("web:", StringComparison.Ordinal) ? "gate" : "agent",
             $"{reason}: {r.SubjectIdentity}"), ct);
+    }
+
+    // Audit the decision (one grep-able line) and count it (outcome + reason distribution). Every
+    // decision in the engine goes through here, so the metric cannot drift from the audit log.
+    private void MeteredDecision(string decision, string host, string clientIp,
+        string? requestId = null, string? identity = null, string? actor = null, string? reason = null)
+    {
+        Audit.Decision(_log, decision, host, clientIp, requestId, identity, actor, reason);
+        _metrics?.RecordDecision(decision, reason);
+    }
 
     /// <summary>
     /// Issue the request's one-time grant exactly once (on first approval read),
@@ -663,7 +678,7 @@ public sealed class ApprovalEngine
         if (request.Raised < cutoff)
         {
             _store.Remove(request.Id);
-            Audit.Decision(_log, "ignored", request.Target, request.Ip,
+            MeteredDecision("ignored", request.Target, request.Ip,
                 requestId: request.Id, identity: request.Input, actor: actor, reason: "callback-too-late");
             return new CallbackResult(CallbackOutcome.Expired);
         }
@@ -777,9 +792,11 @@ public sealed class ApprovalEngine
             _     => ""
         };
 
-        Audit.Decision(_log, toState == "approved" ? "approved" : "denied",
+        MeteredDecision(toState == "approved" ? "approved" : "denied",
             request.Target, request.Ip, requestId: request.Id, identity: request.Input,
             actor: actor, reason: verb);
+        if (toState == "approved")
+            _metrics?.RecordTimeToApproval((_clock.GetUtcNow() - request.Raised).TotalSeconds);
         // Non-transactional path only: the durable event is a best-effort second
         // step here, so if it fails (disk/IO) the decision stands without it. The
         // transactional path already appended the event inside the resolve above.

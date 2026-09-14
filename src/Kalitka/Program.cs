@@ -29,6 +29,7 @@ builder.Services.AddSingleton<IGeoLookup>(sp =>
 });
 builder.Services.AddHttpClient<GoogleAuth>();
 builder.Services.AddSingleton<AccessLists>();
+builder.Services.AddSingleton<Metrics>();
 builder.Services.AddSingleton<GateService>();
 builder.Services.AddSingleton<TokenSigner>(sp =>
 {
@@ -319,6 +320,12 @@ app.MapPost("/internal/toggle", (HttpContext ctx, GateService gate) =>
     gate.SetEnforced(host, on);
     return Results.Json(new { host, on });
 });
+
+// Prometheus scrape target. Guarded like the other /internal endpoints (Traefik routes the whole
+// host, so an unguarded /metrics would be public); the scraper sends X-Kalitka-Internal, or an
+// Authorization: Bearer with the same secret so a stock Prometheus can use credentials_file.
+app.MapGet("/metrics", (HttpContext ctx, GateService gate, Metrics metrics) =>
+    MetricsGuard(ctx, gate) ?? Results.Text(metrics.Render(gate.PendingCount()), "text/plain; version=0.0.4"));
 
 // ---------------------------------------------------------------------------
 // Non-HTTP agents (SSH, later DB/RDP), guarded by the agent registry. An agent on
@@ -1327,6 +1334,19 @@ static IResult? InternalGuard(HttpContext ctx, GateService gate) =>
     || !SecretEquals(ctx.Request.Headers["X-Kalitka-Internal"].ToString(), gate.InternalSecret)
         ? Results.StatusCode(403)
         : null;
+
+// Like InternalGuard, but also accepts the secret as "Authorization: Bearer <secret>" so a stock
+// Prometheus can scrape with authorization.credentials_file — no secret in the scrape config.
+static IResult? MetricsGuard(HttpContext ctx, GateService gate)
+{
+    if (string.IsNullOrEmpty(gate.InternalSecret)) return Results.StatusCode(403);
+    if (SecretEquals(ctx.Request.Headers["X-Kalitka-Internal"].ToString(), gate.InternalSecret)) return null;
+    var auth = ctx.Request.Headers.Authorization.ToString();
+    const string bearer = "Bearer ";
+    if (auth.StartsWith(bearer, StringComparison.Ordinal) && SecretEquals(auth[bearer.Length..], gate.InternalSecret))
+        return null;
+    return Results.StatusCode(403);
+}
 
 // Authenticate an /agent/* caller into an AgentIdentity, or null (→ 403). Three paths,
 // most-preferred first: an Ed25519-signed request (no reusable secret in flight), the
