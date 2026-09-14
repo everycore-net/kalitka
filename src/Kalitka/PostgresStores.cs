@@ -713,7 +713,32 @@ public sealed class PgConfigStore : IConfigStore
             up.Parameters.AddWithValue("v", next);
             up.ExecuteNonQuery();
         }
+
+        // Advance the shared generation in the same transaction as the write, so a reader on any
+        // instance can confirm its cached snapshot is current before granting authority. Atomic
+        // per-row increment — concurrent writers serialise on the row, keeping it monotonic.
+        using (var gen = conn.CreateCommand())
+        {
+            gen.Transaction = tx;
+            gen.CommandText =
+                "INSERT INTO config(key,value) VALUES(@g,'1') " +
+                "ON CONFLICT(key) DO UPDATE SET value=(config.value::bigint+1)::text;";
+            gen.Parameters.AddWithValue("g", GenerationKey);
+            gen.ExecuteNonQuery();
+        }
         tx.Commit();
+    }
+
+    // Reserved key; never used by callers, so it cannot collide with a real config blob.
+    private const string GenerationKey = "__generation__";
+
+    public long Generation()
+    {
+        using var conn = PgState.Open(_cs);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT value FROM config WHERE key=@k;";
+        cmd.Parameters.AddWithValue("k", GenerationKey);
+        return cmd.ExecuteScalar() is string s && long.TryParse(s, out var v) ? v : 0;
     }
 }
 

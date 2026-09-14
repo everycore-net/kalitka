@@ -7,6 +7,30 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-14
+
+### Security
+
+- **Config tightening propagates before the cache TTL (asymmetric freshness guard).** The 10s config
+  cache lets a change reach other instances with a bounded lag. That is harmless when a rule is
+  *relaxed* — the worst case is a few extra seconds of asking — but on the decision path a snapshot
+  that has not yet seen a *tightening* made on another instance would wrongly grant authority: let
+  traffic bypass a just-armed gate, or honour an allow that was just revoked. (No cluster runs today;
+  this closes the property, not a live hole.)
+  - `IConfigStore` gains a monotonic **`Generation()`** counter, advanced on every `Mutate`. The
+    shared backends (**SQLite**, **Postgres**) advance it *in the same transaction* as the write, so
+    it is shared and monotonic across instances; the single-node backends keep it in process.
+  - New `ConfigGeneration` guard is consulted **only on the authority-granting direction**: before
+    permitting, a reader whose snapshot is older than a 1s confirm window checks the generation (a
+    cheap counter read, not a blob re-parse) and reloads if it was superseded. The deny/enforce
+    direction never pays, so a loosening simply rides the slower TTL — the asymmetry the audit asked
+    for. Wired into the armed-host gate (`ApprovalEngine.IsEnforced`) and the allow auto-permit
+    (`AccessLists.IsAllowed`); a missed block is not accelerated (it still faces approval, grants
+    nothing). Net: a tightening reaches the grant path within ~1s, a loosening within the 10s TTL.
+  - 9 tests (the primitive; SQLite generation shared across instances; arming/allow-revocation reach
+    the grant path before the TTL; disarming/allow-grant ride the TTL). Core suite 324. Deliberately
+    no pub/sub or event bus — disproportionate to a cluster that does not yet exist.
+
 ## [0.35.0] - 2026-09-14
 
 ### Security
