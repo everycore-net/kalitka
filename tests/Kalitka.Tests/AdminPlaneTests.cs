@@ -100,6 +100,26 @@ public class AdminPlaneTests : IClassFixture<GateFactory>
     }
 
     [Fact]
+    public async Task Policy_copilot_previews_an_authority_expansion()
+    {
+        await _f.Services.GetRequiredService<PolicyService>().Save(
+            new AccessPolicy("cp", "ssh:*", new[] { "env:prod" }, 2, 0), "google:admin", default);
+        _f.Services.GetRequiredService<IAgentStore>().Create(new Agent(
+            "cop-a", "cop-a", "linux", "h", AgentStatus.Active, "hash", new[] { "ssh" }, new[] { "ssh:*" },
+            "", System.DateTimeOffset.UnixEpoch, null, "", null) { Tags = new[] { "env:prod" } });
+
+        var (cookie, _) = Admin();
+        var req = new HttpRequestMessage(HttpMethod.Get,
+            "/admin/policies/copilot?mode=upsert&name=cp&match_resource=ssh:*&match_tags=env:prod&required=1");
+        WithCookie(req, cookie);
+        var res = await Client().SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var html = await res.Content.ReadAsStringAsync();
+        Assert.Contains("authority expansion", html);      // lowering 2 -> 1 approvals
+        Assert.Contains("confirm_expansion", html);        // apply is gated on the confirm checkbox
+    }
+
+    [Fact]
     public async Task Approve_from_the_web_plane_resolves_the_request()
     {
         var id = await RaiseRequest("203.0.113.40");

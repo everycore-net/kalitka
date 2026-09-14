@@ -111,6 +111,7 @@ builder.Services.AddSingleton<AgentService>();
 builder.Services.AddSingleton<ProfileService>();
 builder.Services.AddSingleton<ReconcileService>();
 builder.Services.AddSingleton<PolicyService>();
+builder.Services.AddSingleton<PolicyCopilot>();
 builder.Services.AddSingleton<PrincipalService>();
 
 var app = builder.Build();
@@ -979,6 +980,49 @@ guarded.MapGet("/policies/explain", (HttpContext ctx, PolicyService policies) =>
     return Results.Content(AdminPages.Explain(who, resource, tags, profile, ex), "text/html; charset=utf-8");
 }).RequirePermission(Perm.PoliciesRead);
 
+// Policy copilot: draft a change, preview its deterministic impact across the fleet (simulate),
+// and apply it — with an explicit confirmation whenever it expands effective authority. The
+// natural-language drafter plugs in on top of this; the authority stays deterministic here.
+guarded.MapGet("/policies/copilot", (HttpContext ctx, AdminAuth auth, PolicyCopilot copilot) =>
+{
+    var who = Admin(ctx);
+    var q = ctx.Request.Query;
+    var draft = new AdminPages.CopilotDraft(
+        Mode: q["mode"].ToString() == "remove" ? "remove" : "upsert",
+        Name: q["name"].ToString().Trim(),
+        Resource: q["match_resource"].ToString().Trim(),
+        Tags: q["match_tags"].ToString().Trim(),
+        Required: q["required"].ToString().Trim(),
+        Ttl: q["grant_ttl"].ToString().Trim(),
+        Subject: q["subject"].ToString().Trim());
+    var change = CopilotChange(draft);
+    var preview = change is null ? null : copilot.Preview(change);
+    return Results.Content(AdminPages.Copilot(who, draft, preview, auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+}).RequirePermission(Perm.PoliciesManage);
+
+guarded.MapPost("/policies/copilot/apply", async (HttpContext ctx, AdminAuth auth, PolicyCopilot copilot) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var draft = new AdminPages.CopilotDraft(
+        Mode: form["mode"].ToString() == "remove" ? "remove" : "upsert",
+        Name: form["name"].ToString().Trim(),
+        Resource: form["match_resource"].ToString().Trim(),
+        Tags: form["match_tags"].ToString().Trim(),
+        Required: form["required"].ToString().Trim(),
+        Ttl: form["grant_ttl"].ToString().Trim(),
+        Subject: form["subject"].ToString().Trim());
+    var change = CopilotChange(draft);
+    if (change is null) return Results.BadRequest();
+    var confirm = form["confirm_expansion"].ToString() is "on" or "true" or "1";
+    var result = await copilot.Apply(change, confirm, who.Actor, ctx.RequestAborted);
+    // If it needed confirmation and none was given, send the operator back to the preview.
+    if (result.NeedsConfirmation)
+        return Results.Redirect("/admin/policies/copilot?" + CopilotQuery(draft), false);
+    return Results.Redirect("/admin/policies", false);
+}).RequirePermission(Perm.PoliciesManage);
+
 guarded.MapPost("/policies/create", async (HttpContext ctx, AdminAuth auth, PolicyService policies) =>
 {
     var who = Admin(ctx);
@@ -1237,6 +1281,29 @@ static AdminIdentity Admin(HttpContext ctx) => (AdminIdentity)ctx.Items["admin"]
 // Split a free-text list (capabilities, resources) on spaces/commas.
 static string[] Words(string s) =>
     s.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+// Build a PolicyChange from the copilot's draft fields, or null when there is nothing to preview.
+static PolicyChange? CopilotChange(AdminPages.CopilotDraft d)
+{
+    if (d.Name.Length == 0) return null;
+    if (d.Mode == "remove") return new PolicyChange.Remove(d.Name);
+    if (d.Resource.Length == 0) return null;
+    int.TryParse(d.Required, out var required);
+    int.TryParse(d.Ttl, out var ttl);
+    var subject = d.Subject.ToLowerInvariant() switch
+    {
+        "required" => SubjectApproval.Required,
+        "forbidden" => SubjectApproval.Forbidden,
+        _ => SubjectApproval.Optional,
+    };
+    return new PolicyChange.Upsert(
+        new AccessPolicy(d.Name, d.Resource, Words(d.Tags), Math.Max(1, required), Math.Max(0, ttl)) { Subject = subject });
+}
+
+static string CopilotQuery(AdminPages.CopilotDraft d) =>
+    $"mode={Uri.EscapeDataString(d.Mode)}&name={Uri.EscapeDataString(d.Name)}" +
+    $"&match_resource={Uri.EscapeDataString(d.Resource)}&match_tags={Uri.EscapeDataString(d.Tags)}" +
+    $"&required={Uri.EscapeDataString(d.Required)}&grant_ttl={Uri.EscapeDataString(d.Ttl)}&subject={Uri.EscapeDataString(d.Subject)}";
 
 static AuditEvent AdminEvent(string type, string actor, string email) =>
     new(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, type, actor, email, "-", "-", "-", "web", "");

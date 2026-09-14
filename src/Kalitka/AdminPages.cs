@@ -88,6 +88,7 @@ public static class AdminPages
         + Nav(who, Perm.AgentsRead, "/admin/reconcile", "Reconcile")
         + Nav(who, Perm.PoliciesRead, "/admin/policies", "Policies")
         + Nav(who, Perm.PoliciesRead, "/admin/policies/explain", "Explain")
+        + Nav(who, Perm.PoliciesManage, "/admin/policies/copilot", "Copilot")
         + Nav(who, Perm.PrincipalsRead, "/admin/principals", "Operators")
         + Nav(who, Perm.HistoryRead, "/admin/history", "History")
         + "<span class=\"spacer\"></span>"
@@ -530,6 +531,100 @@ public static class AdminPages
         $"<input name=\"{name}\" placeholder=\"{H(placeholder)}\" value=\"{H(value)}\" "
         + "style=\"display:block;width:100%;max-width:520px;margin:6px 0;padding:8px;border-radius:8px;"
         + "border:1px solid #2a3140;background:#0f1117;color:#e6e6e6\">";
+
+    /// <summary>The raw draft fields, echoed back to refill the form and carried into the apply POST.</summary>
+    public sealed record CopilotDraft(string Mode, string Name, string Resource, string Tags, string Required, string Ttl, string Subject);
+
+    /// <summary>The policy copilot's Draft/Change surface: propose a change, see its deterministic
+    /// impact across the fleet (via simulate), and apply it — with an explicit confirmation whenever
+    /// it expands effective authority. No AI here yet: this is the "kalitka produces authority" half
+    /// that any intent-producer (a human now, an LLM later) feeds into.</summary>
+    public static string Copilot(AdminIdentity who, CopilotDraft d, CopilotPreview? preview, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Policy copilot</h1>")
+          .Append("<p class=\"muted\">Propose a change and see exactly what it does to every agent "
+              + "before it happens — the same deterministic simulate the engine uses. A change that "
+              + "<b>expands</b> anyone's effective authority (fewer approvers, longer grant, a dropped "
+              + "constraint) requires an explicit confirmation. <i>AI produces intent, kalitka produces "
+              + "authority</i> — a natural-language drafter plugs in on top of this later.</p>");
+
+        var isRemove = d.Mode == "remove";
+        sb.Append("<h2>Draft a change</h2>")
+          .Append("<form method=\"get\" action=\"/admin/policies/copilot\">")
+          .Append("<label class=\"muted\" style=\"display:block;margin:6px 0\">change "
+              + "<select name=\"mode\">"
+              + $"<option value=\"upsert\"{(isRemove ? "" : " selected")}>create or update a policy</option>"
+              + $"<option value=\"remove\"{(isRemove ? " selected" : "")}>delete a policy</option>"
+              + "</select></label>")
+          .Append(InVal("name", "policy name", d.Name));
+        if (!isRemove)
+            sb.Append(InVal("match_resource", "match resource (ssh:*  |  db:sql01/*  |  *)", d.Resource))
+              .Append(InVal("match_tags", "match tags — all required (env:prod role:web)", d.Tags))
+              .Append(InVal("required", "required approvals (e.g. 2)", d.Required))
+              .Append(InVal("grant_ttl", "grant TTL minutes (0 = no override)", d.Ttl))
+              .Append("<label class=\"muted\" style=\"display:block;margin:6px 0\">subject approval "
+                  + "<select name=\"subject\">"
+                  + Opt("optional", d.Subject) + Opt("required", d.Subject) + Opt("forbidden", d.Subject)
+                  + "</select></label>");
+        sb.Append("<div class=\"btns\"><button>Preview impact</button></div></form>");
+
+        if (preview is not null)
+        {
+            sb.Append("<h2>Impact</h2>")
+              .Append($"<p>{ImpactPill(preview.Overall)} "
+                  + $"<span class=\"muted\">across {preview.Affected.Length} affected agent(s)</span></p>");
+
+            if (preview.Affected.Length > 0)
+            {
+                sb.Append("<table><tr><th>Agent</th><th>Tags</th><th>Change</th></tr>");
+                foreach (var a in preview.Affected)
+                    sb.Append("<tr>")
+                      .Append($"<td><code>{H(a.DisplayName)}</code></td>")
+                      .Append($"<td class=\"muted\">{H(string.Join(" ", a.Tags))}</td>")
+                      .Append($"<td>{Deltas(a.Impact.Deltas)}</td>")
+                      .Append("</tr>");
+                sb.Append("</table>");
+            }
+
+            // Apply form carries the draft forward; expansion requires the confirm checkbox.
+            sb.Append("<form method=\"post\" action=\"/admin/policies/copilot/apply\">")
+              .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+              .Append(Hidden("mode", d.Mode)).Append(Hidden("name", d.Name)).Append(Hidden("match_resource", d.Resource))
+              .Append(Hidden("match_tags", d.Tags)).Append(Hidden("required", d.Required)).Append(Hidden("grant_ttl", d.Ttl))
+              .Append(Hidden("subject", d.Subject));
+            if (preview.RequiresApproval)
+                sb.Append("<label style=\"display:block;margin:10px 0;color:#ff8a8a\">"
+                    + "<input type=\"checkbox\" name=\"confirm_expansion\" value=\"true\"> "
+                    + "I confirm this <b>expands effective authority</b> and should still be applied.</label>");
+            sb.Append($"<div class=\"btns\"><button class=\"{(preview.RequiresApproval ? "no" : "ok")}\">Apply change</button></div></form>");
+        }
+
+        return Shell(who, sb.ToString());
+
+        static string Opt(string v, string sel) => $"<option value=\"{v}\"{(v == sel ? " selected" : "")}>{v}</option>";
+        static string Hidden(string n, string v) => $"<input type=\"hidden\" name=\"{n}\" value=\"{H(v)}\">";
+    }
+
+    private static string ImpactPill(PolicyImpactClass c) => c switch
+    {
+        PolicyImpactClass.NoChange => "<span class=\"pill\" style=\"background:#222833;color:#6b7280\">no effective change</span>",
+        PolicyImpactClass.Restriction => "<span class=\"pill approved\">restriction</span>",
+        PolicyImpactClass.AuthorityExpansion => "<span class=\"pill denied\">authority expansion</span>",
+        _ => "<span class=\"pill priv\">mixed change</span>",
+    };
+
+    private static string Deltas(FieldDelta[] deltas)
+    {
+        if (deltas.Length == 0) return "<span class=\"muted\">—</span>";
+        var sb = new StringBuilder();
+        foreach (var d in deltas)
+            sb.Append($"<span class=\"muted\">{H(d.Field)}:</span> <code>{H(d.Before)}</code> → <code>{H(d.After)}</code> ")
+              .Append(d.Class == PolicyImpactClass.AuthorityExpansion ? "<span class=\"pill denied\">expand</span> "
+                  : d.Class == PolicyImpactClass.Restriction ? "<span class=\"pill approved\">restrict</span> "
+                  : d.Class == PolicyImpactClass.MixedChange ? "<span class=\"pill priv\">mixed</span> " : "")
+              .Append("<br>");
+        return sb.ToString();
+    }
 
     // ---- Operator principals (who counts as a distinct approver) -------------
 

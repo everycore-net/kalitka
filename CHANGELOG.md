@@ -7,6 +7,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-09-14
+
+### Added
+
+- **Policy copilot — the deterministic backbone (`PolicyCopilot` + `/admin/policies/copilot`).**
+  The "kalitka produces authority" half of the copilot, built on the ready `explain`/`simulate`.
+  A proposed change (an `Upsert`/`Remove`, from a human in the console now — or an LLM translating
+  intent later) is never trusted to be safe: `PolicyCopilot.Preview` runs `PolicyService.Simulate`
+  against **every current agent** (so an expansion can't hide in a context the caller forgot),
+  classifies the fleet-wide impact (No change / Restriction / Authority expansion / Mixed), and
+  lists the affected agents with their field-level deltas. `Apply` is human-only and **refuses to
+  apply an authority expansion without an explicit confirmation**; a pure restriction applies
+  directly. The copilot never decides what is allowed — it retells a deterministic impact and gates
+  the apply. Admin surface at `/admin/policies/copilot` (Draft/Change: propose → preview impact →
+  apply with the confirm gate). The natural-language drafter is a pluggable intent layer on top
+  (pending an owner decision on the LLM dependency); the authority stays deterministic and testable.
+  7 tests (`PolicyCopilotTests` + an admin endpoint smoke). No schema change.
+
 ### Added
 
 - **MCP Gateway — real upstream MCP client (`src/KalitkaMcpGateway` → 0.6.0).** `McpUpstream`
