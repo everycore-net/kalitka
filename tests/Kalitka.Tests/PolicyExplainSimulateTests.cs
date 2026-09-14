@@ -25,15 +25,18 @@ public class PolicyExplainSimulateTests
     private static AccessPolicy P(string name, string resource, string[] tags, int required = 1, int ttl = 0) =>
         new(name, resource, tags, required, ttl);
 
+    // Arrange helper: Save completes synchronously over the in-memory store. Kept off the test
+    // methods themselves so the synchronous wait is not flagged (xUnit1031).
+    private static void Seed(PolicyService svc, AccessPolicy p) => svc.Save(p, Actor, default).GetAwaiter().GetResult();
+
     // ---- explain --------------------------------------------------------------
 
     [Fact]
     public void Explain_agrees_with_the_engine_and_attributes_each_value()
     {
         var svc = Fresh();
-        svc.Save(P("base", "ssh:*", new[] { "env:prod" }, required: 1), Actor, default).Wait();
-        svc.Save(P("ddl", "ssh:*", new[] { "env:prod" }, required: 3, ttl: 15) with { Subject = SubjectApproval.Forbidden },
-            Actor, default).Wait();
+        Seed(svc, P("base", "ssh:*", new[] { "env:prod" }, required: 1));
+        Seed(svc, P("ddl", "ssh:*", new[] { "env:prod" }, required: 3, ttl: 15) with { Subject = SubjectApproval.Forbidden });
 
         var tags = new[] { "env:prod" };
         var ex = svc.Explain("ssh:db-01", tags);
@@ -59,8 +62,8 @@ public class PolicyExplainSimulateTests
     public void Explain_says_why_each_policy_did_not_match()
     {
         var svc = Fresh();
-        svc.Save(P("prod", "ssh:*", new[] { "env:prod" }), Actor, default).Wait();
-        svc.Save(P("dbonly", "db:*", new[] { "env:prod" }), Actor, default).Wait();
+        Seed(svc, P("prod", "ssh:*", new[] { "env:prod" }));
+        Seed(svc, P("dbonly", "db:*", new[] { "env:prod" }));
 
         var ex = svc.Explain("ssh:x", new[] { "env:staging" });
         Assert.All(ex.Considered, c => Assert.False(c.Matched));
@@ -88,7 +91,7 @@ public class PolicyExplainSimulateTests
     public void Lowering_approvals_is_an_authority_expansion_that_needs_approval()
     {
         var svc = Fresh();
-        svc.Save(P("p", "ssh:*", new[] { "env:prod" }, required: 2), Actor, default).Wait();
+        Seed(svc, P("p", "ssh:*", new[] { "env:prod" }, required: 2));
         var change = new PolicyChange.Upsert(P("p", "ssh:*", new[] { "env:prod" }, required: 1));
         var impact = svc.Simulate(change, "ssh:x", new[] { "env:prod" });
         Assert.Equal(PolicyImpactClass.AuthorityExpansion, impact.Class);
@@ -99,7 +102,7 @@ public class PolicyExplainSimulateTests
     public void Deleting_a_restricting_policy_is_an_authority_expansion()
     {
         var svc = Fresh();
-        svc.Save(P("guard", "ssh:*", new[] { "env:prod" }, required: 2, ttl: 15), Actor, default).Wait();
+        Seed(svc, P("guard", "ssh:*", new[] { "env:prod" }, required: 2, ttl: 15));
         var impact = svc.Simulate(new PolicyChange.Remove("guard"), "ssh:x", new[] { "env:prod" });
         Assert.Equal(PolicyImpactClass.AuthorityExpansion, impact.Class);
         Assert.True(impact.RequiresApproval);
@@ -111,7 +114,7 @@ public class PolicyExplainSimulateTests
     public void More_approvals_but_a_longer_ttl_is_a_mixed_change()
     {
         var svc = Fresh();
-        svc.Save(P("p", "ssh:*", new[] { "env:prod" }, required: 1, ttl: 15), Actor, default).Wait();
+        Seed(svc, P("p", "ssh:*", new[] { "env:prod" }, required: 1, ttl: 15));
         // required 1 -> 2 (restriction), ttl 15 -> 60 (expansion): mixed.
         var change = new PolicyChange.Upsert(P("p", "ssh:*", new[] { "env:prod" }, required: 2, ttl: 60));
         var impact = svc.Simulate(change, "ssh:x", new[] { "env:prod" });
@@ -123,7 +126,7 @@ public class PolicyExplainSimulateTests
     public void An_unrelated_change_is_no_effective_change_for_this_context()
     {
         var svc = Fresh();
-        svc.Save(P("prod", "ssh:*", new[] { "env:prod" }, required: 2), Actor, default).Wait();
+        Seed(svc, P("prod", "ssh:*", new[] { "env:prod" }, required: 2));
         // Tightening a DB policy does not touch an SSH/prod request.
         var change = new PolicyChange.Upsert(P("db", "db:*", new[] { "env:prod" }, required: 3));
         var impact = svc.Simulate(change, "ssh:x", new[] { "env:prod" });
@@ -136,7 +139,7 @@ public class PolicyExplainSimulateTests
     public void Relaxing_subject_from_forbidden_to_optional_expands_authority()
     {
         var svc = Fresh();
-        svc.Save(P("p", "ssh:*", new[] { "env:prod" }) with { Subject = SubjectApproval.Forbidden }, Actor, default).Wait();
+        Seed(svc, P("p", "ssh:*", new[] { "env:prod" }) with { Subject = SubjectApproval.Forbidden });
         var change = new PolicyChange.Upsert(P("p", "ssh:*", new[] { "env:prod" }) with { Subject = SubjectApproval.Optional });
         var impact = svc.Simulate(change, "ssh:x", new[] { "env:prod" });
         Assert.Equal(PolicyImpactClass.AuthorityExpansion, impact.Class);
@@ -149,7 +152,7 @@ public class PolicyExplainSimulateTests
     public void Widening_a_principal_allow_list_expands_narrowing_restricts()
     {
         var svc = Fresh();
-        svc.Save(P("p", "ssh:*", new[] { "env:prod" }) with { AllowedPrincipals = new[] { "deploy", "root" } }, Actor, default).Wait();
+        Seed(svc, P("p", "ssh:*", new[] { "env:prod" }) with { AllowedPrincipals = new[] { "deploy", "root" } });
 
         // {deploy,root} -> {deploy,root,ops}: superset, allows more.
         var widen = svc.Simulate(new PolicyChange.Upsert(
@@ -174,7 +177,7 @@ public class PolicyExplainSimulateTests
     public void Swapping_one_allowed_principal_for_another_is_mixed()
     {
         var svc = Fresh();
-        svc.Save(P("p", "ssh:*", new[] { "env:prod" }) with { AllowedPrincipals = new[] { "deploy" } }, Actor, default).Wait();
+        Seed(svc, P("p", "ssh:*", new[] { "env:prod" }) with { AllowedPrincipals = new[] { "deploy" } });
         var change = new PolicyChange.Upsert(
             P("p", "ssh:*", new[] { "env:prod" }) with { AllowedPrincipals = new[] { "readonly" } });
         var impact = svc.Simulate(change, "ssh:x", new[] { "env:prod" });
