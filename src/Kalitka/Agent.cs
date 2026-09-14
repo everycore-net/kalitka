@@ -26,6 +26,16 @@ public static class AgentCapabilities
     /// carries this; a generic CLI agent does not (its subject is fine for notification
     /// routing, but never trusted for subject approval).</summary>
     public const string AssertSubject = "subject.assert";
+
+    /// <summary>Capabilities that confer authority over the approval decision itself, not
+    /// just the ability to raise/redeem — sudo-grade. Granting or revoking one is surfaced
+    /// distinctly in the reconcile diff, the audit log and the agent UI, so it is never a
+    /// quiet line in a profile change. (An agent with <c>subject.assert</c> can assert who
+    /// the subject is, which feeds authorization and the quorum.)</summary>
+    public static readonly IReadOnlySet<string> Privileged =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { AssertSubject };
+
+    public static bool IsPrivileged(string capability) => Privileged.Contains(capability);
 }
 
 /// <summary>

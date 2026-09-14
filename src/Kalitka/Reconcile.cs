@@ -57,6 +57,13 @@ public sealed class ReconcileService
 
         public bool RemovesPrivilege => RemovedCapabilities.Length > 0 || RemovedResources.Length > 0;
 
+        /// <summary>Sudo-grade capabilities this plan grants / revokes (e.g. <c>subject.assert</c>)
+        /// — surfaced on their own so a privilege-over-the-decision change is never a quiet
+        /// line in a profile diff.</summary>
+        public string[] PrivilegedGranted => AddedCapabilities.Where(AgentCapabilities.IsPrivileged).ToArray();
+        public string[] PrivilegedRevoked => RemovedCapabilities.Where(AgentCapabilities.IsPrivileged).ToArray();
+        public bool TouchesPrivileged => PrivilegedGranted.Length > 0 || PrivilegedRevoked.Length > 0;
+
         /// <summary>Anything to do at all — a content change or just moving the revision
         /// pointer forward after drift was fully absorbed by local overrides.</summary>
         public bool HasChanges =>
@@ -79,8 +86,9 @@ public sealed class ReconcileService
             {
                 if (added.Length == 0 && removed.Length == 0) return;
                 sb.Append("; ").Append(label).Append(':');
-                foreach (var a in added) sb.Append(" +").Append(a);
-                foreach (var r in removed) sb.Append(" -").Append(r);
+                // A privileged capability is marked with '!' so it stands out in the audit line.
+                foreach (var a in added) sb.Append(AgentCapabilities.IsPrivileged(a) ? " +!" : " +").Append(a);
+                foreach (var r in removed) sb.Append(AgentCapabilities.IsPrivileged(r) ? " -!" : " -").Append(r);
             }
         }
     }
@@ -162,6 +170,13 @@ public sealed class ReconcileService
             Guid.NewGuid().ToString("N"), _clock.GetUtcNow(), AuditEvents.AgentProfileApplied, actor,
             Subject: agentId, Resource: plan.ProfileId, RequestId: "", GrantId: agentId,
             Channel: "agent", Metadata: plan.Diff()), ct);
+        // A sudo-grade capability changing hands gets its own conspicuous, queryable event —
+        // not just a marker inside the profile-applied diff.
+        if (plan.TouchesPrivileged)
+            await _audit.Append(new AuditEvent(
+                Guid.NewGuid().ToString("N"), _clock.GetUtcNow(), AuditEvents.AgentPrivilegedCapability, actor,
+                Subject: agentId, Resource: plan.ProfileId, RequestId: "", GrantId: agentId, Channel: "agent",
+                Metadata: Privileged(plan.PrivilegedGranted, plan.PrivilegedRevoked)), ct);
         return new(true, false, plan);
     }
 
@@ -172,6 +187,15 @@ public sealed class ReconcileService
         var added = Only(theirs, @base);
         var removed = Only(@base, theirs);
         return Except(mine.Concat(added).Distinct(Cmp), removed);
+    }
+
+    // A compact description of a privileged-capability change for the audit log.
+    internal static string Privileged(string[] granted, string[] revoked)
+    {
+        var sb = new StringBuilder();
+        foreach (var g in granted) sb.Append(sb.Length > 0 ? " " : "").Append("granted ").Append(g);
+        foreach (var r in revoked) sb.Append(sb.Length > 0 ? " " : "").Append("revoked ").Append(r);
+        return sb.ToString();
     }
 
     private static string[] Only(string[] a, string[] b) => a.Where(x => !b.Contains(x, Cmp)).ToArray();

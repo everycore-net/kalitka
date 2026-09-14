@@ -50,7 +50,19 @@ public sealed class AgentService
         { Tags = Norm(tags ?? Array.Empty<string>()) }.WithProvenance(prov);
         _agents.Create(agent);
         await _audit.Append(Ev(AuditEvents.AgentEnrolled, actor, id), ct);
+        await AuditPrivileged(id, agent.Capabilities, actor, ct);
         return new Created(agent, secret);
+    }
+
+    // A sudo-grade capability (e.g. subject.assert) granted at create/enrol time gets its
+    // own conspicuous, queryable audit event, just as a reconcile that grants one does.
+    private async Task AuditPrivileged(string id, string[] caps, string actor, CancellationToken ct)
+    {
+        var priv = caps.Where(AgentCapabilities.IsPrivileged).ToArray();
+        if (priv.Length == 0) return;
+        await _audit.Append(new AuditEvent(Guid.NewGuid().ToString("N"), _clock.GetUtcNow(),
+            AuditEvents.AgentPrivilegedCapability, actor, Subject: id, Resource: "", RequestId: "",
+            GrantId: id, Channel: "admin", Metadata: "granted " + string.Join(" ", priv)), ct);
     }
 
     /// <summary>Create a pending agent and a single-use enrollment token for it. The
@@ -69,6 +81,7 @@ public sealed class AgentService
         _agents.Create(agent);
         var token = _tokens.Mint("agent-enrollment", id, "", "", _enrollMinutes);
         await _audit.Append(Ev(AuditEvents.AgentEnrollmentCreated, actor, id), ct);
+        await AuditPrivileged(id, agent.Capabilities, actor, ct);
         return token;
     }
 

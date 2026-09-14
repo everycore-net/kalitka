@@ -30,7 +30,8 @@ public static class AdminPages
       + ".pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:.75rem}"
       + ".waiting{background:#3a2f10;color:#f0c674}.approved{background:#12331c;color:#7ad08a}"
       + ".denied{background:#3a1414;color:#ff8a8a}"
-      + ".add{color:#7ad08a}.rem{color:#ff8a8a}"
+      + ".priv{background:#3a2140;color:#e0a3ff;border:1px solid #6d3f7a}"
+      + ".add{color:#7ad08a}.rem{color:#ff8a8a}.add.priv,.rem.priv{background:none;border:0}"
       + ".tile{display:inline-block;background:#171a22;border:1px solid #262b36;border-radius:12px;"
       + "padding:16px 20px;margin:0 12px 12px 0}.tile b{font-size:1.6rem;display:block}"
       + ".btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}"
@@ -44,6 +45,21 @@ public static class AdminPages
     private const string Foot = "</body></html>";
 
     private static string H(string s) => WebUtility.HtmlEncode(s);
+
+    // Render a capability list, giving any sudo-grade capability (subject.assert) a
+    // distinct badge so it never blends into an ordinary <code> run. A privileged grant
+    // over the approval decision should be impossible to miss at a glance.
+    private static string Caps(IEnumerable<string> caps)
+    {
+        var xs = caps.ToArray();
+        if (xs.Length == 0) return "<span class=\"muted\">none</span>";
+        var sb = new StringBuilder();
+        foreach (var c in xs)
+            sb.Append(AgentCapabilities.IsPrivileged(c)
+                ? $"<span class=\"pill priv\" title=\"sudo-grade capability\">{H(c)}</span> "
+                : $"<code>{H(c)}</code> ");
+        return sb.ToString().TrimEnd();
+    }
 
     // Honest wording: a provider hint is a local CLAIM, not a verified fact. Until
     // attestation validates it (assurance != unverified), never say "TPM protected".
@@ -336,7 +352,7 @@ public static class AdminPages
                 sb.Append("<tr>")
                   .Append($"<td><code>{H(p.Name)}</code></td>")
                   .Append($"<td>{H(p.Platform)}</td>")
-                  .Append($"<td class=\"muted\">{H(string.Join(" ", p.Capabilities))}</td>")
+                  .Append($"<td>{Caps(p.Capabilities)}</td>")
                   .Append($"<td class=\"muted\">{H(string.Join(" ", p.ResourceTemplates))}</td>")
                   .Append($"<td class=\"muted\">{H(string.Join(" ", p.Tags))}</td>")
                   .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/profiles/delete\">"
@@ -503,7 +519,7 @@ public static class AdminPages
           .Append($"<tr><th>Status</th><td>{StatusPill(a.Status)}</td></tr>")
           .Append($"<tr><th>Platform</th><td>{H(a.Platform)}</td></tr>")
           .Append($"<tr><th>Hostname</th><td>{H(a.Hostname)}</td></tr>")
-          .Append($"<tr><th>Capabilities</th><td><code>{H(string.Join(" ", a.Capabilities))}</code></td></tr>")
+          .Append($"<tr><th>Capabilities</th><td>{Caps(a.Capabilities)}</td></tr>")
           .Append($"<tr><th>Resources</th><td><code>{H(string.Join(" ", a.AllowedResources))}</code></td></tr>")
           .Append($"<tr><th>Tags</th><td class=\"muted\">{H(string.Join(" ", a.Tags))}</td></tr>")
           .Append(string.IsNullOrEmpty(a.ProfileId) ? ""
@@ -593,7 +609,8 @@ public static class AdminPages
             sb.Append("<tr>")
               .Append($"<td><a class=\"row\" href=\"/admin/agents/{H(p.AgentId)}\">{H(p.AgentId)}</a><br><span class=\"muted\">{H(p.Hostname)}</span></td>")
               .Append($"<td><code>{H(p.ProfileId)}</code><br><span class=\"muted\">rev {p.FromRevision}→{p.ToRevision}</span></td>")
-              .Append($"<td>{Changes(p)}{(p.IsExpansion ? " <span class=\"pill denied\">expansion</span>" : "")}</td>")
+              .Append($"<td>{Changes(p)}{(p.IsExpansion ? " <span class=\"pill denied\">expansion</span>" : "")}"
+                    + $"{(p.TouchesPrivileged ? " <span class=\"pill priv\" title=\"sudo-grade capability granted/revoked\">privileged</span>" : "")}</td>")
               .Append($"<td>{ApplyForm(p, csrf)}</td>")
               .Append("</tr>");
         sb.Append("</table>");
@@ -614,8 +631,13 @@ public static class AdminPages
         {
             if (added.Length == 0 && removed.Length == 0) return;
             sb.Append($"<span class=\"muted\">{label}:</span> ");
-            foreach (var a in added) sb.Append($"<code class=\"add\">+{H(a)}</code> ");
-            foreach (var r in removed) sb.Append($"<code class=\"rem\">-{H(r)}</code> ");
+            // A '!' marks a sudo-grade capability so it reads distinctly even inline.
+            foreach (var a in added)
+                sb.Append(AgentCapabilities.IsPrivileged(a)
+                    ? $"<code class=\"add priv\">+!{H(a)}</code> " : $"<code class=\"add\">+{H(a)}</code> ");
+            foreach (var r in removed)
+                sb.Append(AgentCapabilities.IsPrivileged(r)
+                    ? $"<code class=\"rem priv\">-!{H(r)}</code> " : $"<code class=\"rem\">-{H(r)}</code> ");
         }
     }
 

@@ -50,6 +50,7 @@ public static class AuditEvents
     public const string AgentProfileUpdated    = "agent.profile_updated";
     public const string AgentProfileDeleted    = "agent.profile_deleted";
     public const string AgentProfileApplied    = "agent.profile_applied";
+    public const string AgentPrivilegedCapability = "agent.privileged_capability";   // sudo-grade cap granted/revoked
 
     public const string PolicyCreated = "policy.created";
     public const string PolicyUpdated = "policy.updated";
