@@ -28,6 +28,29 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Not in CI (Windows-/net10-only, built separately); deferred: MSI/packaging,
     session-end/redeem, reconnect/liveness, concurrent connections.
 
+## [0.31.0] - 2026-09-14
+
+### Added
+
+- **`policies.explain` + `policies.simulate` — deterministic policy reasoning in core, no AI.**
+  Built first (ahead of the MCP server, gateway and policy copilot) precisely so the copilot,
+  when it comes, can only *retell* a deterministic trace, never invent one. Both go through the
+  **same composition** the request engine uses (`PolicyService.Compose`), so an explanation or
+  an impact analysis can never disagree with what a real request would get.
+  - **Explain** — for one concrete request context (resource + agent tags + optional profile):
+    which policies were considered and, in plain words, why each did or didn't match; the
+    effective decision; and the provenance of each strictest value (`approvals=2 from prod-ddl`).
+    Surfaced read-only at `/admin/policies/explain` (shareable GET URL). This is also the
+    "would this launch/call be allowed?" primitive the `app:` and MCP tracks need.
+  - **Simulate** — the impact of a proposed change (`Upsert`/`Remove`, unsaved) on a context,
+    classified deterministically as **No effective change | Restriction | Authority expansion |
+    Mixed change**, field by field. A policy set only restricts an agent's own authority, so a
+    *change* is comparable; `Authority expansion` / `Mixed` (a request that was harder is now
+    easier — fewer approvers, longer TTL, `subject required→optional`, a dropped constraint, a
+    widened principal list) is flagged `RequiresApproval` — that is what must earn its own
+    approval. (Corrects the earlier over-strong "a policy only restricts": the invariant is that
+    *changes* are deterministically comparable, not that a change cannot expand authority.)
+
 ## [0.30.2] - 2026-09-14
 
 ### Security

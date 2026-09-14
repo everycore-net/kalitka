@@ -82,6 +82,24 @@ public class AdminPlaneTests : IClassFixture<GateFactory>
     }
 
     [Fact]
+    public async Task Policy_explain_page_renders_the_effective_trace()
+    {
+        // A policy the explain query will match, saved through the real service.
+        await _f.Services.GetRequiredService<PolicyService>().Save(
+            new AccessPolicy("prod-ddl", "ssh:*", new[] { "env:prod" }, 2, 15), "google:admin", default);
+
+        var (cookie, _) = Admin();
+        var req = new HttpRequestMessage(HttpMethod.Get, "/admin/policies/explain?resource=ssh:db-01&tags=env:prod");
+        WithCookie(req, cookie);
+        var res = await Client().SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var html = await res.Content.ReadAsStringAsync();
+        Assert.Contains("Effective decision", html);
+        Assert.Contains("prod-ddl", html);       // attributed as the source
+        Assert.Contains("approvals", html);
+    }
+
+    [Fact]
     public async Task Approve_from_the_web_plane_resolves_the_request()
     {
         var id = await RaiseRequest("203.0.113.40");

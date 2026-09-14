@@ -87,6 +87,7 @@ public static class AdminPages
         + Nav(who, Perm.ProfilesManage, "/admin/profiles", "Profiles")
         + Nav(who, Perm.AgentsRead, "/admin/reconcile", "Reconcile")
         + Nav(who, Perm.PoliciesRead, "/admin/policies", "Policies")
+        + Nav(who, Perm.PoliciesRead, "/admin/policies/explain", "Explain")
         + Nav(who, Perm.PrincipalsRead, "/admin/principals", "Operators")
         + Nav(who, Perm.HistoryRead, "/admin/history", "History")
         + "<span class=\"spacer\"></span>"
@@ -469,6 +470,66 @@ public static class AdminPages
 
         return Shell(who, sb.ToString());
     }
+
+    /// <summary>Read-only "why would this be decided this way" — the deterministic trace for a
+    /// concrete request context. No AI: it renders <see cref="PolicyService.Explain"/> straight,
+    /// which is the same composition the request engine uses.</summary>
+    public static string Explain(AdminIdentity who, string resource, string tags, string profile, PolicyExplanation? ex)
+    {
+        var sb = new StringBuilder("<h1>Policy explain</h1>")
+          .Append("<p class=\"muted\">Enter a request context — the resource, the requesting agent's "
+              + "tags, and (optionally) the grant profile — to see exactly which policies match and "
+              + "the effective decision, attributed to the policy that set each value. This is the "
+              + "same composition the engine uses to decide a real request.</p>");
+
+        // GET form so the trace is a shareable URL; values persist across submits.
+        sb.Append("<form method=\"get\" action=\"/admin/policies/explain\">")
+          .Append(InVal("resource", "resource (ssh:prod-01  |  db:sql01/orders  |  mcp:github/merge_pull_request)", resource))
+          .Append(InVal("tags", "agent tags — space separated (env:prod role:web)", tags))
+          .Append(InVal("profile", "grant profile (optional, e.g. sql-dba)", profile))
+          .Append("<div class=\"btns\"><button>Explain</button></div></form>");
+
+        if (ex is not null)
+        {
+            var d = ex.Effective;
+            sb.Append("<h2>Effective decision</h2>");
+            if (ex.Considered.All(c => !c.Matched))
+                sb.Append("<p class=\"muted\">No policy matches this context — the request would need "
+                    + "one approval and the default grant lifetime.</p>");
+            else
+            {
+                sb.Append("<table><tr><th>Value</th><th>Effective</th><th>From</th></tr>");
+                foreach (var s in ex.Sources)
+                    sb.Append("<tr>")
+                      .Append($"<td class=\"muted\">{H(s.Field)}</td>")
+                      .Append($"<td><code>{H(s.Value)}</code></td>")
+                      .Append($"<td>{string.Join(" ", s.FromPolicies.Select(n => $"<code>{H(n)}</code>"))}</td>")
+                      .Append("</tr>");
+                sb.Append("</table>");
+            }
+
+            sb.Append("<h2>Policies considered</h2>")
+              .Append("<table><tr><th>Name</th><th>Rev</th><th>Matched</th><th>Reason</th></tr>");
+            foreach (var c in ex.Considered)
+                sb.Append("<tr>")
+                  .Append($"<td><code>{H(c.Name)}</code></td>")
+                  .Append($"<td class=\"muted\">{c.Revision}</td>")
+                  .Append($"<td>{(c.Matched ? "<span class=\"pill approved\">match</span>" : "<span class=\"pill\" style=\"background:#222833;color:#6b7280\">no</span>")}</td>")
+                  .Append($"<td class=\"muted\">{H(c.Reason)}</td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+            if (ex.Considered.Length == 0)
+                sb.Append("<p class=\"muted\">No policies defined.</p>");
+        }
+
+        return Shell(who, sb.ToString());
+    }
+
+    // Like In(), but pre-filled — GET forms keep what the operator typed.
+    private static string InVal(string name, string placeholder, string value) =>
+        $"<input name=\"{name}\" placeholder=\"{H(placeholder)}\" value=\"{H(value)}\" "
+        + "style=\"display:block;width:100%;max-width:520px;margin:6px 0;padding:8px;border-radius:8px;"
+        + "border:1px solid #2a3140;background:#0f1117;color:#e6e6e6\">";
 
     // ---- Operator principals (who counts as a distinct approver) -------------
 
