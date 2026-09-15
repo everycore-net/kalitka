@@ -147,12 +147,15 @@ release accumulates several fixes; more follow.
 ### Changed
 
 - **Honest RADIUS positioning.** 0.45.0 described the RADIUS channel as "one
-  implementation for RD Gateway / VPN / Citrix / Wi-Fi 802.1X". Only **PAP** (RADIUS
-  User-Password) with an **LDAP bind** is implemented; there is no
-  EAP/PEAP-MS-CHAPv2/EAP-TLS, which is what VPN and 802.1X actually use. The docs
-  now say **"RADIUS approval channel for PAP/password flows; RD Gateway (via NPS) is
-  the primary target"**, and the 0.45.0 entry is corrected in place. See
-  `docs/design/radius.md`.
+  implementation for RD Gateway / VPN / Citrix / Wi-Fi 802.1X". The real targets are
+  **RD Gateway (via NPS) and VPN** — in both, kalitka just holds the answer and
+  replies allow/deny. Today only **PAP** (User-Password) + **LDAP bind** is
+  implemented; other auth methods (MS-CHAPv2, PEAP, EAP-TLS — which we cannot verify
+  ourselves, as MS-CHAPv2 needs the NT hash on the DC) are for a planned **proxy
+  mode** that forwards to an existing NPS/RADIUS and adds approval, not our own EAP.
+  **Citrix / Wi-Fi / 802.1X are out of scope** (VLAN/CoA is a client-side network
+  project; per-device network approval is noise). The 0.45.0 entry and the roadmap
+  are corrected in place; see `docs/design/radius.md`.
 
 ## [0.46.0] - 2026-09-15
 
@@ -183,9 +186,9 @@ release accumulates several fixes; more follow.
   "Connecting…" while the person taps approve on their phone — the approval happens **before** login,
   on the first attempt, with no browser. Pure .NET on the BCL, not blocked by the code-signing
   freeze, and a new **input channel to the same engine** (same `rdp:` resources, same
-  approval/quorum/audit) rather than a new model. **Scope corrected in 0.46.1: only PAP/password
-  flows are implemented (User-Password + LDAP bind); there is no EAP/PEAP/EAP-TLS, so generic VPN /
-  Citrix / Wi-Fi 802.1X is not supported. RD Gateway (via NPS) is the primary target.**
+  approval/quorum/audit) rather than a new model. **Scope corrected in 0.46.1: the real targets are
+  RD Gateway (via NPS) and VPN; only PAP (User-Password) + LDAP bind is implemented today, other auth
+  methods are for a planned proxy mode, and Citrix / Wi-Fi / 802.1X are out of scope.**
   - **Codec** (RFC 2865/2869): parse/build, the User-Password cipher, the Response Authenticator, and
     the Message-Authenticator (verified on requests, added to responses). Hand-rolled on MD5/HMAC-MD5,
     which is all RADIUS needs.
