@@ -13,55 +13,84 @@ namespace KalitkaAgent.Windows.Tests;
 /// to a MemoryStream, so subject resolution was dead behind 50 green tests and a live stand raised no
 /// requests at all. These pin the ordering invariant behind that outage: the server must read from the
 /// pipe before Windows will let it impersonate the caller.
+///
+/// Every wait here is bounded, and the synchronous <see cref="SubjectResolver.Resolve"/> is run off the
+/// test thread and raced against a budget — because a broken invariant must turn the test RED in
+/// seconds, never hang the job. (An earlier version with no timeouts ran a Windows CI runner for hours:
+/// on some platforms <c>RunAsClient</c> before a read <i>blocks</i> instead of throwing.)
 /// </summary>
 [SupportedOSPlatform("windows")]
 public class PipeImpersonationTests
 {
-    private static async Task<(NamedPipeServerStream server, NamedPipeClientStream client)> ConnectedPairAsync()
+    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(5);
+
+    private static async Task<(NamedPipeServerStream server, NamedPipeClientStream client)> ConnectedPairAsync(CancellationToken ct)
     {
         var name = "kalitka-test-" + Guid.NewGuid().ToString("N");
         var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
         var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
-        var accept = server.WaitForConnectionAsync();
-        await client.ConnectAsync(2000);
+        var accept = server.WaitForConnectionAsync(ct);
+        await client.ConnectAsync(ct);
         await accept;
         return (server, client);
     }
 
-    [Fact]
+    /// <summary>Run the (synchronous, uncancellable) resolve off-thread and bound it: completed+result on
+    /// success, completed+error if it threw, or not-completed if it blocked past the budget. A blocked
+    /// call is left to fault when the pipe is disposed; its exception is observed so it never surfaces as
+    /// an unobserved-task exception.</summary>
+    private static async Task<(bool completed, CallerSubject? result, Exception? error)> TryResolveAsync(NamedPipeServerStream pipe)
+    {
+        var task = Task.Run(() => SubjectResolver.Resolve(pipe));
+        if (await Task.WhenAny(task, Task.Delay(Budget)) != task)
+        {
+            _ = task.ContinueWith(t => { _ = t.Exception; }, TaskScheduler.Default);
+            return (false, null, null);
+        }
+        return task.IsFaulted ? (true, null, task.Exception!.GetBaseException()) : (true, task.Result, null);
+    }
+
+    [Fact(Timeout = 30000)]
     public async Task Reading_first_lets_the_caller_sid_be_resolved()
     {
-        var (server, client) = await ConnectedPairAsync();
+        using var cts = new CancellationTokenSource(Budget);
+        var (server, client) = await ConnectedPairAsync(cts.Token);
         using (server)
         using (client)
         {
-            await client.WriteAsync(Encoding.UTF8.GetBytes("{\"action\":\"rdp\"}\n"));
-            await client.FlushAsync();
+            await client.WriteAsync(Encoding.UTF8.GetBytes("{\"action\":\"rdp\"}\n"), cts.Token);
+            await client.FlushAsync(cts.Token);
 
             // Production order: read the request first, THEN impersonate to resolve who sent it.
-            var req = await Worker.ReadRequestObjectAsync(server, 8192, default);
+            var req = await Worker.ReadRequestObjectAsync(server, 8192, cts.Token);
             Assert.NotNull(req);
 
-            var caller = SubjectResolver.Resolve(server);
+            var (completed, caller, error) = await TryResolveAsync(server);
+            Assert.True(completed, "Resolve did not complete after a read — impersonation stalled on this runner");
+            Assert.Null(error);
             using var me = WindowsIdentity.GetCurrent();
-            Assert.Equal(me.User!.Value, caller.Sid);        // the OS-asserted SID from the client token
+            Assert.Equal(me.User!.Value, caller!.Sid);        // the OS-asserted SID from the client token
             Assert.StartsWith("os:", caller.SubjectIdentity); // the label Core matches, never caller-typed
         }
     }
 
-    [Fact]
-    public async Task Impersonating_before_any_read_throws_which_is_why_the_order_matters()
+    [Fact(Timeout = 30000)]
+    public async Task Impersonating_before_any_read_never_returns_a_subject()
     {
-        var (server, client) = await ConnectedPairAsync();
+        using var cts = new CancellationTokenSource(Budget);
+        var (server, client) = await ConnectedPairAsync(cts.Token);
         using (server)
         using (client)
         {
-            await client.WriteAsync(Encoding.UTF8.GetBytes("{\"action\":\"rdp\"}\n"));
-            await client.FlushAsync();
+            await client.WriteAsync(Encoding.UTF8.GetBytes("{\"action\":\"rdp\"}\n"), cts.Token);
+            await client.FlushAsync(cts.Token);
 
-            // No server-side read yet: Windows refuses impersonation. This is the exact failure that
-            // dropped every request as 401 while the service still reported RUNNING.
-            Assert.ThrowsAny<IOException>(() => SubjectResolver.Resolve(server));
+            // No server-side read yet. The invariant: impersonation must not hand back a caller identity
+            // before a read. Where the outage was seen RunAsClient throws; on another platform/token it
+            // may block instead — both uphold the invariant. Only a clean CallerSubject coming back would
+            // mean it was broken (the very silent-success we must never allow).
+            var (_, caller, _) = await TryResolveAsync(server);
+            Assert.Null(caller);
         }
     }
 }
