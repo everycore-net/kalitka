@@ -84,6 +84,29 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - 6 agent tests (was 5). Because the net10/Windows agent reaches Windows security APIs, a new
     `agent-windows` CI job runs its tests on a real Windows runner — the same gating standard as Core.
 
+## [0.46.1] - 2026-09-15
+
+RADIUS channel hardening before it is called production-ready (owner review). This
+release accumulates several fixes; more follow.
+
+### Security
+
+- **State is now bound to the attempt, not just the request id.** The RADIUS
+  `State` is a bearer token for the wait window: `radius-state-v1` signed only
+  `{id}|{exp}`, so any packet quoting the `State` of an already-approved request
+  could collect an Access-Accept — the password, user, client, resource and
+  calling station were never re-checked. `radius-state-v2` frames and signs all of
+  them (length-prefixed, the same discipline as the audit hash) and re-verifies
+  every one on each resume. A terminal decision (accept or deny) **burns** the
+  State via the replay store, so the same token cannot be replayed for a second
+  accept. Mismatched or reused State is rejected.
+- **Message-Authenticator required by default (BlastRADIUS).** An Access-Request
+  without an RFC 2869 Message-Authenticator is now rejected
+  (`RadiusRequireMessageAuthenticator`, on by default; a per-deployment legacy
+  opt-out remains for a gateway that cannot send one). Every response —
+  Accept/Reject/Challenge — always carries a Message-Authenticator now, whether or
+  not the request had one.
+
 ## [0.46.0] - 2026-09-15
 
 ### Added
