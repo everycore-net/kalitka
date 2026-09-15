@@ -42,7 +42,18 @@ builder.Services.AddSingleton(sp =>
     new RdpJournal(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentConfig>>().Value.RdpJournalPath));
 builder.Services.AddSingleton<RdpEnforcer>();
 
+// The enrolled id is handed from Worker to the log watcher; the activator turns a Core grant into
+// local access (redeem + beneficiary check + enable), shared by the pipe path and the watcher.
+builder.Services.AddSingleton<AgentIdentity>();
+builder.Services.AddSingleton<RdpActivator>();
+builder.Services.AddSingleton<IRdpActivator>(sp => sp.GetRequiredService<RdpActivator>());
+
 builder.Services.AddHostedService<Worker>();
 builder.Services.AddHostedService<RdpSweeper>();
+
+// The Security-log watcher (auto-raise on a denied RDP logon) is opt-in: it needs rights to read
+// the Security log and is only useful once RDP gating is actually enforcing on the box.
+if (builder.Configuration.GetSection("Kalitka").Get<AgentConfig>()?.RdpWatch == true)
+    builder.Services.AddHostedService<SecurityLogWatcher>();
 
 builder.Build().Run();

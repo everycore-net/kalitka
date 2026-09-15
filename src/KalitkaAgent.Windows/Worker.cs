@@ -20,14 +20,19 @@ public sealed class Worker : BackgroundService
     private readonly AgentConfig _cfg;
     private readonly CoreClient _core;
     private readonly RdpEnforcer _rdp;
+    private readonly RdpActivator _activator;
+    private readonly AgentIdentity _identity;
     private readonly ILogger<Worker> _log;
     private string _agentId = "";
 
-    public Worker(IOptions<AgentConfig> cfg, CoreClient core, RdpEnforcer rdp, ILogger<Worker> log)
+    public Worker(IOptions<AgentConfig> cfg, CoreClient core, RdpEnforcer rdp, RdpActivator activator,
+        AgentIdentity identity, ILogger<Worker> log)
     {
         _cfg = cfg.Value;
         _core = core;
         _rdp = rdp;
+        _activator = activator;
+        _identity = identity;
         _log = log;
     }
 
@@ -45,6 +50,7 @@ public sealed class Worker : BackgroundService
                 + "Set Kalitka:EnrollmentToken to a one-time token from a Core admin and restart.");
             return;
         }
+        _identity.Set(_agentId);   // hand the id to the log watcher, which raises requests too
         _log.LogInformation("Enrolled as agent {AgentId}; listening on pipe \\\\.\\pipe\\{Pipe}", _agentId, _cfg.PipeName);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -112,29 +118,14 @@ public sealed class Worker : BackgroundService
         if (poll.State != "approved" || string.IsNullOrEmpty(poll.Grant))
             return new { status = 200, granted = false, state = poll.State };
 
-        var redeemed = await _core.RedeemAsync(_agentId, poll.Grant!, ct);
-        if (redeemed.SessionId is null || redeemed.ExpiresAt is null)
-            return new { status = redeemed.Status, granted = false, error = "redeem-failed" };
-
-        // Belt and suspenders: only ever add RDP for the very person Core approved. The grant's
-        // subject is the Core-approved account; it must be the caller activating now.
-        if (!BeneficiaryMatches(redeemed.Subject, caller))
-        {
-            _log.LogWarning("RDP activate refused: grant subject {Subject} is not the caller {Account}", redeemed.Subject, caller.Account);
+        // Redeem + beneficiary check + enable live in the shared activator, one implementation for
+        // both the pipe path and the log watcher.
+        var result = await _activator.RedeemAndGrantAsync(_agentId, caller, poll.Grant!, ct);
+        if (result.Outcome == GrantOutcome.Granted)
+            return new { status = 200, granted = true, expires_at = result.ExpiresAt!.Value.ToUnixTimeSeconds() };
+        if (result.Outcome == GrantOutcome.Forbidden)
             return new { status = 403, granted = false, error = "beneficiary-mismatch" };
-        }
-
-        _rdp.Grant(new RdpLease(redeemed.SessionId, caller.Sid, caller.Account, redeemed.ExpiresAt.Value));
-        return new { status = 200, granted = true, expires_at = redeemed.ExpiresAt.Value.ToUnixTimeSeconds() };
-    }
-
-    // The approved subject account tail (after the last '\' or ':') must equal the caller's user.
-    private static bool BeneficiaryMatches(string? subject, CallerSubject caller)
-    {
-        if (string.IsNullOrEmpty(subject)) return false;
-        var cut = Math.Max(subject.LastIndexOf('\\'), subject.LastIndexOf(':'));
-        var tail = cut >= 0 && cut < subject.Length - 1 ? subject[(cut + 1)..] : subject;
-        return string.Equals(tail, caller.User, StringComparison.OrdinalIgnoreCase);
+        return new { status = result.Status, granted = false, error = "redeem-failed" };
     }
 
     private async Task<string> EnsureEnrolledAsync(CancellationToken ct)
