@@ -7,6 +7,26 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-09-15
+
+### Added
+
+- **RDP-JIT groundwork — request dedup and per-subject rate-limit (the Core prerequisite).** The RDP
+  just-in-time path (owner design) has the host agent raise a request when it sees a logon-denied
+  event; that fires repeatedly, so the engine now folds repeated identical requests and throttles a
+  stuck user:
+  - **Dedup:** a raise carrying a machine-readable subject (`os:`/`sid:`) reuses a still-waiting
+    request for the same `(resource, subject)` instead of creating a duplicate, and returns it without
+    re-notifying — a 4625 storm for one person and host becomes one approval, not a flood. Checked
+    *before* the rate limit, so folding onto your own pending request is never throttled. Requests
+    without a subject identity (web visitors, plain agents) are untouched.
+  - **Per-subject rate-limit:** the sliding window now also keys on the subject, not just the IP —
+    every user behind one agent shares that agent's IP, so a per-IP limit alone can't throttle a
+    single stuck client. Same `MaxRequestsPerIp`/`RateWindowMinutes` window.
+  - Benefits every agent axis, not just RDP. 5 tests. Core suite 426. (The Windows hard-mode agent —
+    deny-group `SeDenyRemoteInteractiveLogonRight`, session termination, the 4625 watcher — is the
+    next slice, dev/test-only per the narrowed signing freeze.)
+
 ## [0.45.0] - 2026-09-15
 
 ### Added
