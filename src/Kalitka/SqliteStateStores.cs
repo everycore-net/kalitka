@@ -398,12 +398,12 @@ public sealed class SqliteSessionStore : ISessionStore
               resource TEXT, agent_id TEXT, started INTEGER NOT NULL, ended INTEGER,
               outcome TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '',
               profile TEXT NOT NULL DEFAULT '', remaining_uses INTEGER NOT NULL DEFAULT -1,
-              expires_at INTEGER);
+              expires_at INTEGER, subject_identity TEXT NOT NULL DEFAULT '');
             """;
         cmd.ExecuteNonQuery();
 
-        // Bounded-grant columns added in 0.23; add idempotently for upgrades.
-        foreach (var (col, def) in new[] { ("profile", "TEXT NOT NULL DEFAULT ''"), ("remaining_uses", "INTEGER NOT NULL DEFAULT -1"), ("expires_at", "INTEGER") })
+        // Bounded-grant columns added in 0.23, subject_identity in 0.48; add idempotently for upgrades.
+        foreach (var (col, def) in new[] { ("profile", "TEXT NOT NULL DEFAULT ''"), ("remaining_uses", "INTEGER NOT NULL DEFAULT -1"), ("expires_at", "INTEGER"), ("subject_identity", "TEXT NOT NULL DEFAULT ''") })
         {
             using var chk = conn.CreateCommand();
             chk.CommandText = "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name=$n;";
@@ -416,11 +416,11 @@ public sealed class SqliteSessionStore : ISessionStore
     }
 
     private const string InsertSql = """
-        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses,expires_at)
-        VALUES($sid,$grant,$req,$subject,$resource,$agent,$started,$ended,$outcome,$meta,$profile,$uses,$exp)
+        INSERT INTO sessions(session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses,expires_at,subject_identity)
+        VALUES($sid,$grant,$req,$subject,$resource,$agent,$started,$ended,$outcome,$meta,$profile,$uses,$exp,$subjid)
         ON CONFLICT(session_id) DO UPDATE SET
           grant_id=$grant,request_id=$req,subject=$subject,resource=$resource,agent_id=$agent,
-          started=$started,ended=$ended,outcome=$outcome,metadata=$meta,profile=$profile,remaining_uses=$uses,expires_at=$exp;
+          started=$started,ended=$ended,outcome=$outcome,metadata=$meta,profile=$profile,remaining_uses=$uses,expires_at=$exp,subject_identity=$subjid;
         """;
 
     private const string CloseSql =
@@ -451,6 +451,7 @@ public sealed class SqliteSessionStore : ISessionStore
         cmd.Parameters.AddWithValue("$profile", s.Profile);
         cmd.Parameters.AddWithValue("$uses", s.RemainingUses);
         cmd.Parameters.AddWithValue("$exp", (object?)s.ExpiresAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$subjid", s.SubjectIdentity);
         cmd.ExecuteNonQuery();
     }
 
@@ -522,7 +523,7 @@ public sealed class SqliteSessionStore : ISessionStore
     }
 
     private const string Cols =
-        "session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses,expires_at";
+        "session_id,grant_id,request_id,subject,resource,agent_id,started,ended,outcome,metadata,profile,remaining_uses,expires_at,subject_identity";
 
     private static SessionRecord Read(SqliteDataReader r) => new(
         r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
@@ -533,6 +534,7 @@ public sealed class SqliteSessionStore : ISessionStore
         Profile = r.GetString(10),
         RemainingUses = r.GetInt32(11),
         ExpiresAt = r.IsDBNull(12) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(12)),
+        SubjectIdentity = r.GetString(13),
     };
 }
 

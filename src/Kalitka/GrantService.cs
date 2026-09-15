@@ -98,7 +98,7 @@ public sealed class GrantService
         var sessionId = Guid.NewGuid().ToString("N");
         var session = new SessionRecord(sessionId, cap.GrantId, cap.RequestId, cap.Subject,
             cap.Resource, agent.IsLegacy ? "-" : agent.AgentId, _clock.GetUtcNow(), null, "", reportedHostname)
-        { Profile = profile, RemainingUses = maxUses > 0 ? maxUses : -1, ExpiresAt = cap.ExpiresAt };
+        { Profile = profile, RemainingUses = maxUses > 0 ? maxUses : -1, ExpiresAt = cap.ExpiresAt, SubjectIdentity = subjectIdentity };
         var redeemed = Event(AuditEvents.GrantRedeemed, agent.Actor, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, "");
         var started = Event(AuditEvents.SessionStarted, agent.Actor, cap.Subject, cap.Resource, cap.RequestId, cap.GrantId, sessionId);
 
