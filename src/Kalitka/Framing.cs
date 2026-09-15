@@ -32,4 +32,23 @@ public static class Framing
         foreach (var f in fields) Field(buf, f);
         return buf.WrittenSpan.ToArray();
     }
+
+    /// <summary>Reverse of <see cref="Encode(string[])"/>: split a canonical byte-string back into its
+    /// UTF-8 string fields. Throws <see cref="FormatException"/> on a malformed or truncated frame — a
+    /// signed state token that fails to decode is a rejected token, not a partial read.</summary>
+    public static string[] Decode(ReadOnlySpan<byte> bytes)
+    {
+        var fields = new List<string>();
+        var i = 0;
+        while (i < bytes.Length)
+        {
+            if (i + 4 > bytes.Length) throw new FormatException("truncated field length");
+            var len = (int)BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(i, 4));
+            i += 4;
+            if (len < 0 || i + len > bytes.Length) throw new FormatException("field runs past the buffer");
+            fields.Add(Encoding.UTF8.GetString(bytes.Slice(i, len)));
+            i += len;
+        }
+        return fields.ToArray();
+    }
 }

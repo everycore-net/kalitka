@@ -362,6 +362,12 @@ public sealed class GateOptions
     /// segment or over RADIUS/TLS where the gateway supports it.</summary>
     public string RadiusSharedSecret { get; set; } = "";
 
+    /// <summary>Require an RFC 2869 Message-Authenticator on every Access-Request (default on). This
+    /// is the BlastRADIUS mitigation: without it, a Response Authenticator forgery is possible. Set
+    /// false only for a legacy gateway that cannot send one, and only in a trusted segment; responses
+    /// always carry a Message-Authenticator regardless.</summary>
+    public bool RadiusRequireMessageAuthenticator { get; set; } = true;
+
     /// <summary>The resource a RADIUS approval is about — the perimeter, not a host (RADIUS rarely
     /// knows the target machine). Default <c>rdp:gateway</c>; the gateway's NAS-Identifier refines the
     /// label when present. Composes with a host agent: RADIUS gates who enters at all.</summary>
