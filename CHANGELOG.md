@@ -9,6 +9,19 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Self-service — the portal, sign-in and "My access" page (portal slice 3a).** The portal is now a
+  reachable web surface at `/portal`. A **separate `PortalAuth`** signs a person in through the same
+  provider seam (Google/Microsoft/passkey) and resolves them to an operator **principal** — with **no
+  admin allowlist**, because a portal user is an employee, not an operator. It is deliberately kept
+  apart from the control plane: its own signing purpose (`portal:v1`) and its own `/portal`-scoped
+  cookie, so a stolen portal cookie is cryptographically useless at `/admin`, and no control-plane
+  permission check has to special-case it. A verified person who is **not** linked to any principal is
+  refused with a clear "no access yet — ask an admin" page (no auto-create, per the owner default).
+  The page renders "My access" (held sessions + waiting requests) and, as far as the visibility mode
+  allows, the requestable catalogue (`PortalCatalogVisibility`, default the most closed). Endpoints:
+  `/portal/login`, `/portal/login/{scheme}`, `/portal/oauth2/callback`, `/portal`, `/portal/logout`.
+  The request action and explain follow in slice 3b.
+
 - **Self-service — "My access" (portal slice 2).** A person can now see what they hold and what they
   have in flight: `MyAccessService.For(principal)` matches an operator principal's identities against
   the subject identity on sessions and requests, returning live sessions (resource, expiry, profile,

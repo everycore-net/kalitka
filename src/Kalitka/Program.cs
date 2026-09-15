@@ -75,6 +75,7 @@ builder.Services.AddSingleton<TokenSigner>(sp =>
     return new TokenSigner(o.HmacSecret, o.HmacSecretPrevious);
 });
 builder.Services.AddTransient<AdminAuth>();
+builder.Services.AddTransient<PortalAuth>();
 builder.Services.AddSingleton<OneTimeTokenService>();
 // Backend precedence for the durable stores: Postgres (multi-node) when a
 // connection string is set, else SQLite when a path is set, else in-memory. The
@@ -931,6 +932,56 @@ guarded.AddEndpointFilter(async (ctx, next) =>
     return await next(ctx);
 });
 
+// ---- Self-service portal (a separate population from /admin) -----------------
+// Its own cookie and signing purpose (portal:v1): a portal session is never an admin
+// session, and resolves to an operator principal — no admin allowlist.
+app.MapGet("/portal/login", (HttpContext ctx, PortalAuth portal) =>
+{
+    if (portal.ReadCookie(ctx.Request.Cookies[PortalAuth.CookieName]) is not null)
+        return Results.Redirect("/portal", false);
+    var error = ctx.Request.Query["error"].ToString();
+    return Results.Content(PortalPages.Login(portal.Enabled ? portal.Providers : Array.Empty<(string, string)>(),
+        string.IsNullOrEmpty(error) ? null : error), "text/html; charset=utf-8");
+});
+
+app.MapGet("/portal/login/{scheme}", (HttpContext ctx, PortalAuth portal, string scheme) =>
+{
+    if (!portal.Enabled) return Results.NotFound();
+    var nonce = NewStateNonce();
+    SetStateCookie(ctx, "kalitka_portal_state", "/portal", nonce);
+    return Results.Redirect(portal.LoginUrl(scheme, ctx.Request.Query["return"].ToString(), nonce), false);
+});
+
+app.MapGet("/portal/oauth2/callback", async (HttpContext ctx, PortalAuth portal) =>
+{
+    if (!portal.Enabled) return Results.NotFound();
+    var nonce = ctx.Request.Cookies["kalitka_portal_state"] ?? "";
+    ClearStateCookie(ctx, "kalitka_portal_state", "/portal");
+    var result = await portal.CompleteLogin(
+        ctx.Request.Query["code"].ToString(), ctx.Request.Query["state"].ToString(), nonce, ctx.RequestAborted);
+    if (!result.Authenticated)
+        return Results.Redirect("/portal/login?error=" + Uri.EscapeDataString("Sign-in was not accepted."), false);
+    if (result.PrincipalId is null)   // verified, but not linked to any principal — refuse by default
+        return Results.Content(PortalPages.NoAccess(result.Email), "text/html; charset=utf-8");
+    SetPortalCookie(ctx, portal.IssueCookie(result.Scheme, result.Sub, result.Email));
+    return Results.Redirect(result.ReturnPath, false);
+});
+
+app.MapGet("/portal", (HttpContext ctx, PortalAuth portal, MyAccessService access, CatalogService catalog, IOptions<GateOptions> opt) =>
+{
+    var who = portal.ReadCookie(ctx.Request.Cookies[PortalAuth.CookieName]);
+    if (who is null) return Results.Redirect("/portal/login", false);
+    var mine = access.For(who.Principal);
+    var view = catalog.VisibleTo(who.Principal, opt.Value.PortalCatalogVisibility);
+    return Results.Content(PortalPages.Home(who, mine, view), "text/html; charset=utf-8");
+});
+
+app.MapGet("/portal/logout", (HttpContext ctx) =>
+{
+    ctx.Response.Cookies.Delete(PortalAuth.CookieName, new CookieOptions { Path = "/portal", Secure = true });
+    return Results.Redirect("/portal/login", false);
+});
+
 guarded.MapGet("/dashboard", (HttpContext ctx, GateService gate) =>
 {
     var pending = gate.PendingSnapshot();
@@ -1600,6 +1651,19 @@ static void SetAdminCookie(HttpContext ctx, string value)
         HttpOnly = true,
         SameSite = SameSiteMode.Lax,
         Path = "/admin",
+    });
+}
+
+// The portal session cookie: scoped to /portal (so it is never sent to /admin), Lax for the OIDC
+// callback redirect chain, absolute lifetime carried by the signed token itself.
+static void SetPortalCookie(HttpContext ctx, string value)
+{
+    ctx.Response.Cookies.Append(PortalAuth.CookieName, value, new CookieOptions
+    {
+        Secure = true,
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        Path = "/portal",
     });
 }
 
