@@ -120,6 +120,7 @@ public sealed class GateService
     public string? TargetOf(string id) => _engine.TargetOf(id);
     public string? ResourceOf(string id) => _engine.ResourceOf(id);
     public string? SubjectOf(string id) => _engine.SubjectOf(id);
+    public string SubjectIdentityOf(string id) => _engine.SubjectIdentityOf(id);
     public string ProfileOf(string id) => _engine.ProfileOf(id);
     public int MaxUsesOf(string id) => _engine.MaxUsesOf(id);
     public string CommandOf(string id) => _engine.CommandOf(id);

@@ -54,11 +54,13 @@ public sealed class RdpActivator : IRdpActivator
         if (redeemed.SessionId is null || redeemed.ExpiresAt is null)
             return new GrantResult(GrantOutcome.RedeemFailed, Status: redeemed.Status);
 
-        // Only ever enable RDP for the very person Core approved. The grant's subject is the
-        // Core-approved account; it must be the caller we are acting for.
-        if (!BeneficiaryMatches(redeemed.Subject, caller))
+        // Only ever enable RDP for the very person Core approved, matched on the full stable subject
+        // identity (os:DOMAIN\user, sid:…) — never a bare login name, which collides across domains
+        // and machines (CONTOSO\anna vs SRV01\anna). This is what stops a caller redeeming a grant
+        // approved for someone else and having it enabled for themselves.
+        if (!BeneficiaryMatches(redeemed.SubjectIdentity, caller))
         {
-            _log.LogWarning("RDP activate refused: grant subject {Subject} is not {Account}", redeemed.Subject, caller.Account);
+            _log.LogWarning("RDP activate refused: grant subject {Subject} is not {Identity}", redeemed.SubjectIdentity, caller.SubjectIdentity);
             return new GrantResult(GrantOutcome.Forbidden);
         }
 
@@ -98,13 +100,13 @@ public sealed class RdpActivator : IRdpActivator
         }
     }
 
-    /// <summary>The approved subject account tail (after the last '\' or ':') must equal the caller's
-    /// user. Shared by both activation paths.</summary>
-    public static bool BeneficiaryMatches(string? subject, CallerSubject caller)
+    /// <summary>The Core-approved subject identity must be the caller's full, stable identity — the
+    /// whole <c>os:DOMAIN\user</c> / <c>sid:…</c> string, compared case-insensitively (Core stores it
+    /// lower-cased), never a bare login-name tail. An empty approved identity never matches (fail
+    /// closed). Shared by both activation paths.</summary>
+    public static bool BeneficiaryMatches(string? approvedSubjectIdentity, CallerSubject caller)
     {
-        if (string.IsNullOrEmpty(subject)) return false;
-        var cut = Math.Max(subject.LastIndexOf('\\'), subject.LastIndexOf(':'));
-        var tail = cut >= 0 && cut < subject.Length - 1 ? subject[(cut + 1)..] : subject;
-        return string.Equals(tail, caller.User, StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(approvedSubjectIdentity)) return false;
+        return string.Equals(approvedSubjectIdentity, caller.SubjectIdentity, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -612,7 +612,7 @@ static async Task<IResult> AgentRedeem(HttpContext ctx, GateService gate, GrantS
     // argument, so the approved identity and the cert principal stay cryptographically bound.
     if (result.Ok) return Results.Json(new { session_id = result.SessionId, profile = result.Profile,
         expires_at = result.ExpiresAt?.ToUnixTimeSeconds(), subject = result.Subject, command = result.Command,
-        source_address = result.SourceAddress });
+        source_address = result.SourceAddress, subject_identity = result.SubjectIdentity });
     return Results.Json(new { error = result.Error }, statusCode: result.Error == "used" ? 409 : 403);
 }
 
