@@ -22,6 +22,8 @@ public static class Perm
     public const string PoliciesManage  = "policies.manage";
     public const string PrincipalsRead   = "principals.read";
     public const string PrincipalsManage = "principals.manage";
+    public const string CatalogRead      = "catalog.read";
+    public const string CatalogManage    = "catalog.manage";
 
     /// <summary>Read/approve/deny access requests + read history.</summary>
     public static readonly IReadOnlySet<string> Approver =
@@ -32,9 +34,9 @@ public static class Perm
         new HashSet<string> { AgentsRead, AgentsManage, ProfilesManage, EnrollmentManage };
 
     /// <summary>Read and manage access policies and operator principals (who counts as a
-    /// distinct approver in a quorum).</summary>
+    /// distinct approver in a quorum), and the self-service request catalogue.</summary>
     public static readonly IReadOnlySet<string> PolicyAdmin =
-        new HashSet<string> { PoliciesRead, PoliciesManage, PrincipalsRead, PrincipalsManage };
+        new HashSet<string> { PoliciesRead, PoliciesManage, PrincipalsRead, PrincipalsManage, CatalogRead, CatalogManage };
 
     /// <summary>Full admin — every permission there is.</summary>
     public static readonly IReadOnlySet<string> All =

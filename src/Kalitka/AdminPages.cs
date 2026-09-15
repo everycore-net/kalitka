@@ -98,6 +98,7 @@ public static class AdminPages
         + Nav(who, Perm.PoliciesRead, "/admin/policies/explain", "Explain")
         + Nav(who, Perm.PoliciesManage, "/admin/policies/copilot", "Copilot")
         + Nav(who, Perm.PrincipalsRead, "/admin/principals", "Operators")
+        + Nav(who, Perm.CatalogRead, "/admin/catalog", "Catalogue")
         + Nav(who, Perm.HistoryRead, "/admin/history", "History")
         + Nav(who, Perm.HistoryRead, "/admin/audit/verify", "Integrity")
         // Self-service for every admin — you register and revoke your own devices.
@@ -908,6 +909,7 @@ async function kalitkaApprove(id,verb,csrf){
           .Append(In("id", "id (stable slug, e.g. sergej)"))
           .Append(In("display", "display name (e.g. Sergej D.)"))
           .Append(In("identities", "identities — space-separated (google:1234 telegram:98765)"))
+          .Append(In("groups", "self-service groups — space-separated (finance devs); scopes the request catalogue"))
           .Append("<div class=\"btns\"><button>Save operator</button></div></form>");
 
         sb.Append("<h2>Operators</h2>");
@@ -915,14 +917,58 @@ async function kalitkaApprove(id,verb,csrf){
             sb.Append("<p class=\"muted\">No operators yet — a quorum currently counts only Google admins (each as itself).</p>");
         else
         {
-            sb.Append("<table><tr><th>Id</th><th>Name</th><th>Identities</th><th></th></tr>");
+            sb.Append("<table><tr><th>Id</th><th>Name</th><th>Identities</th><th>Groups</th><th></th></tr>");
             foreach (var p in principals)
                 sb.Append("<tr>")
                   .Append($"<td><code>{H(p.Id)}</code></td>")
                   .Append($"<td>{H(p.DisplayName)}</td>")
                   .Append($"<td class=\"muted\">{H(string.Join(" ", p.Identities))}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", p.Groups ?? Array.Empty<string>()))}</td>")
                   .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/principals/delete\">"
                       + $"<input type=\"hidden\" name=\"id\" value=\"{H(p.Id)}\">"
+                      + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                      + "<button class=\"no\">Delete</button></form></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
+        return Shell(who, sb.ToString());
+    }
+
+    /// <summary>The self-service request catalogue: the requestable units and which groups may see and
+    /// ask for each. Empty catalogue + closed visibility = the portal offers nothing, by default.</summary>
+    public static string Catalog(AdminIdentity who, IReadOnlyList<CatalogItem> items, CatalogVisibility portalMode, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Request catalogue</h1>");
+        sb.Append("<p class=\"muted\">The units people may request in the self-service portal. Each unit is a "
+            + "<b>requestable thing</b> (a share, a host, a database role) offered to the operator <b>groups</b> you "
+            + "name — a person sees it only if they are in one of those groups. The portal's disclosure is currently "
+            + $"<code>{H(portalMode.ToString())}</code> (<code>Kalitka__PortalCatalogVisibility</code>); it must be "
+            + "<code>Full</code> for people to request by name, <code>Categories</code> to show only category names.</p>");
+
+        sb.Append("<h2>New / update unit</h2>")
+          .Append("<form method=\"post\" action=\"/admin/catalog/save\">")
+          .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+          .Append(In("id", "id (stable slug, e.g. finance-share)"))
+          .Append(In("resource", "resource (e.g. share:\\\\fs01\\finance, rdp:WIN-01, db:reports)"))
+          .Append(In("category", "category (e.g. File shares)"))
+          .Append(In("display", "display name (e.g. Finance share)"))
+          .Append(In("groups", "offered to groups — space-separated (finance)"))
+          .Append("<div class=\"btns\"><button>Save unit</button></div></form>");
+
+        sb.Append("<h2>Units</h2>");
+        if (items.Count == 0)
+            sb.Append("<p class=\"muted\">No units yet — nothing is offered for self-service.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Id</th><th>Resource</th><th>Category</th><th>Groups</th><th></th></tr>");
+            foreach (var i in items)
+                sb.Append("<tr>")
+                  .Append($"<td><code>{H(i.Id)}</code></td>")
+                  .Append($"<td><code>{H(i.Resource)}</code></td>")
+                  .Append($"<td>{H(i.Category)}</td>")
+                  .Append($"<td class=\"muted\">{H(string.Join(" ", i.Groups ?? Array.Empty<string>()))}</td>")
+                  .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/catalog/delete\">"
+                      + $"<input type=\"hidden\" name=\"id\" value=\"{H(i.Id)}\">"
                       + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
                       + "<button class=\"no\">Delete</button></form></td>")
                   .Append("</tr>");
