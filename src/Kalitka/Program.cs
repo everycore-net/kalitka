@@ -160,6 +160,8 @@ builder.Services.AddSingleton<PolicyCopilot>();
 builder.Services.AddSingleton<PrincipalService>();
 builder.Services.AddSingleton<CatalogService>();
 builder.Services.AddSingleton<MyAccessService>();
+builder.Services.AddSingleton<IntegrationRegistry>();
+builder.Services.AddSingleton<IntegrationIdempotency>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
@@ -1016,6 +1018,48 @@ app.MapGet("/portal/logout", (HttpContext ctx) =>
     return Results.Redirect("/portal/login", false);
 });
 
+// ---- Request API (integrations: Jira/Freshdesk/… raise on behalf of a person) ----------------
+// Bearer-authenticated by an integration key; raises within the key's scope, on behalf of the named
+// person as a CLAIMED subject (so subject:required still needs the person's own confirmation); the
+// integration raises but never approves. Idempotent per (integration, external id).
+app.MapPost("/api/v1/requests", async (HttpContext ctx, IntegrationRegistry registry, IntegrationIdempotency idem, GateService gate) =>
+{
+    var client = registry.Resolve(BearerToken(ctx));
+    if (client is null) return Results.Json(new { error = "unauthorized" }, statusCode: 401);
+    if (!registry.WithinRate(client)) return Results.Json(new { error = "rate-limited" }, statusCode: 429);
+
+    var form = await ctx.Request.ReadFormAsync();
+    var resource = form["resource"].ToString().Trim();
+    var subject = form["subject"].ToString().Trim();       // the person the ticket is for
+    var externalId = form["external_id"].ToString().Trim();
+    if (resource.Length == 0 || subject.Length == 0) return Results.Json(new { error = "resource and subject required" }, statusCode: 400);
+    if (!client.MayRequest(resource)) return Results.Json(new { error = "out-of-scope" }, statusCode: 403);
+
+    // Idempotency: one ticket, one request.
+    if (externalId.Length > 0 && idem.Lookup(IntegrationIdempotency.Compose(client.Id, externalId)) is { } existing)
+        return Results.Json(new { request_id = existing, external_id = externalId, status = ApiStatus(gate.StateOf(existing)) });
+
+    var (state, id) = await gate.RaiseAction(resource, subject, ResolveIp(ctx, gate), client.Actor, ctx.RequestAborted,
+        subjectIdentity: subject, subjectTrusted: false);   // claimed, not asserted
+
+    if (state == "allowed") return Results.Json(new { status = "approved" });   // allow-list: no request to track
+    if (state != "waiting") return Results.Json(new { error = state }, statusCode: 400);
+
+    if (externalId.Length > 0) idem.Record(IntegrationIdempotency.Compose(client.Id, externalId), id);
+    return Results.Json(new { request_id = id, external_id = externalId, status = "pending" }, statusCode: 202);
+});
+
+app.MapGet("/api/v1/requests/{id}", (HttpContext ctx, string id, IntegrationRegistry registry, GateService gate) =>
+{
+    var client = registry.Resolve(BearerToken(ctx));
+    if (client is null) return Results.Json(new { error = "unauthorized" }, statusCode: 401);
+
+    // An integration may read only requests for resources within its scope — never probe others.
+    var resource = gate.ResourceOf(id);
+    if (resource is null || !client.MayRequest(resource)) return Results.Json(new { error = "not-found" }, statusCode: 404);
+    return Results.Json(new { request_id = id, status = ApiStatus(gate.StateOf(id)) });
+});
+
 guarded.MapGet("/dashboard", (HttpContext ctx, GateService gate) =>
 {
     var pending = gate.PendingSnapshot();
@@ -1714,6 +1758,23 @@ static void SetAdminCookie(HttpContext ctx, string value)
         Path = "/admin",
     });
 }
+
+// The bearer token from the Authorization header, or null.
+static string? BearerToken(HttpContext ctx)
+{
+    var h = ctx.Request.Headers.Authorization.ToString();
+    return h.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? h["Bearer ".Length..].Trim() : null;
+}
+
+// Map the engine's request state to the integration status vocabulary. (revoked — approved then
+// withdrawn — needs session state and arrives with the webhook slice.)
+static string ApiStatus(string? state) => state switch
+{
+    "waiting" => "pending",
+    "approved" => "approved",
+    "denied" => "denied",
+    _ => "expired",   // null: gone/expired
+};
 
 // Turn the ?msg code from a request POST-redirect into a human line for the portal banner. Null
 // (unknown/empty) shows nothing.

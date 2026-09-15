@@ -405,6 +405,12 @@ public sealed class GateOptions
     /// is the global default. "What can I ask for" must not leak into "here is every server".</summary>
     public CatalogVisibility PortalCatalogVisibility { get; set; } = CatalogVisibility.ApprovedOnly;
 
+    /// <summary>Integrations (Jira, Freshdesk, …) that may raise requests through the REST request API,
+    /// each with its own bearer token, resource scope and rate limit. Empty = the request API is
+    /// closed. An integration raises on behalf of a person from a ticket — the subject is claimed, so a
+    /// <c>subject: required</c> resource still needs the person's own confirmation.</summary>
+    public List<IntegrationClientOptions> IntegrationClients { get; set; } = new();
+
     /// <summary>The directory base DN to search after a successful bind for the user's canonical
     /// identity (objectSid), e.g. <c>DC=corp,DC=example</c>. Empty = skip it: the bind still verifies
     /// the password, but the subject stays a claimed <c>os:&lt;user&gt;</c> rather than a trusted
