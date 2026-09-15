@@ -28,17 +28,19 @@ public sealed class RadiusApproval
     private readonly ICredentialVerifier _verifier;
     private readonly TokenSigner _signer;
     private readonly IReplayStore _replay;
+    private readonly LoginThrottle _throttle;
     private readonly GateOptions _options;
     private readonly TimeProvider _clock;
     private readonly ILogger<RadiusApproval> _log;
 
     public RadiusApproval(GateService gate, ICredentialVerifier verifier, TokenSigner signer,
-        IReplayStore replay, IOptions<GateOptions> options, TimeProvider clock, ILogger<RadiusApproval> log)
+        IReplayStore replay, LoginThrottle throttle, IOptions<GateOptions> options, TimeProvider clock, ILogger<RadiusApproval> log)
     {
         _gate = gate;
         _verifier = verifier;
         _signer = signer;
         _replay = replay;
+        _throttle = throttle;
         _options = options.Value;
         _clock = clock;
         _log = log;
@@ -97,10 +99,19 @@ public sealed class RadiusApproval
             }
         }
 
-        // Initial: verify the password, then raise the approval and hold via Challenge.
-        var password = req.DecryptPassword(secret);
-        if (password is null || !await _verifier.Verify(user, password, ct))
-            return Reject(req, secret, "bad credentials");
+        // Initial: verify the password (throttled so a bad-password flood can neither lock the
+        // account out at the DC nor avalanche binds), then raise the approval and hold via Challenge.
+        var permit = await _throttle.AcquireAsync(user, ct);
+        if (permit is null) return Reject(req, secret, "too many attempts, try again later");
+        bool verified;
+        try
+        {
+            var password = req.DecryptPassword(secret);
+            verified = password is not null && await _verifier.Verify(user, password, ct);
+            permit.Record(verified);
+        }
+        finally { permit.Dispose(); }
+        if (!verified) return Reject(req, secret, "bad credentials");
 
         var (state, id) = await _gate.RaiseAction(resource, user, callingStation, "radius", ct,
             subjectIdentity: subjectIdentity);

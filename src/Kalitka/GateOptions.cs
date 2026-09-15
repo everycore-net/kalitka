@@ -388,6 +388,32 @@ public sealed class GateOptions
     /// <summary>How to turn a RADIUS username into a bind DN/UPN. <c>{0}</c> is the username;
     /// e.g. <c>{0}@corp.example</c> (UPN) or <c>CORP\{0}</c>.</summary>
     public string LdapBindFormat { get; set; } = "{0}";
+
+    /// <summary>Allow a plaintext <c>ldap://</c> URL. Off by default: passwords go to the DC on a
+    /// bind, so <c>ldaps://</c> is the norm and <c>ldap://</c> is refused unless this is explicitly
+    /// set (a trusted-segment escape hatch).</summary>
+    public bool LdapAllowInsecure { get; set; } = false;
+
+    /// <summary>Connect/bind timeout for the LDAP verify, so a hung DC cannot pin a verification
+    /// slot open forever.</summary>
+    public int LdapTimeoutSeconds { get; set; } = 10;
+
+    /// <summary>How many failed credential checks kalitka forwards for one username within
+    /// <see cref="RadiusFailureWindowMinutes"/> before it refuses further attempts <b>without</b>
+    /// binding. This keeps RADIUS from becoming an account-lockout weapon: a flood of bad passwords
+    /// for a victim must not trip the domain lockout policy. Keep it below the domain threshold. A
+    /// successful login clears the count.</summary>
+    public int RadiusMaxUsernameFailures { get; set; } = 5;
+
+    /// <summary>The window for <see cref="RadiusMaxUsernameFailures"/>.</summary>
+    public int RadiusFailureWindowMinutes { get; set; } = 15;
+
+    /// <summary>The most concurrent credential verifications (LDAP binds) in flight. A flood or a
+    /// hung DC must not spawn an unbounded avalanche of binds; excess waits briefly then is refused.</summary>
+    public int RadiusMaxConcurrentVerifications { get; set; } = 16;
+
+    /// <summary>How long a verification waits for a free slot before being refused (busy).</summary>
+    public int RadiusVerifyQueueTimeoutSeconds { get; set; } = 5;
 }
 
 /// <summary>How wide a Google-proven identity's session reaches. See

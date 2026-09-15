@@ -49,15 +49,25 @@ public sealed class LdapCredentialVerifier : ICredentialVerifier
     public Task<bool> Verify(string username, string password, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password)) return Task.FromResult(false);
+
+        var uri = new Uri(_options.LdapUrl);
+        // Passwords travel to the DC on the bind, so ldaps:// is the norm. A plaintext ldap:// is
+        // refused unless explicitly allowed for a trusted segment — fail closed, do not bind.
+        if (uri.Scheme != "ldaps" && !_options.LdapAllowInsecure)
+        {
+            _log.LogError("LDAP verify refused: {Url} is not ldaps:// and LdapAllowInsecure is off", _options.LdapUrl);
+            return Task.FromResult(false);
+        }
+
         return Task.Run(() =>
         {
             try
             {
-                var uri = new Uri(_options.LdapUrl);
                 var id = new LdapDirectoryIdentifier(uri.Host, uri.IsDefaultPort ? (uri.Scheme == "ldaps" ? 636 : 389) : uri.Port);
                 using var conn = new LdapConnection(id) { AuthType = AuthType.Basic };
                 conn.SessionOptions.ProtocolVersion = 3;
                 if (uri.Scheme == "ldaps") conn.SessionOptions.SecureSocketLayer = true;
+                conn.Timeout = TimeSpan.FromSeconds(Math.Max(1, _options.LdapTimeoutSeconds));   // a hung DC must not pin the slot
                 var bindName = string.Format(_options.LdapBindFormat, username);
                 conn.Credential = new NetworkCredential(bindName, password);
                 conn.Bind();   // throws unless the password is correct
