@@ -161,24 +161,10 @@ builder.Services.AddSingleton<PrincipalService>();
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;
 
-// Refuse to start half-configured. An open webhook or an unsigned cookie is
-// worse than a gate that does not come up: the first fails silently, the
-// second is noticed immediately.
-foreach (var (value, name) in new[]
-{
-    (options.BotToken,      nameof(options.BotToken)),
-    (options.WebhookPath,   nameof(options.WebhookPath)),
-    (options.WebhookSecret, nameof(options.WebhookSecret)),
-    (options.HmacSecret,    nameof(options.HmacSecret)),
-    (options.GateHost,      nameof(options.GateHost)),
-})
-{
-    if (string.IsNullOrWhiteSpace(value))
-        throw new InvalidOperationException($"Kalitka__{name} must be set.");
-}
-
-if (!options.WebhookPath.StartsWith('/'))
-    throw new InvalidOperationException("Kalitka__WebhookPath must start with '/'.");
+// Refuse to start half-configured. An open webhook or an unsigned cookie is worse than a gate that
+// does not come up: the first fails silently, the second is noticed immediately. Telegram is no
+// longer mandatory — any one approval channel (Telegram, a console login provider, or email) will do.
+StartupChecks.ValidateChannels(options);
 
 // Behind a proxy with no trusted proxies configured, every visitor looks like
 // the proxy itself. If that address happens to fall inside a bypass network —

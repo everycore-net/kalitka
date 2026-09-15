@@ -9,13 +9,6 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Covering grants — scope on the request (slice 2a).** A raised request now carries an approved
-  `Scope` (a resource glob), set **only by a trusted channel from its own config** — a RADIUS client's
-  new per-client `GrantScope` (e.g. gateway `RDG-01` covers `rdp:site-a/*`) — never from the agent
-  API, so a requester cannot ask to cover more than the channel is configured for. Plumbed through the
-  engine and persisted in all three request stores (`ScopeOf`). Inert until the covering endpoint
-  carries it onto the session and resolves it (slice 2b). See `docs/design/covering-grant.md`.
-
 - **Windows agent 0.6.0 — end the lease when the person logs off (RDP session accounting).** A grant
   used to linger to its TTL even after the human left. Now an RDP logoff frees it immediately and
   tells Core the session closed, completing the lifecycle Core already modelled (`session.started` at
@@ -80,6 +73,28 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     journal cleanup, so a lingering token can never leave a phantom lease behind.
   - 6 agent tests (was 5). Because the net10/Windows agent reaches Windows security APIs, a new
     `agent-windows` CI job runs its tests on a real Windows runner — the same gating standard as Core.
+
+## [0.48.0] - 2026-09-15
+
+### Changed
+
+- **Telegram is no longer required to start.** The gate refused to boot without `BotToken`,
+  `WebhookPath` and `WebhookSecret` — so an install where Telegram is disallowed by policy could not
+  run at all, even with a working web console (Google/Microsoft), the push app, or email. Startup now
+  requires **at least one** approval channel and fails only if none is configured: Telegram (still
+  configure it fully or not at all), a console login provider (`GoogleClientId` / `MicrosoftClientId`,
+  which also backs the push PWA), or email (`SmtpHost`). `HmacSecret` and `GateHost` remain always
+  required. The check lives in a unit-tested `StartupChecks.ValidateChannels`; the README Configuration
+  section is corrected.
+
+### Added
+
+- **Covering grants — scope on the request (slice 2a).** A raised request now carries an approved
+  `Scope` (a resource glob), set **only by a trusted channel from its own config** — a RADIUS client's
+  new per-client `GrantScope` (e.g. gateway `RDG-01` covers `rdp:site-a/*`) — never from the agent
+  API, so a requester cannot ask to cover more than the channel is configured for. Plumbed through the
+  engine and persisted in all three request stores (`ScopeOf`). Inert until the covering endpoint
+  carries it onto the session and resolves it (slice 2b). See `docs/design/covering-grant.md`.
 
 ## [0.47.0] - 2026-09-15
 
