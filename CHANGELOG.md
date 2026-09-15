@@ -7,6 +7,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Self-service — the requestable catalogue (portal slice 1).** The first public-core piece of the
+  self-service portal (owner design, `docs/design/self-service.md`): a curated, config-backed catalogue
+  of **requestable units** (a share, a host, a database role — the unit a person asks for, not a file),
+  with append-only revisions and audited CRUD, the same shape as policies and principals. Its second
+  job is disclosure control — "what can I ask for" must not become "here is every server". Each unit is
+  offered only to the principal **groups** it names (new lightweight `Groups` tags on
+  `OperatorPrincipal` — scoping, not permissions), and `VisibleTo(principal, mode)` projects the
+  entitled set through a visibility mode — **approved-only / categories / full — defaulting to the most
+  closed**. Pure and fully tested; inert until the portal read/request surfaces consume it (next slices).
+
 ### Fixed
 
 - **RDP-JIT reconcile against Core, honouring an admin's revoke (findings #3b + #5).** Startup

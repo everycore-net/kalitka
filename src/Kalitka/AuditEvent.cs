@@ -86,6 +86,10 @@ public static class AuditEvents
     public const string PrincipalUpdated = "principal.updated";
     public const string PrincipalDeleted = "principal.deleted";
 
+    public const string CatalogItemCreated = "catalog.created";
+    public const string CatalogItemUpdated = "catalog.updated";
+    public const string CatalogItemDeleted = "catalog.deleted";
+
     // Device vocabulary mirrors agent.* so history filters line up (device.enrolled ~ agent.enrolled).
     public const string WebAuthnRegistered = "device.enrolled";         // a passkey/device was registered to an operator
     public const string WebAuthnRemoved    = "device.revoked";          // a device was revoked
