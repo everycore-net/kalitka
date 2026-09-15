@@ -23,6 +23,39 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Request API: JSON bodies and race-safe idempotency (portal slice 4b).** The integration request
+  endpoint (`POST /api/v1/requests`) now accepts a **JSON body** (`{resource, subject, external_id}`),
+  what most ticket systems post, alongside the existing form encoding; a body that claims to be JSON but
+  doesn't parse is a **400**, not a 500. And one-ticket-one-request now holds **under concurrent first
+  calls**: a ticket is claimed with an atomic reservation *before* the request is raised, so two
+  simultaneous calls for the same `external_id` raise a single request — the loser waits briefly for the
+  winner to settle and returns the same id (or **409 in-progress** to retry). A reserver that crashes
+  mid-raise leaves a reservation that goes stale after 30s and is reclaimed, so a dropped request is
+  retryable rather than wedged. (Replaces the earlier best-effort dedup, whose loser orphaned a waiting
+  request. Async webhooks, a `revoked` status and admin CRUD for integration keys remain follow-ups.)
+
+- **Build hygiene: reproducible restore and no vulnerable native SQLite.** Two fixes so the tree
+  builds clean and identically for anyone, not just an everycore machine. (1) A repo-root
+  `nuget.config` clears any inherited machine/user feeds — the private Azure DevOps feeds return 401
+  to outsiders and break `dotnet restore` of this public project — and uses nuget.org alone. (2) The
+  native SQLite bundle is pinned to `SQLitePCLRaw.bundle_e_sqlite3` **2.1.13**: `Microsoft.Data.Sqlite
+  9.0.0` pulls `lib.e_sqlite3` 2.1.10 transitively, which `GHSA-2m69-gcr7-jv3q` (CVE-2025-6965) flags
+  across the whole `<= 2.1.11` range; 2.1.13 is the first version out of it, kept on the 2.1.x line the
+  package expects rather than the 3.0.x major bump. The pin is declared in Core so it flows to every
+  referencing project — the agent and MCP gateway build with `TreatWarningsAsErrors`, where `NU1903`
+  would otherwise fail the build.
+
+- **Agent enrolment says *why* a token was refused, not a blanket `invalid`.** A live incident lost
+  ~30 minutes: an agent secret was pasted where the enrolment token belongs, Core answered `invalid`,
+  and that one word had to stand for "this isn't a token", "the token expired" and "wrong flow" at once.
+  `POST /agent/v1/enroll` now returns distinct reasons — **`invalid`** (does not verify as one of our
+  signed tokens: a secret pasted here, or tampering), **`expired`** (a real token past its lifetime),
+  and **`wrong-purpose`** (a genuine, unexpired token, but not an enrolment one) — so the fix is obvious
+  on the spot. Backed by `OneTimeTokenService.ReadDetailed`, which separates a signature/shape failure
+  from mere expiry (and `Read` keeps its null-for-expired contract, so no other caller changes). Pairs
+  with the structured "New agent" form that already made the enrolment-token path primary and labelled
+  the shared-secret path legacy. Agent-facing only; no config change.
+
 - **"New agent" form: structured inputs instead of free text.** Enrolling an agent (often from a
   phone) meant typing capabilities, platform, resources and tags as free text — a typo silently left
   an agent without a right, surfacing later as a confusing error. Now: **capabilities are a checkbox
