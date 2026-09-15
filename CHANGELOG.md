@@ -45,6 +45,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   referencing project — the agent and MCP gateway build with `TreatWarningsAsErrors`, where `NU1903`
   would otherwise fail the build.
 
+- **Agent enrolment says *why* a token was refused, not a blanket `invalid`.** A live incident lost
+  ~30 minutes: an agent secret was pasted where the enrolment token belongs, Core answered `invalid`,
+  and that one word had to stand for "this isn't a token", "the token expired" and "wrong flow" at once.
+  `POST /agent/v1/enroll` now returns distinct reasons — **`invalid`** (does not verify as one of our
+  signed tokens: a secret pasted here, or tampering), **`expired`** (a real token past its lifetime),
+  and **`wrong-purpose`** (a genuine, unexpired token, but not an enrolment one) — so the fix is obvious
+  on the spot. Backed by `OneTimeTokenService.ReadDetailed`, which separates a signature/shape failure
+  from mere expiry (and `Read` keeps its null-for-expired contract, so no other caller changes). Pairs
+  with the structured "New agent" form that already made the enrolment-token path primary and labelled
+  the shared-secret path legacy. Agent-facing only; no config change.
+
 - **"New agent" form: structured inputs instead of free text.** Enrolling an agent (often from a
   phone) meant typing capabilities, platform, resources and tags as free text — a typo silently left
   an agent without a right, surfacing later as a confusing error. Now: **capabilities are a checkbox

@@ -115,8 +115,18 @@ public sealed class AgentService
     public async Task<EnrollResult> Enroll(string token, string secret, string hostname, string metadata,
         CancellationToken ct, string? publicKey = null, string providerHint = "unknown")
     {
-        var cap = _tokens.Read(token);
-        if (cap is null || cap.Purpose != "agent-enrollment") return new(false, Error: "invalid");
+        // Report why a token was refused, not a blanket "invalid": a shared secret pasted where a token
+        // belongs does not verify as a token at all (-> invalid), which is a different fix from a token
+        // that merely aged out (-> expired) or one for another flow (-> wrong-purpose). A live incident
+        // cost ~30 min because these looked identical.
+        var read = _tokens.ReadDetailed(token);
+        switch (read.Status)
+        {
+            case OneTimeTokenService.ReadStatus.Expired: return new(false, Error: "expired");
+            case OneTimeTokenService.ReadStatus.Malformed: return new(false, Error: "invalid");   // not a token
+        }
+        var cap = read.Capability!;
+        if (cap.Purpose != "agent-enrollment") return new(false, Error: "wrong-purpose");   // a token, but not an enrollment one
 
         var hasKey = !string.IsNullOrEmpty(publicKey);
         // New enrolment is SPKI-only; the raw legacy form is read-compatibility, not accepted here.
