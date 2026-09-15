@@ -9,6 +9,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Self-service — admin console for the catalogue and principal groups (portal slice, makes it
+  usable).** The control plane can now configure everything the portal needs: a **Catalogue** page
+  (`/admin/catalog`) to create/update/delete requestable units — resource, category, display name, and
+  the operator **groups** each is offered to — and a **groups** field on the Operators page so a
+  principal can be placed in those groups (`PrincipalService.Save` sets them, preserved when omitted).
+  New permissions `catalog.read` / `catalog.manage` (in the policy-admin bundle); every mutation is
+  CSRF-guarded. The catalogue page also shows the current portal disclosure mode
+  (`PortalCatalogVisibility`) so an admin knows why units do or don't appear. With this a deployment
+  can actually stand up self-service: define units, group people, open visibility.
+
 - **Self-service — the request action (portal slice 3b).** A human can now *raise a request* — the gap
   the whole portal existed to close (agents and the MCP server could ask; a person could not). From
   "My access", each requestable unit shows the approval it needs (inline "why two approvals" — 1/N

@@ -1488,9 +1488,36 @@ guarded.MapPost("/principals/create", async (HttpContext ctx, AdminAuth auth, Pr
     if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
     if (form["id"].ToString().Trim().Length == 0) return Results.BadRequest();
     await principals.Save(form["id"].ToString(), form["display"].ToString(),
-        Words(form["identities"].ToString()), who.Actor, ctx.RequestAborted);
+        Words(form["identities"].ToString()), who.Actor, ctx.RequestAborted, groups: Words(form["groups"].ToString()));
     return Results.Redirect("/admin/principals", false);
 }).RequirePermission(Perm.PrincipalsManage);
+
+// ---- Self-service request catalogue -----------------------------------------
+guarded.MapGet("/catalog", (HttpContext ctx, AdminAuth auth, CatalogService catalog, IOptions<GateOptions> opt) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AdminPages.Catalog(who, catalog.All(), opt.Value.PortalCatalogVisibility, auth.IssueCsrf(who.Sub)),
+        "text/html; charset=utf-8");
+}).RequirePermission(Perm.CatalogRead);
+
+guarded.MapPost("/catalog/save", async (HttpContext ctx, AdminAuth auth, CatalogService catalog) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var error = await catalog.Save(form["id"].ToString(), form["resource"].ToString(), form["category"].ToString(),
+        form["display"].ToString(), Words(form["groups"].ToString()), who.Actor, ctx.RequestAborted);
+    return error is null ? Results.Redirect("/admin/catalog", false) : Results.BadRequest(error);
+}).RequirePermission(Perm.CatalogManage);
+
+guarded.MapPost("/catalog/delete", async (HttpContext ctx, AdminAuth auth, CatalogService catalog) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await catalog.Delete(form["id"].ToString().Trim(), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/catalog", false);
+}).RequirePermission(Perm.CatalogManage);
 
 guarded.MapPost("/principals/delete", async (HttpContext ctx, AdminAuth auth, PrincipalService principals) =>
 {
