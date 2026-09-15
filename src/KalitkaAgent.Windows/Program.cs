@@ -22,11 +22,22 @@ builder.Services.AddHttpClient<CoreClient>((sp, http) =>
     http.Timeout = TimeSpan.FromSeconds(30);
 });
 
-// RDP JIT enforcement: local Remote Desktop Users membership, a durable lease journal, and the
-// enforcer that adds on redeem / removes on expiry.
+// RDP JIT enforcement: a durable lease journal, session teardown, and the enforcer that grants on
+// redeem / denies on expiry. How access is toggled is the IRdpAccess strategy, chosen by mode:
+// soft (add to Remote Desktop Users) or hard (lift out of a deny group carrying the deny-logon
+// right). Both need the agent to run with local-admin rights; hard mode also touches local policy.
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<ILocalGroup, WindowsLocalGroup>();
 builder.Services.AddSingleton<ISessionKiller, WtsSessionKiller>();
+builder.Services.AddSingleton<ILsaPolicy, WindowsLsaPolicy>();
+builder.Services.AddSingleton<IRdpAccess>(sp =>
+{
+    var cfg = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentConfig>>().Value;
+    if (!cfg.RdpHardMode)
+        return new AllowListAccess(WindowsLocalGroup.RemoteDesktopUsers());
+    var denyGroup = WindowsLocalGroup.Named(cfg.DenyGroupName, "Kalitka default-deny RDP (managed)");
+    return new DenyListAccess(denyGroup, sp.GetRequiredService<ILsaPolicy>(),
+        sp.GetRequiredService<ILogger<DenyListAccess>>());
+});
 builder.Services.AddSingleton(sp =>
     new RdpJournal(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentConfig>>().Value.RdpJournalPath));
 builder.Services.AddSingleton<RdpEnforcer>();

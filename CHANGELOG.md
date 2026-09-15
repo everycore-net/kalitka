@@ -9,6 +9,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Windows agent 0.4.0 — RDP-JIT hard mode (default-deny via a deny group + LSA).** Soft mode
+  (add to Remote Desktop Users on grant) is honest but fail-open: nothing stops a login the box
+  already allows by other means. Hard mode is fail-closed — the subject sits, by default, in a
+  Kalitka-owned group that carries `SeDenyRemoteInteractiveLogonRight`, so their RDP login is refused
+  until a grant lifts them out:
+  - New `IRdpAccess` strategy factored out of the enforcer (which keeps owning the lease lifecycle,
+    journal and session teardown): `AllowListAccess` (soft — grant adds, deny removes) and
+    `DenyListAccess` (hard — grant lifts out of the deny group, deny puts back). The lifecycle is
+    identical; only the direction inverts.
+  - New `ILsaPolicy` / `WindowsLsaPolicy` (LSA policy API): assigns the deny-logon right to the deny
+    group's SID once at startup (idempotent). `WindowsLocalGroup` generalised to create a named group
+    (`NetLocalGroupAdd`) and resolve its SID.
+  - Selected by `Kalitka:RdpHardMode` (default `false`, preserving today's soft behaviour);
+    `Kalitka:DenyGroupName` defaults to `Kalitka-Gated`. Hard mode requires the agent to run with
+    rights to change local groups and local policy. Precondition: the gated population must be in the
+    deny group at rest — `Deny` restores that after every lease, so once Kalitka has mediated one
+    login the subject stays default-denied.
+  - 19 agent tests (was 15). Dev/test-only, no mars deploy.
 - **Windows agent 0.3.0 — RDP-JIT session termination (the token-outlives-removal fix).** Removing
   someone from Remote Desktop Users (or, later, adding them back to a deny group) does **not** eject a
   session that is already open: the access token was assembled at logon and outlives the group change.
