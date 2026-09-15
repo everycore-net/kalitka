@@ -31,6 +31,12 @@ public sealed record SessionRecord(
     /// known expiry even while Core is unreachable — a Core outage must never extend access
     /// past a time we already know. Null only for pre-0.23.4 rows.</summary>
     public DateTimeOffset? ExpiresAt { get; init; }
+
+    /// <summary>The machine-readable subject identity this session is for (e.g. <c>os:CONTOSO\anna</c>,
+    /// <c>sid:…</c>, <c>google:…</c>) — the stable identity that resolves to an operator principal, so
+    /// the portal can answer "what does this person hold?". Distinct from <see cref="Subject"/>, which
+    /// is the bare login. Empty for pre-0.48 rows.</summary>
+    public string SubjectIdentity { get; init; } = "";
 }
 
 /// <summary>

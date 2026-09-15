@@ -9,6 +9,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Self-service — "My access" (portal slice 2).** A person can now see what they hold and what they
+  have in flight: `MyAccessService.For(principal)` matches an operator principal's identities against
+  the subject identity on sessions and requests, returning live sessions (resource, expiry, profile,
+  remaining uses) and waiting requests — and nothing ended, expired, someone else's, or
+  unattributable. For this, sessions now carry the machine-readable **`subject_identity`** they were
+  approved for (added to `SessionRecord` and populated at redeem; a column on the SQLite and Postgres
+  session stores, added idempotently). This also lays the groundwork the covering endpoint and the
+  journal-loss rebuild need — a session that knows whose it is. Read-only; a principal with no console
+  permission is simply an employee who can see their own access. Fully tested.
+
 - **Self-service — the requestable catalogue (portal slice 1).** The first public-core piece of the
   self-service portal (owner design, `docs/design/self-service.md`): a curated, config-backed catalogue
   of **requestable units** (a share, a host, a database role — the unit a person asks for, not a file),
