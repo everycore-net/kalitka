@@ -131,6 +131,18 @@ release accumulates several fixes; more follow.
   one — the same overlap as the signing keys). The legacy single
   `RadiusSharedSecret`/`RadiusResource` pair still works as a synthesised catch-all
   client.
+- **Request dedup is now precise and atomic.** The fold key was `(resource,
+  subject)`, so two SSH/DB requests that differed only in command, profile, source
+  or use budget collapsed into one pending approval — an admin could approve `ls`
+  and unknowingly authorise `rm -rf`. Dedup now keys on a **fingerprint** of every
+  authority-relevant field (resource, subject, beneficiary, profile, command,
+  source, uses, signed — length-prefixed, like the audit hash), so only genuinely
+  identical raises fold. And the create is **atomic**: a new
+  `IRequestStore.TryCreateOrGetPending` makes two concurrent identical raises (a
+  4625 storm, or two cluster nodes) settle on one request — a unique partial index
+  on the durable backends (SQLite `BEGIN IMMEDIATE`, Postgres
+  `ON CONFLICT … DO NOTHING`), a lock in memory — instead of the old
+  check-then-add race.
 
 ## [0.46.0] - 2026-09-15
 

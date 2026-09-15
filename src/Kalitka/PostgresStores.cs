@@ -47,7 +47,11 @@ public sealed class PgRequestStore : IRequestStore
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS source_addr TEXT NOT NULL DEFAULT '';
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS subject_identity TEXT NOT NULL DEFAULT '';
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS subject_mode TEXT NOT NULL DEFAULT '';
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS dedup_key TEXT NOT NULL DEFAULT '';
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
+            -- At most one waiting request per dedup key: the backstop that makes TryCreateOrGetPending
+            -- atomic across nodes (an empty key never dedups, so it is excluded from the constraint).
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_requests_dedup ON requests(dedup_key) WHERE state='waiting' AND dedup_key<>'';
             CREATE TABLE IF NOT EXISTS request_approvals(
               request_id TEXT NOT NULL, principal TEXT NOT NULL,
               PRIMARY KEY(request_id, principal));
@@ -60,15 +64,76 @@ public sealed class PgRequestStore : IRequestStore
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode)
-            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key)
+            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup)
             ON CONFLICT(id) DO UPDATE SET
               target=EXCLUDED.target,input=EXCLUDED.input,ip=EXCLUDED.ip,resource=EXCLUDED.resource,
               country=EXCLUDED.country,country_code=EXCLUDED.country_code,city=EXCLUDED.city,
               raised=EXCLUDED.raised,state=EXCLUDED.state,grant_tok=EXCLUDED.grant_tok,
               required_approvals=EXCLUDED.required_approvals,profile=EXCLUDED.profile,max_uses=EXCLUDED.max_uses,
               command=EXCLUDED.command,source_addr=EXCLUDED.source_addr,subject_identity=EXCLUDED.subject_identity,
-              subject_mode=EXCLUDED.subject_mode;
+              subject_mode=EXCLUDED.subject_mode,dedup_key=EXCLUDED.dedup_key;
+            """;
+        Bind(cmd, r);
+        cmd.ExecuteNonQuery();
+    }
+
+    public bool TryCreateOrGetPending(PendingRequest candidate, DateTimeOffset notOlderThan, out PendingRequest effective)
+    {
+        using var conn = PgState.Open(_cs);
+        if (string.IsNullOrEmpty(candidate.DedupKey))
+        {
+            InsertPlain(conn, candidate);
+            effective = candidate;
+            return true;
+        }
+
+        // The partial unique index makes this atomic across nodes: exactly one INSERT wins; a racing
+        // identical one hits the conflict, inserts nothing, and reads the winner instead. The loop
+        // covers the vanishingly rare case where the winner resolves between our conflict and our read
+        // (the blocker is gone, so a retry can now insert).
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = """
+                    INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key)
+                    VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup)
+                    ON CONFLICT (dedup_key) WHERE state='waiting' AND dedup_key<>'' DO NOTHING
+                    RETURNING id;
+                    """;
+                Bind(cmd, candidate);
+                if (cmd.ExecuteScalar() is not null) { effective = candidate; return true; }   // we created it
+            }
+
+            var existing = FindWaitingByDedup(conn, candidate.DedupKey, notOlderThan);
+            if (existing is not null) { effective = existing; return false; }                   // folded onto the winner
+            // else the winner vanished; loop and try to insert again
+        }
+
+        // Pathological: never inserted and never found a winner. Fall back to a plain insert so the
+        // request actually exists (better a rare duplicate than a phantom id nobody can poll).
+        InsertPlain(conn, candidate);
+        effective = candidate;
+        return true;
+    }
+
+    private static PendingRequest? FindWaitingByDedup(NpgsqlConnection conn, string dedupKey, DateTimeOffset notOlderThan)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT {Cols} FROM requests WHERE dedup_key=@k AND state='waiting' AND raised>=@fresh LIMIT 1;";
+        cmd.Parameters.AddWithValue("k", dedupKey);
+        cmd.Parameters.AddWithValue("fresh", notOlderThan.ToUnixTimeMilliseconds());
+        using var r = cmd.ExecuteReader();
+        return r.Read() ? Read(r) : null;
+    }
+
+    private void InsertPlain(NpgsqlConnection conn, PendingRequest r)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key)
+            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup);
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -212,7 +277,7 @@ public sealed class PgRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key";
 
     private static void Bind(NpgsqlCommand cmd, PendingRequest r)
     {
@@ -234,6 +299,7 @@ public sealed class PgRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("srcaddr", r.SourceAddr);
         cmd.Parameters.AddWithValue("subjid", r.SubjectIdentity);
         cmd.Parameters.AddWithValue("submode", SubjectModes.ToDb(r.Subject));
+        cmd.Parameters.AddWithValue("dedup", r.DedupKey);
     }
 
     private static PendingRequest Read(NpgsqlDataReader r) => new()
@@ -243,7 +309,7 @@ public sealed class PgRequestStore : IRequestStore
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
         State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11),
         Profile = r.GetString(12), MaxUses = r.GetInt32(13), Command = r.GetString(14), SourceAddr = r.GetString(15),
-        SubjectIdentity = r.GetString(16), Subject = SubjectModes.FromDb(r.GetString(17))
+        SubjectIdentity = r.GetString(16), Subject = SubjectModes.FromDb(r.GetString(17)), DedupKey = r.GetString(18)
     };
 }
 

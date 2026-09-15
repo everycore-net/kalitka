@@ -52,7 +52,8 @@ public sealed class SqliteRequestStore : IRequestStore
               required_approvals INTEGER NOT NULL DEFAULT 1,
               profile TEXT NOT NULL DEFAULT '', max_uses INTEGER NOT NULL DEFAULT 0,
               command TEXT NOT NULL DEFAULT '', source_addr TEXT NOT NULL DEFAULT '',
-              subject_identity TEXT NOT NULL DEFAULT '', subject_mode TEXT NOT NULL DEFAULT '');
+              subject_identity TEXT NOT NULL DEFAULT '', subject_mode TEXT NOT NULL DEFAULT '',
+              dedup_key TEXT NOT NULL DEFAULT '');
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
             -- Distinct approvers per request (quorum): (request_id, principal) is unique,
             -- so an approval is idempotent and the count is a simple COUNT.
@@ -64,7 +65,7 @@ public sealed class SqliteRequestStore : IRequestStore
 
         // Columns added after requests first shipped (required_approvals 0.19.3,
         // profile/max_uses 0.23) — add idempotently so an older DB does not break on SELECT.
-        foreach (var (col, def) in new[] { ("required_approvals", "INTEGER NOT NULL DEFAULT 1"), ("profile", "TEXT NOT NULL DEFAULT ''"), ("max_uses", "INTEGER NOT NULL DEFAULT 0"), ("command", "TEXT NOT NULL DEFAULT ''"), ("source_addr", "TEXT NOT NULL DEFAULT ''"), ("subject_identity", "TEXT NOT NULL DEFAULT ''"), ("subject_mode", "TEXT NOT NULL DEFAULT ''") })
+        foreach (var (col, def) in new[] { ("required_approvals", "INTEGER NOT NULL DEFAULT 1"), ("profile", "TEXT NOT NULL DEFAULT ''"), ("max_uses", "INTEGER NOT NULL DEFAULT 0"), ("command", "TEXT NOT NULL DEFAULT ''"), ("source_addr", "TEXT NOT NULL DEFAULT ''"), ("subject_identity", "TEXT NOT NULL DEFAULT ''"), ("subject_mode", "TEXT NOT NULL DEFAULT ''"), ("dedup_key", "TEXT NOT NULL DEFAULT ''") })
         {
             using var check = conn.CreateCommand();
             check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name=$n;";
@@ -74,6 +75,12 @@ public sealed class SqliteRequestStore : IRequestStore
             alter.CommandText = $"ALTER TABLE requests ADD COLUMN {col} {def};";
             alter.ExecuteNonQuery();
         }
+
+        // At most one waiting request per dedup key — the database backstop that makes
+        // TryCreateOrGetPending atomic (an empty key never dedups, so it is excluded).
+        using var index = conn.CreateCommand();
+        index.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS ux_requests_dedup ON requests(dedup_key) WHERE state='waiting' AND dedup_key<>'';";
+        index.ExecuteNonQuery();
     }
 
     public void Add(PendingRequest r)
@@ -81,12 +88,51 @@ public sealed class SqliteRequestStore : IRequestStore
         using var conn = SqliteState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode)
-            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant,$req,$profile,$uses,$command,$srcaddr,$subjid,$submode)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key)
+            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant,$req,$profile,$uses,$command,$srcaddr,$subjid,$submode,$dedup)
             ON CONFLICT(id) DO UPDATE SET
               target=$target,input=$input,ip=$ip,resource=$resource,country=$country,
               country_code=$cc,city=$city,raised=$raised,state=$state,grant_tok=$grant,required_approvals=$req,
-              profile=$profile,max_uses=$uses,command=$command,source_addr=$srcaddr,subject_identity=$subjid,subject_mode=$submode;
+              profile=$profile,max_uses=$uses,command=$command,source_addr=$srcaddr,subject_identity=$subjid,subject_mode=$submode,dedup_key=$dedup;
+            """;
+        Bind(cmd, r);
+        cmd.ExecuteNonQuery();
+    }
+
+    public bool TryCreateOrGetPending(PendingRequest candidate, DateTimeOffset notOlderThan, out PendingRequest effective)
+    {
+        using var conn = SqliteState.Open(_cs);
+        if (string.IsNullOrEmpty(candidate.DedupKey)) { Insert(conn, null, candidate); effective = candidate; return true; }
+
+        // BEGIN IMMEDIATE takes the write lock up front, so the check-then-insert is atomic against
+        // any other writer — one raise creates, a racing identical one finds it.
+        using var tx = conn.BeginTransaction(deferred: false);
+        var existing = FindWaitingByDedup(conn, tx, candidate.DedupKey, notOlderThan);
+        if (existing is not null) { tx.Commit(); effective = existing; return false; }
+        Insert(conn, tx, candidate);
+        tx.Commit();
+        effective = candidate;
+        return true;
+    }
+
+    private static PendingRequest? FindWaitingByDedup(SqliteConnection conn, SqliteTransaction? tx, string dedupKey, DateTimeOffset notOlderThan)
+    {
+        using var cmd = conn.CreateCommand();
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = $"SELECT {Cols} FROM requests WHERE dedup_key=$k AND state='waiting' AND raised>=$fresh LIMIT 1;";
+        cmd.Parameters.AddWithValue("$k", dedupKey);
+        cmd.Parameters.AddWithValue("$fresh", notOlderThan.ToUnixTimeMilliseconds());
+        using var r = cmd.ExecuteReader();
+        return r.Read() ? Read(r) : null;
+    }
+
+    private static void Insert(SqliteConnection conn, SqliteTransaction? tx, PendingRequest r)
+    {
+        using var cmd = conn.CreateCommand();
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key)
+            VALUES($id,$target,$input,$ip,$resource,$country,$cc,$city,$raised,$state,$grant,$req,$profile,$uses,$command,$srcaddr,$subjid,$submode,$dedup);
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -236,7 +282,7 @@ public sealed class SqliteRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key";
 
     private static void Bind(SqliteCommand cmd, PendingRequest r)
     {
@@ -258,6 +304,7 @@ public sealed class SqliteRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("$srcaddr", r.SourceAddr);
         cmd.Parameters.AddWithValue("$subjid", r.SubjectIdentity);
         cmd.Parameters.AddWithValue("$submode", SubjectModes.ToDb(r.Subject));
+        cmd.Parameters.AddWithValue("$dedup", r.DedupKey);
     }
 
     private static PendingRequest Read(SqliteDataReader r) => new()
@@ -267,7 +314,7 @@ public sealed class SqliteRequestStore : IRequestStore
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
         State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11),
         Profile = r.GetString(12), MaxUses = r.GetInt32(13), Command = r.GetString(14), SourceAddr = r.GetString(15),
-        SubjectIdentity = r.GetString(16), Subject = SubjectModes.FromDb(r.GetString(17))
+        SubjectIdentity = r.GetString(16), Subject = SubjectModes.FromDb(r.GetString(17)), DedupKey = r.GetString(18)
     };
 }
 

@@ -44,6 +44,11 @@ public sealed class PendingRequest
     // APPROVED only by a device signature (WebAuthn), never a chat tap or a session click — a denial
     // stays unsigned (fail-safe). Snapshotted at raise, like the other approval terms.
     public bool RequireSignedApproval = false;
+    // Dedup fingerprint (0.46.1): a hash of the authority-relevant fields (resource, subject,
+    // beneficiary, profile, command, source, uses, signed). Repeated identical raises (a 4625 storm)
+    // fold onto the one still-waiting request with the same key; requests that differ in any of those
+    // fields do not fold. Empty = never folds (a web visitor, or any raise without a subject identity).
+    public string DedupKey = "";
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.
@@ -446,19 +451,24 @@ public sealed class ApprovalEngine
 
         DropExpired();
 
-        // Reuse a still-waiting identical request (same resource + machine-readable subject) instead
-        // of raising a duplicate — an agent re-triggered by repeated logon-denied (4625) events for
-        // the same person and host must fold onto the one pending request, not flood the approver.
-        // Checked BEFORE the rate limit, so a stuck client folding onto its own request is never
-        // throttled. Null request → the caller does not re-notify. Scoped to requests that carry a
-        // subject identity (agents).
-        if (subjectIdentity.Length > 0)
+        // The dedup fingerprint of this raise: a hash of every field that shapes the authority asked
+        // for, so repeated identical raises fold but two requests that differ in any of them do not.
+        // Only requests carrying a machine-readable subject fold (a web visitor never does).
+        var dedupKey = subjectIdentity.Length > 0
+            ? RequestFingerprint.Of(resource, subjectIdentity, subject, profile ?? "", command, sourceAddr, Math.Max(0, maxUses), requireSigned)
+            : "";
+        var freshCutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
+
+        // Reuse a still-waiting identical request instead of raising a duplicate — an agent
+        // re-triggered by repeated logon-denied (4625) events for the same person and host must fold
+        // onto the one pending request, not flood the approver. Checked BEFORE the rate limit, so a
+        // stuck client folding onto its own request is never throttled. Null request → the caller
+        // does not re-notify. (The atomic backstop against an exact race is TryCreateOrGetPending.)
+        if (dedupKey.Length > 0)
         {
-            var cutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
             var existing = _store.Snapshot().FirstOrDefault(r =>
-                r.State == "waiting" && r.Raised > cutoff &&
-                string.Equals(r.Resource, resource, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(r.SubjectIdentity, subjectIdentity, StringComparison.Ordinal));
+                r.State == "waiting" && r.Raised > freshCutoff &&
+                string.Equals(r.DedupKey, dedupKey, StringComparison.Ordinal));
             if (existing is not null)
             {
                 MeteredDecision("asked", target, ip, requestId: existing.Id, identity: subject, reason: "deduped");
@@ -537,9 +547,17 @@ public sealed class ApprovalEngine
             Country = place.Country, CountryCode = place.CountryCode, City = place.City,
             Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required,
             Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command, SourceAddr = sourceAddr,
-            SubjectIdentity = subjectIdentity, Subject = decision.Subject, RequireSignedApproval = requireSigned
+            SubjectIdentity = subjectIdentity, Subject = decision.Subject, RequireSignedApproval = requireSigned,
+            DedupKey = dedupKey
         };
-        _store.Add(request);
+
+        // Atomic create-or-fold: if an identical raise won a concurrent race (two 4625s, or two
+        // cluster nodes), fold onto its request instead of creating a duplicate — no second notify.
+        if (!_store.TryCreateOrGetPending(request, freshCutoff, out var effective))
+        {
+            MeteredDecision("asked", target, ip, requestId: effective.Id, identity: subject, reason: "deduped");
+            return ("waiting", effective.Id, null);
+        }
 
         MeteredDecision("asked", target, ip, requestId: id, identity: subject);
         await _audit.Append(Event(AuditEvents.AccessRequested,

@@ -50,6 +50,35 @@ public sealed class SqliteStoreTests : IDisposable
     }
 
     [Fact]
+    public void TryCreateOrGetPending_folds_a_second_identical_waiting_request()
+    {
+        var raised = DateTimeOffset.UtcNow;
+        var fresh = raised.AddMinutes(-5);
+        var store = new SqliteRequestStore(_db);
+
+        var a = Req("r1", raised); a.DedupKey = "fp-1";
+        var b = Req("r2", raised); b.DedupKey = "fp-1";   // same authority
+
+        Assert.True(store.TryCreateOrGetPending(a, fresh, out var first));
+        Assert.Equal("r1", first.Id);
+        Assert.False(store.TryCreateOrGetPending(b, fresh, out var folded));   // folds onto the winner
+        Assert.Equal("r1", folded.Id);
+        Assert.Single(store.Snapshot());
+    }
+
+    [Fact]
+    public void TryCreateOrGetPending_with_no_key_always_creates()
+    {
+        var raised = DateTimeOffset.UtcNow;
+        var fresh = raised.AddMinutes(-5);
+        var store = new SqliteRequestStore(_db);
+
+        Assert.True(store.TryCreateOrGetPending(Req("r1", raised), fresh, out _));
+        Assert.True(store.TryCreateOrGetPending(Req("r2", raised), fresh, out _));   // empty key never folds
+        Assert.Equal(2, store.Snapshot().Count);
+    }
+
+    [Fact]
     public void Resolves_once_across_instances()
     {
         var raised = DateTimeOffset.UtcNow;

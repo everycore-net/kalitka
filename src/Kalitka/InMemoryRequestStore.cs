@@ -13,8 +13,27 @@ public sealed class InMemoryRequestStore : IRequestStore
 {
     private readonly ConcurrentDictionary<string, PendingRequest> _requests = new();
     private readonly ConcurrentDictionary<string, HashSet<string>> _approvals = new();
+    private readonly object _createGate = new();
 
     public void Add(PendingRequest request) => _requests[request.Id] = request;
+
+    public bool TryCreateOrGetPending(PendingRequest candidate, DateTimeOffset notOlderThan, out PendingRequest effective)
+    {
+        if (string.IsNullOrEmpty(candidate.DedupKey)) { _requests[candidate.Id] = candidate; effective = candidate; return true; }
+
+        // The check and the insert are one step under a lock, so two identical raises cannot both
+        // create — the second finds the first. (A durable backend does this with a unique index.)
+        lock (_createGate)
+        {
+            var existing = _requests.Values.FirstOrDefault(r =>
+                r.State == "waiting" && r.Raised >= notOlderThan &&
+                string.Equals(r.DedupKey, candidate.DedupKey, StringComparison.Ordinal));
+            if (existing is not null) { effective = existing; return false; }
+            _requests[candidate.Id] = candidate;
+            effective = candidate;
+            return true;
+        }
+    }
 
     public PendingRequest? Get(string id) => _requests.TryGetValue(id, out var r) ? r : null;
 
