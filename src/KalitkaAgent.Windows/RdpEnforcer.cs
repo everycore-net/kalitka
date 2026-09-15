@@ -15,6 +15,16 @@ public sealed record RdpLease(string SessionId, string Sid, string Account, Date
 /// forgotten about — reconcile re-asserts from the journal. Just a JSON list; RDP leases are
 /// few and human-paced.
 /// </summary>
+/// <summary>The journal file exists but cannot be parsed — its contents are unknown. Callers must
+/// <b>fail closed</b> (refuse new grants, log loudly) rather than treat it as "no leases": an unknown
+/// state silently read as empty would strand active memberships that never get swept, leaving access
+/// forever. Distinct from a missing file, which legitimately means "nothing granted yet".</summary>
+public sealed class JournalUnreadableException : Exception
+{
+    public JournalUnreadableException(string path, Exception inner)
+        : base($"RDP lease journal at '{path}' is unreadable; state is unknown", inner) { }
+}
+
 public sealed class RdpJournal
 {
     private readonly string _path;
@@ -22,14 +32,20 @@ public sealed class RdpJournal
 
     public RdpJournal(string path) => _path = path;
 
+    /// <summary>All journaled leases. A missing file is an empty list (nothing granted yet); a file
+    /// that exists but does not parse throws <see cref="JournalUnreadableException"/> — never an empty
+    /// list, because "unknown" must not be mistaken for "none".</summary>
     public IReadOnlyList<RdpLease> All()
     {
         lock (_gate)
         {
-            try { return JsonSerializer.Deserialize<List<RdpLease>>(File.ReadAllText(_path)) ?? new(); }
+            string text;
+            try { text = File.ReadAllText(_path); }
             catch (FileNotFoundException) { return new List<RdpLease>(); }
             catch (DirectoryNotFoundException) { return new List<RdpLease>(); }
-            catch (JsonException) { return new List<RdpLease>(); }
+
+            try { return JsonSerializer.Deserialize<List<RdpLease>>(text) ?? new(); }
+            catch (JsonException e) { throw new JournalUnreadableException(_path, e); }
         }
     }
 
@@ -55,11 +71,18 @@ public sealed class RdpJournal
 
     private List<RdpLease> MutableAll() => new(All());
 
+    // Write-ahead durability: serialize to a temp file, then atomically replace, so a crash mid-write
+    // leaves either the whole old file or the whole new one — never a truncated, unparseable journal
+    // (which would strand active leases). File.Replace is atomic on NTFS; the first write has no
+    // destination to replace, so it moves into place.
     private void Write(List<RdpLease> list)
     {
         var dir = Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(_path, JsonSerializer.Serialize(list));
+        var tmp = _path + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(list));
+        if (File.Exists(_path)) File.Replace(tmp, _path, destinationBackupFileName: null);
+        else File.Move(tmp, _path);
     }
 }
 
@@ -92,10 +115,16 @@ public sealed class RdpEnforcer
     }
 
     /// <summary>Grant RDP: journal the lease first (intent), then enable access. Idempotent on
-    /// the session id.</summary>
+    /// the session id. Fails closed if the journal is unreadable — no access is enabled that we could
+    /// not later find to revoke.</summary>
     public void Grant(RdpLease lease)
     {
-        _journal.Upsert(lease);                         // write-ahead: intent before effect
+        try { _journal.Upsert(lease); }                 // write-ahead: intent before effect
+        catch (JournalUnreadableException ex)
+        {
+            _log.LogCritical(ex, "RDP journal unreadable; refusing to grant {Account} until it is repaired", lease.Account);
+            throw;   // fail closed: never enable access we cannot journal (and so cannot later revoke)
+        }
         _access.Grant(new SecurityIdentifier(lease.Sid));
         _log.LogInformation("RDP granted to {Account} (sid {Sid}) until {Expiry:u}", lease.Account, lease.Sid, lease.ExpiresAt);
     }
@@ -125,7 +154,16 @@ public sealed class RdpEnforcer
     {
         var now = _clock.GetUtcNow();
         var removed = 0;
-        foreach (var lease in _journal.All().Where(l => l.ExpiresAt <= now))
+        IReadOnlyList<RdpLease> leases;
+        try { leases = _journal.All(); }
+        catch (JournalUnreadableException ex)
+        {
+            // Unknown state: we cannot know what to remove. Fail loud and leave it for reconcile /
+            // an operator — never proceed as if there were nothing to sweep.
+            _log.LogCritical(ex, "RDP journal unreadable; cannot sweep expired leases until it is repaired");
+            return 0;
+        }
+        foreach (var lease in leases.Where(l => l.ExpiresAt <= now))
         {
             _access.Deny(new SecurityIdentifier(lease.Sid));
             EndSessions(lease);
@@ -143,7 +181,17 @@ public sealed class RdpEnforcer
     {
         _access.Initialize();
         var now = _clock.GetUtcNow();
-        foreach (var lease in _journal.All())
+        IReadOnlyList<RdpLease> leases;
+        try { leases = _journal.All(); }
+        catch (JournalUnreadableException ex)
+        {
+            // The journal is our only record of what is granted; if it is corrupt we cannot safely
+            // re-assert or remove anything. Fail loud and leave the box frozen for JIT until an
+            // operator (or the Core second source, once wired) resolves it — never guess.
+            _log.LogCritical(ex, "RDP journal unreadable at startup; cannot reconcile leases until it is repaired");
+            return;
+        }
+        foreach (var lease in leases)
         {
             var sid = new SecurityIdentifier(lease.Sid);
             if (lease.ExpiresAt <= now)
