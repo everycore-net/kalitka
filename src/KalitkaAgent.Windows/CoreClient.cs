@@ -22,6 +22,9 @@ public sealed class CoreClient
     public sealed record RaiseResult(int Status, string? Id, string? State);
     public sealed record PollResult(int Status, string? State, string? Grant);
     public sealed record RedeemResult(int Status, string? SessionId, string? Subject, DateTimeOffset? ExpiresAt, string SubjectIdentity = "");
+    /// <summary>A session's liveness as Core sees it. <see cref="Reached"/> distinguishes "Core says
+    /// so" from "could not ask Core" — a Core outage must fall back to local expiry, never revoke.</summary>
+    public sealed record LivenessResult(bool Reached, string State);
 
     /// <summary>Register this agent's public key with a one-time token; returns the agent id.</summary>
     public async Task<string> EnrollAsync(string token, string hostname, CancellationToken ct)
@@ -87,6 +90,26 @@ public sealed class CoreClient
         }
         catch (JsonException) { }
         return new RedeemResult((int)resp.StatusCode, session, subject, expiry, subjectIdentity);
+    }
+
+    /// <summary>Ask Core whether a session is still live — the second source that lets a restart
+    /// confirm each journaled lease (and see an admin's revoke). <see cref="LivenessResult.Reached"/>
+    /// is false when Core could not be asked, so the caller falls back to local expiry.</summary>
+    public async Task<LivenessResult> LivenessAsync(string agentId, string sessionId, CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await SendSigned(agentId, HttpMethod.Get, "/agent/v1/sessions/" + Uri.EscapeDataString(sessionId), null, ct);
+            if (!resp.IsSuccessStatusCode) return new LivenessResult(true, "unknown");   // reachable, but no answer for us
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(body);
+            var state = doc.RootElement.TryGetProperty("state", out var s) ? s.GetString() ?? "unknown" : "unknown";
+            return new LivenessResult(true, state);
+        }
+        catch (Exception)
+        {
+            return new LivenessResult(false, "unknown");   // Core unreachable — caller uses local expiry
+        }
     }
 
     /// <summary>Report that a session ended, so Core closes it and audits <c>session.ended</c> —

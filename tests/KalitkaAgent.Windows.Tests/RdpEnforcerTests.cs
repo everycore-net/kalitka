@@ -37,6 +37,19 @@ public class RdpEnforcerTests
         }
     }
 
+    // A stand-in for Core liveness. Default: Core unreachable, so reconcile falls back to local
+    // expiry (the pre-Core behaviour these tests assert). Set Reachable + States for Core-confirmed
+    // cases.
+    private sealed class FakeLiveness : ISessionLiveness
+    {
+        public bool Reachable;
+        public readonly Dictionary<string, string> States = new();
+        public Task<CoreClient.LivenessResult> OfAsync(string sessionId, CancellationToken ct) =>
+            Task.FromResult(Reachable
+                ? new CoreClient.LivenessResult(true, States.TryGetValue(sessionId, out var s) ? s : "unknown")
+                : new CoreClient.LivenessResult(false, "unknown"));
+    }
+
     private const string Sid = "S-1-5-21-1-2-3-1001";
     private const string Sid2 = "S-1-5-21-1-2-3-1002";
 
@@ -48,8 +61,8 @@ public class RdpEnforcerTests
         var path = Path.Combine(Path.GetTempPath(), "rdp-jrn-" + Guid.NewGuid().ToString("N") + ".json");
         var jrn = new RdpJournal(path);
         // Drive the enforcer through the real soft-mode strategy, so grant/deny map to group
-        // add/remove and the existing membership assertions keep their meaning.
-        var enf = new RdpEnforcer(new AllowListAccess(grp), jrn, ses, clock, NullLogger<RdpEnforcer>.Instance);
+        // add/remove; Core unreachable so reconcile uses local expiry, as before.
+        var enf = new RdpEnforcer(new AllowListAccess(grp), jrn, ses, new FakeLiveness(), clock, NullLogger<RdpEnforcer>.Instance);
         return (enf, grp, ses, jrn, clock, path);
     }
 
@@ -107,7 +120,7 @@ public class RdpEnforcerTests
     }
 
     [Fact]
-    public void Reconcile_after_restart_drops_expired_and_reasserts_valid()
+    public async Task Reconcile_after_restart_drops_expired_and_reasserts_valid()
     {
         var (enf, _, _, jrn, clock, path) = Fresh();
         try
@@ -116,16 +129,46 @@ public class RdpEnforcerTests
             enf.Grant(Lease("live", Sid2, clock.GetUtcNow().AddHours(3)));
 
             // Simulate a crash+restart: the OS forgot our in-memory group, time moved on. A new
-            // enforcer over the SAME journal must repair the group state.
+            // enforcer over the SAME journal must repair the group state. Core unreachable here, so
+            // reconcile uses local expiry.
             clock.Advance(TimeSpan.FromMinutes(30));   // 'gone' has expired
             var freshGroup = new FakeGroup();
             var freshSessions = new FakeSessions();
-            var enf2 = new RdpEnforcer(new AllowListAccess(freshGroup), new RdpJournal(path), freshSessions, clock, NullLogger<RdpEnforcer>.Instance);
-            enf2.Reconcile();
+            var enf2 = new RdpEnforcer(new AllowListAccess(freshGroup), new RdpJournal(path), freshSessions, new FakeLiveness(), clock, NullLogger<RdpEnforcer>.Instance);
+            await enf2.ReconcileAsync(default);
 
             Assert.DoesNotContain(Sid, freshGroup.Members);   // expired lease removed + dejournaled
             Assert.Contains(Sid2, freshGroup.Members);         // valid lease re-asserted
             Assert.Equal(new[] { Sid }, freshSessions.LoggedOff);   // and its stale session ended
+            Assert.Single(new RdpJournal(path).All());
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task Reconcile_honours_a_core_revoke_even_when_locally_still_valid()
+    {
+        // An admin revoked the session in Core while the agent was down. On restart the lease is
+        // still locally valid, but Core says it is gone — reconcile must close it, not re-assert it.
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
+        var grp = new FakeGroup();
+        var ses = new FakeSessions();
+        var path = Path.Combine(Path.GetTempPath(), "rdp-jrn-" + Guid.NewGuid().ToString("N") + ".json");
+        var live = new FakeLiveness { Reachable = true };
+        live.States["revoked-session"] = "revoked";
+        live.States["live-session"] = "open";
+        try
+        {
+            var jrn = new RdpJournal(path);
+            jrn.Upsert(Lease("revoked-session", Sid, clock.GetUtcNow().AddHours(2)));   // still valid locally
+            jrn.Upsert(Lease("live-session", Sid2, clock.GetUtcNow().AddHours(2)));
+            var enf = new RdpEnforcer(new AllowListAccess(grp), jrn, ses, live, clock, NullLogger<RdpEnforcer>.Instance);
+
+            await enf.ReconcileAsync(default);
+
+            Assert.DoesNotContain(Sid, grp.Members);        // Core revoke honoured
+            Assert.Equal(new[] { Sid }, ses.LoggedOff);      // and the session torn down
+            Assert.Contains(Sid2, grp.Members);              // the still-open one re-asserted
             Assert.Single(new RdpJournal(path).All());
         }
         finally { File.Delete(path); }
@@ -178,7 +221,7 @@ public class RdpEnforcerTests
     }
 
     [Fact]
-    public void Sweep_and_reconcile_fail_closed_on_a_corrupt_journal()
+    public async Task Sweep_and_reconcile_fail_closed_on_a_corrupt_journal()
     {
         var (enf, grp, _, _, _, path) = Fresh();
         try
@@ -186,7 +229,7 @@ public class RdpEnforcerTests
             grp.Members.Add(Sid);                       // some pre-existing membership
             File.WriteAllText(path, "{ broken");
             Assert.Equal(0, enf.Sweep());               // cannot sweep unknown state
-            enf.Reconcile();                            // does not throw, does not guess
+            await enf.ReconcileAsync(default);          // does not throw, does not guess
             Assert.Contains(Sid, grp.Members);          // left untouched, not silently cleared or granted
         }
         finally { File.Delete(path); }

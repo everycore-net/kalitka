@@ -9,6 +9,19 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **RDP-JIT reconcile against Core, honouring an admin's revoke (findings #3b + #5).** Startup
+  reconcile re-asserted every non-expired journaled lease from the local journal alone — so an admin
+  who revoked access while the agent was down would see it silently reverted on restart, and Core was
+  never consulted. Reconcile now checks each lease against Core as a **second source**: the session is
+  re-asserted only while Core still reports it `open` (and it is not locally expired); a session Core
+  reports gone (`expired`/`revoked`/`ended`) is denied, its session terminated, and dejournaled — so a
+  revoke made in Core is honoured, not undone. When Core is **unreachable or has no record**, reconcile
+  falls back to the locally-known expiry — a Core outage never revokes a still-valid lease nor extends
+  an expired one. Reuses the existing per-session liveness endpoint (no Core change); reconcile now
+  runs after enrolment. Agent 0.10.0, 50 tests. (Follows `docs/design/enforcer-pattern.md` points 4,
+  6, 9. Rebuilding a *lost* journal from Core is a later resilience step; #3a already makes a corrupt
+  journal fail-closed rather than a silent leak.)
+
 - **RDP-JIT beneficiary check by full identity, not a bare login (finding #2).** The agent decided a
   grant was "for this caller" by comparing the **tail** of the approved subject to the caller's login
   name — so `CONTOSO\anna` and `SRV01\anna` matched, while the lease was created on the caller's SID.
