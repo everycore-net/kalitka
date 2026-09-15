@@ -9,6 +9,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Windows agent 0.8.0 — pipe hardening against a local DoS (finding #4).** The agent served the IPC
+  pipe on a single instance with no read timeout and an AuthenticatedUsers ACL — so any local
+  authenticated user could connect, send nothing, and hang the whole JIT until the service restarted
+  (in hard mode: nobody gets RDP). Now: several instances serve in parallel (`PipeInstances`); once a
+  client connects the whole exchange is bounded by a timeout (`PipeConnectionTimeoutSeconds`, default
+  10) and the connection dropped if it overruns; the request read is length-bounded
+  (`PipeMaxRequestBytes`) so a client streaming without a newline cannot read forever; and the ACL is
+  narrowed to **Interactive** logons (console + RDP), excluding service and network logons that have no
+  business asking for a grant. 46 agent tests (was 41).
+
 - **Windows agent 0.7.0 — durable, fail-closed RDP lease journal (finding #3a).** The lease journal
   is the one thing in the agent that must survive a crash, and it did not: it was written
   truncate-and-write (a crash mid-write left corrupt JSON) and a corrupt file was read as an **empty

@@ -51,45 +51,65 @@ public sealed class Worker : BackgroundService
             return;
         }
         _identity.Set(_agentId);   // hand the id to the log watcher, which raises requests too
-        _log.LogInformation("Enrolled as agent {AgentId}; listening on pipe \\\\.\\pipe\\{Pipe}", _agentId, _cfg.PipeName);
+        _log.LogInformation("Enrolled as agent {AgentId}; listening on pipe \\\\.\\pipe\\{Pipe} ({Instances} instances)",
+            _agentId, _cfg.PipeName, _cfg.PipeInstances);
 
-        while (!stoppingToken.IsCancellationRequested)
+        // Several instances serve in parallel, so one stalled client (dropped after the per-connection
+        // timeout) never blocks the rest.
+        var loops = Enumerable.Range(0, Math.Max(1, _cfg.PipeInstances)).Select(_ => AcceptLoop(stoppingToken));
+        await Task.WhenAll(loops);
+    }
+
+    private async Task AcceptLoop(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
         {
-            try { await ServeOneAsync(stoppingToken); }
-            catch (OperationCanceledException) { break; }
+            try { await ServeOneAsync(ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex) { _log.LogError(ex, "pipe connection failed"); }
         }
     }
 
-    // One connection at a time is enough for the thin slice: approvals are human-paced.
     private async Task ServeOneAsync(CancellationToken ct)
     {
-        using var pipe = CreatePipe(_cfg.PipeName);
-        await pipe.WaitForConnectionAsync(ct);
+        using var pipe = CreatePipe(_cfg.PipeName, Math.Max(1, _cfg.PipeInstances));
+        await pipe.WaitForConnectionAsync(ct);   // waits for a client indefinitely; not the DoS surface
 
-        CallerSubject caller;
-        try { caller = SubjectResolver.Resolve(pipe); }
-        catch (Exception ex)
+        // Once a client is connected, bound the whole exchange: a client that connects and then sends
+        // nothing (or dribbles) must not hold this instance open. On timeout the pipe is disposed.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _cfg.PipeConnectionTimeoutSeconds)));
+        var cct = timeout.Token;
+        try
         {
-            _log.LogWarning(ex, "could not resolve caller identity");
-            await WriteAsync(pipe, new { status = 401, error = "identity-unresolved" }, ct);
-            return;
+            CallerSubject caller;
+            try { caller = SubjectResolver.Resolve(pipe); }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "could not resolve caller identity");
+                await WriteAsync(pipe, new { status = 401, error = "identity-unresolved" }, cct);
+                return;
+            }
+
+            var req = await ReadRequestAsync(pipe, _cfg.PipeMaxRequestBytes, cct);
+            if (req is null)
+            {
+                await WriteAsync(pipe, new { status = 400, error = "bad-request" }, cct);
+                return;
+            }
+
+            object reply = (req.Action ?? "request") switch
+            {
+                "rdp" => await RaiseRdp(caller, cct),
+                "rdp_activate" => await ActivateRdp(caller, req.RequestId, cct),
+                _ => await RaiseGeneric(caller, req, cct),
+            };
+            await WriteAsync(pipe, reply, cct);
         }
-
-        var req = await ReadRequestAsync(pipe, ct);
-        if (req is null)
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            await WriteAsync(pipe, new { status = 400, error = "bad-request" }, ct);
-            return;
+            _log.LogWarning("pipe client exceeded the {Seconds}s connection timeout; dropped", _cfg.PipeConnectionTimeoutSeconds);
         }
-
-        object reply = (req.Action ?? "request") switch
-        {
-            "rdp" => await RaiseRdp(caller, ct),
-            "rdp_activate" => await ActivateRdp(caller, req.RequestId, ct),
-            _ => await RaiseGeneric(caller, req, ct),
-        };
-        await WriteAsync(pipe, reply, ct);
     }
 
     private async Task<object> RaiseGeneric(CallerSubject caller, PipeRequest req, CancellationToken ct)
@@ -140,28 +160,50 @@ public sealed class Worker : BackgroundService
         return id;
     }
 
-    // Local IPC only: grant connect/read/write to authenticated users on this machine, and
-    // full control to SYSTEM/Administrators. The pipe never leaves the box.
-    private static NamedPipeServerStream CreatePipe(string name)
+    // Local IPC only: grant connect/read/write to <b>interactive</b> logons on this machine (console
+    // and RDP), and full control to SYSTEM. Interactive rather than AuthenticatedUsers deliberately —
+    // the latter includes service and network logons, which have no business asking for a JIT grant.
+    // The pipe never leaves the box.
+    private static NamedPipeServerStream CreatePipe(string name, int maxInstances)
     {
         var security = new PipeSecurity();
         security.AddAccessRule(new PipeAccessRule(
-            new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+            new SecurityIdentifier(WellKnownSidType.InteractiveSid, null),
             PipeAccessRights.ReadWrite, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(
             new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
             PipeAccessRights.FullControl, AccessControlType.Allow));
         return NamedPipeServerStreamAcl.Create(
-            name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            name, PipeDirection.InOut, maxInstances, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous, 0, 0, security);
     }
 
     private sealed record PipeRequest(string? Action, string? Resource, string? Command, string? RequestId);
 
-    private static async Task<PipeRequest?> ReadRequestAsync(NamedPipeServerStream pipe, CancellationToken ct)
+    /// <summary>Read one request line, bounded in length: read until a newline or
+    /// <paramref name="maxBytes"/>, whichever comes first, and reject anything longer (a client that
+    /// streams without ever terminating the line). Public and stream-based so it is unit-tested without
+    /// a live pipe. Null = empty, too long, or not valid JSON.</summary>
+    public static async Task<object?> ReadRequestObjectAsync(Stream stream, int maxBytes, CancellationToken ct) =>
+        await ReadRequestAsync(stream, maxBytes, ct);
+
+    private static async Task<PipeRequest?> ReadRequestAsync(Stream stream, int maxBytes, CancellationToken ct)
     {
-        using var reader = new StreamReader(pipe, System.Text.Encoding.UTF8, false, 1024, leaveOpen: true);
-        var line = await reader.ReadLineAsync(ct);
+        var buffer = new byte[maxBytes + 1];
+        var total = 0;
+        var nl = -1;
+        while (total < buffer.Length)
+        {
+            var n = await stream.ReadAsync(buffer.AsMemory(total, buffer.Length - total), ct);
+            if (n == 0) break;                                  // client closed
+            var found = Array.IndexOf(buffer, (byte)'\n', total, n);
+            total += n;
+            if (found >= 0) { nl = found; break; }
+        }
+
+        var end = nl >= 0 ? nl : total;
+        if (end == 0 || end > maxBytes) return null;            // empty, or too long with no newline
+        var line = System.Text.Encoding.UTF8.GetString(buffer, 0, end).TrimEnd('\r');
         if (string.IsNullOrWhiteSpace(line)) return null;
         try { return JsonSerializer.Deserialize<PipeRequest>(line, JsonOpts); }
         catch (JsonException) { return null; }

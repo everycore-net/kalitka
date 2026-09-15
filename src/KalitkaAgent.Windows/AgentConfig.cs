@@ -15,6 +15,19 @@ public sealed class AgentConfig
     /// never a network endpoint.</summary>
     public string PipeName { get; set; } = "kalitka-agent";
 
+    /// <summary>How many pipe instances serve concurrently, so one slow or stalled client cannot
+    /// block everyone. A small pool is plenty — approvals are human-paced.</summary>
+    public int PipeInstances { get; set; } = 4;
+
+    /// <summary>Once a client connects, the whole exchange (read the request, act, reply) must finish
+    /// within this many seconds, or the connection is dropped. Without it, a client that connects and
+    /// sends nothing would hold an instance open until the service restarts — a trivial local DoS.</summary>
+    public int PipeConnectionTimeoutSeconds { get; set; } = 10;
+
+    /// <summary>The largest request line the pipe will read before rejecting it. Requests are a single
+    /// small JSON line; this bounds a client that streams without ever sending a newline.</summary>
+    public int PipeMaxRequestBytes { get; set; } = 8192;
+
     /// <summary>The persisted CNG key name. The private key lives in the platform provider
     /// (TPM when present); only the SPKI ever leaves it.</summary>
     public string KeyName { get; set; } = "kalitka-agent-signing";
