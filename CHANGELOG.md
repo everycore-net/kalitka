@@ -7,6 +7,22 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Windows agent 0.3.0 — RDP-JIT session termination (the token-outlives-removal fix).** Removing
+  someone from Remote Desktop Users (or, later, adding them back to a deny group) does **not** eject a
+  session that is already open: the access token was assembled at logon and outlives the group change.
+  So closing a lease now means "remove the right **plus** terminate the session":
+  - New `ISessionKiller` / `WtsSessionKiller` (via `wtsapi32`): enumerates the local terminal-services
+    sessions, resolves each session's owner SID, and logs off the ones matching the lease. Session 0
+    (services) is skipped. Runs as SYSTEM, which `WTSLogoffSession` requires.
+  - Wired into every lease-closing path — `Revoke`, `Sweep` (expiry), and startup `Reconcile` of an
+    already-expired lease. Ordering is remove-from-group **then** kill-session, so no new logon races
+    the teardown. Best-effort by design: a kill failure is logged, never blocks the group removal or
+    journal cleanup, so a lingering token can never leave a phantom lease behind.
+  - 6 agent tests (was 5). Because the net10/Windows agent reaches Windows security APIs, a new
+    `agent-windows` CI job runs its tests on a real Windows runner — the same gating standard as Core.
+
 ## [0.46.0] - 2026-09-15
 
 ### Added

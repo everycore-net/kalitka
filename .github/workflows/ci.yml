@@ -43,6 +43,20 @@ jobs:
       # security boundary, so they run in CI. (The net10/Windows agents build separately.)
       - run: dotnet test tests/KalitkaMcpGateway.Tests/KalitkaMcpGateway.Tests.csproj -c Release
 
+  agent-windows:
+    # The net10.0-windows agent reaches Windows security APIs (WTS session teardown, token
+    # impersonation, CNG), so its tests need a real Windows runner — they cannot run in the
+    # Ubuntu job above. This gates RDP-JIT enforcement to the same standard as Core.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+      - run: dotnet test tests/KalitkaAgent.Windows.Tests/KalitkaAgent.Windows.Tests.csproj -c Release
+
   image:
     # Prove the Dockerfile still builds on every change. No push here; that only
     # happens on a tag, in release.yml.
