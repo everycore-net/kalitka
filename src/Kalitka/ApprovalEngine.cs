@@ -107,6 +107,9 @@ public sealed class ApprovalEngine
     // Sliding window per address, kept in memory: a restart forgetting who rang
     // twice is not a problem worth a database.
     private readonly ConcurrentDictionary<string, List<DateTimeOffset>> _recentByIp = new();
+    // Same window keyed on the machine-readable subject — for agent requests (e.g. RDP), where every
+    // user behind one agent shares that agent's IP, so a per-IP limit cannot throttle one stuck user.
+    private readonly ConcurrentDictionary<string, List<DateTimeOffset>> _recentBySubject = new();
 
     private int _sessionMinutes;
     private DateTimeOffset _mutedUntil = DateTimeOffset.MinValue;
@@ -312,14 +315,17 @@ public sealed class ApprovalEngine
     /// Has this address rung too often lately? Over the limit the door stays
     /// shut and silent — no page, no notification, nothing to learn from.
     /// </summary>
-    public bool IsRateLimited(string ip)
+    public bool IsRateLimited(string ip) => RateLimited(_recentByIp, ip);
+
+    // The sliding-window check, over any keying (IP or subject). Caller holds no lock.
+    private bool RateLimited(ConcurrentDictionary<string, List<DateTimeOffset>> map, string key)
     {
-        if (_options.MaxRequestsPerIp <= 0 || string.IsNullOrEmpty(ip)) return false;
+        if (_options.MaxRequestsPerIp <= 0 || string.IsNullOrEmpty(key)) return false;
 
         var now = _clock.GetUtcNow();
         var window = now.AddMinutes(-_options.RateWindowMinutes);
 
-        var times = _recentByIp.GetOrAdd(ip, _ => new List<DateTimeOffset>());
+        var times = map.GetOrAdd(key, _ => new List<DateTimeOffset>());
         lock (times)
         {
             times.RemoveAll(t => t < window);
@@ -328,11 +334,11 @@ public sealed class ApprovalEngine
         }
 
         // Keep the dictionary from growing without bound on a scan.
-        if (_recentByIp.Count > 10_000)
+        if (map.Count > 10_000)
         {
-            foreach (var kv in _recentByIp)
+            foreach (var kv in map)
             {
-                lock (kv.Value) { if (kv.Value.All(t => t < window)) _recentByIp.TryRemove(kv.Key, out _); }
+                lock (kv.Value) { if (kv.Value.All(t => t < window)) map.TryRemove(kv.Key, out _); }
             }
         }
 
@@ -438,15 +444,36 @@ public sealed class ApprovalEngine
             return ("blocked", "", null);
         }
 
-        // Over the limit the caller gets the same silent refusal as a blocked
-        // one: telling them they were throttled only tells them when to retry.
-        if (IsRateLimited(ip))
+        DropExpired();
+
+        // Reuse a still-waiting identical request (same resource + machine-readable subject) instead
+        // of raising a duplicate — an agent re-triggered by repeated logon-denied (4625) events for
+        // the same person and host must fold onto the one pending request, not flood the approver.
+        // Checked BEFORE the rate limit, so a stuck client folding onto its own request is never
+        // throttled. Null request → the caller does not re-notify. Scoped to requests that carry a
+        // subject identity (agents).
+        if (subjectIdentity.Length > 0)
+        {
+            var cutoff = _clock.GetUtcNow().AddMinutes(-_options.PendingMinutes);
+            var existing = _store.Snapshot().FirstOrDefault(r =>
+                r.State == "waiting" && r.Raised > cutoff &&
+                string.Equals(r.Resource, resource, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(r.SubjectIdentity, subjectIdentity, StringComparison.Ordinal));
+            if (existing is not null)
+            {
+                MeteredDecision("asked", target, ip, requestId: existing.Id, identity: subject, reason: "deduped");
+                return ("waiting", existing.Id, null);
+            }
+        }
+
+        // Over the limit the caller gets the same silent refusal as a blocked one: telling them they
+        // were throttled only tells them when to retry. Per-IP, plus per-subject for agent requests
+        // (every user behind one agent shares its IP, so only a subject key throttles one stuck user).
+        if (IsRateLimited(ip) || (subjectIdentity.Length > 0 && RateLimited(_recentBySubject, subjectIdentity)))
         {
             MeteredDecision("denied", target, ip, identity: subject, reason: "rate-limited");
             return ("blocked", "", null);
         }
-
-        DropExpired();
 
         if (_options.MaxPending > 0 && PendingCount() >= _options.MaxPending)
         {
