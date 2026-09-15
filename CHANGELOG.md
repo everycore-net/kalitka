@@ -23,6 +23,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Build hygiene: reproducible restore and no vulnerable native SQLite.** Two fixes so the tree
+  builds clean and identically for anyone, not just an everycore machine. (1) A repo-root
+  `nuget.config` clears any inherited machine/user feeds — the private Azure DevOps feeds return 401
+  to outsiders and break `dotnet restore` of this public project — and uses nuget.org alone. (2) The
+  native SQLite bundle is pinned to `SQLitePCLRaw.bundle_e_sqlite3` **2.1.13**: `Microsoft.Data.Sqlite
+  9.0.0` pulls `lib.e_sqlite3` 2.1.10 transitively, which `GHSA-2m69-gcr7-jv3q` (CVE-2025-6965) flags
+  across the whole `<= 2.1.11` range; 2.1.13 is the first version out of it, kept on the 2.1.x line the
+  package expects rather than the 3.0.x major bump. The pin is declared in Core so it flows to every
+  referencing project — the agent and MCP gateway build with `TreatWarningsAsErrors`, where `NU1903`
+  would otherwise fail the build.
+
 - **"New agent" form: structured inputs instead of free text.** Enrolling an agent (often from a
   phone) meant typing capabilities, platform, resources and tags as free text — a typo silently left
   an agent without a right, surfacing later as a confusing error. Now: **capabilities are a checkbox
