@@ -399,6 +399,15 @@ public sealed class GateOptions
     /// e.g. <c>{0}@corp.example</c> (UPN) or <c>CORP\{0}</c>.</summary>
     public string LdapBindFormat { get; set; } = "{0}";
 
+    /// <summary>The directory base DN to search after a successful bind for the user's canonical
+    /// identity (objectSid), e.g. <c>DC=corp,DC=example</c>. Empty = skip it: the bind still verifies
+    /// the password, but the subject stays a claimed <c>os:&lt;user&gt;</c> rather than a trusted
+    /// <c>sid:</c> — no covering across entrances until this is set.</summary>
+    public string LdapSearchBase { get; set; } = "";
+
+    /// <summary>LDAP filter to find the user's entry; <c>{0}</c> is the (escaped) username.</summary>
+    public string LdapUserFilter { get; set; } = "(sAMAccountName={0})";
+
     /// <summary>Allow a plaintext <c>ldap://</c> URL. Off by default: passwords go to the DC on a
     /// bind, so <c>ldaps://</c> is the norm and <c>ldap://</c> is refused unless this is explicitly
     /// set (a trusted-segment escape hatch).</summary>

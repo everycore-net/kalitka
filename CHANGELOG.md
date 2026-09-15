@@ -9,16 +9,6 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Covering grants — design + matcher (slice 1 of the "one request, not two" work).** When a person
-  is approved at a RADIUS-fronted perimeter, a host behind it should not raise a second approval for
-  the same access. The design (owner-ratified, `docs/design/covering-grant.md`) makes covering an
-  explicit, human-approved *scope* — never inferred — bounded by channel config, shown with its
-  cardinality, cascaded on revoke, excluding `tier: critical`, and mintable only where the subject is
-  established (not merely claimed). This slice lands the security-critical core: `Coverage.Covers`
-  (exact or a single trailing wildcard past the kind boundary — never across kinds) and
-  `Coverage.Cardinality` (the "17 hosts" count), pure and fully tested (13 cases). Inert until the
-  scope plumbing and covering endpoint land in the next slices.
-
 - **Windows agent 0.6.0 — end the lease when the person logs off (RDP session accounting).** A grant
   used to linger to its TTL even after the human left. Now an RDP logoff frees it immediately and
   tells Core the session closed, completing the lifecycle Core already modelled (`session.started` at
@@ -83,6 +73,30 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     journal cleanup, so a lingering token can never leave a phantom lease behind.
   - 6 agent tests (was 5). Because the net10/Windows agent reaches Windows security APIs, a new
     `agent-windows` CI job runs its tests on a real Windows runner — the same gating standard as Core.
+
+## [0.47.0] - 2026-09-15
+
+### Added
+
+- **RADIUS asserts the canonical AD identity, unifying it with direct RDP.** After a successful LDAP
+  bind, the verifier now resolves the user's directory **objectSid** (and UPN) and RADIUS asserts a
+  **trusted `sid:` subject** — the same identity a Windows host agent asserts — instead of the
+  claimed `os:<user>`. So one person is one subject across both entrances: `subject: required` can be
+  satisfied over RADIUS, and a covering grant can span a RADIUS perimeter and the host behind it.
+  Falls back to the claimed `os:<user>` (untrusted) when no `LdapSearchBase` is configured or the SID
+  cannot be resolved — the bind still verifies the password. New `AdSid.FromBinary` (cross-platform
+  SID formatting, no Windows dependency), `CredentialResult` (verify now returns identity, not just a
+  bool), and options `LdapSearchBase` / `LdapUserFilter` (with RFC 4515 filter escaping). The RADIUS
+  `State` still binds to the round-stable username, so a resume (which does not re-bind) still matches.
+- **Covering grants — design + matcher (slice 1 of the "one request, not two" work).** When a person
+  is approved at a RADIUS-fronted perimeter, a host behind it should not raise a second approval for
+  the same access. The design (owner-ratified, `docs/design/covering-grant.md`) makes covering an
+  explicit, human-approved *scope* — never inferred — bounded by channel config, shown with its
+  cardinality, cascaded on revoke, excluding `tier: critical`, and mintable only where the subject is
+  established (not merely claimed). This slice lands the security-critical core: `Coverage.Covers`
+  (exact or a single trailing wildcard past the kind boundary — never across kinds) and
+  `Coverage.Cardinality` (the "17 hosts" count), pure and fully tested (13 cases). Inert until the
+  scope plumbing and covering endpoint land in the next slices.
 
 ## [0.46.1] - 2026-09-15
 

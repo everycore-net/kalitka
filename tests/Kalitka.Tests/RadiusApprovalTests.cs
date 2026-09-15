@@ -219,6 +219,23 @@ public class RadiusApprovalTests
         Assert.Equal("vpn:office", gate.PendingSnapshot().Single(r => r.State == "waiting").Target);
     }
 
+    // A verifier that resolves a canonical directory identity, like a real LDAP bind + objectSid.
+    private sealed class EstablishedVerifier : ICredentialVerifier
+    {
+        public Task<CredentialResult> Verify(string username, string password, CancellationToken ct) =>
+            Task.FromResult(new CredentialResult(true, "S-1-5-21-9-9-9-1001", username + "@corp.example"));
+    }
+
+    [Fact]
+    public async Task An_established_identity_verifies_and_reaches_challenge()
+    {
+        // The bind resolved a canonical sid: RADIUS routes the approval to a trusted subject and
+        // still holds the wait via Access-Challenge.
+        var (a, gate) = Build(new EstablishedVerifier());
+        Assert.Equal(RadiusCode.AccessChallenge, (await Handle(a, Initial("anna", "pw"))).Code);
+        Assert.Single(gate.PendingSnapshot(), r => r.State == "waiting");
+    }
+
     [Fact]
     public async Task The_previous_secret_is_accepted_during_rotation()
     {
