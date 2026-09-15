@@ -9,6 +9,19 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Self-service — the request action (portal slice 3b).** A human can now *raise a request* — the gap
+  the whole portal existed to close (agents and the MCP server could ask; a person could not). From
+  "My access", each requestable unit shows the approval it needs (inline "why two approvals" — 1/N
+  approvals, and "· your confirmation" when the resource requires the subject), with a **Request**
+  button. `POST /portal/request` is CSRF-protected (token bound to the principal) and re-checks that
+  the unit is one the person is entitled to and shown — the request surface is exactly the disclosure
+  surface, never wider. The request is raised for the person themselves (their verified identity as the
+  subject, so it appears in "My access" and routing asks them and the admins) but **claimed, not
+  asserted** — a `subject: required` resource still needs a device confirmation the portal does not
+  give. The raise outcome (raised / already-allowed / refused-with-reason) comes back as a banner.
+  `PrincipalService.Save` now also sets a principal's **groups** (preserved when omitted), the enabler
+  for catalogue entitlement.
+
 - **Self-service — the portal, sign-in and "My access" page (portal slice 3a).** The portal is now a
   reachable web surface at `/portal`. A **separate `PortalAuth`** signs a person in through the same
   provider seam (Google/Microsoft/passkey) and resolves them to an operator **principal** — with **no

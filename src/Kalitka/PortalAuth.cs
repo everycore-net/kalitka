@@ -5,7 +5,7 @@ namespace Kalitka;
 /// <summary>The signed-in portal user: the operator principal they resolve to, plus the e-mail for
 /// display. A principal with no console permission is simply an employee — this session lets them see
 /// and ask for their own access, nothing on the control plane.</summary>
-public sealed record PortalSession(OperatorPrincipal Principal, string Email);
+public sealed record PortalSession(OperatorPrincipal Principal, string Email, string Actor);
 
 /// <summary>
 /// Authentication for the self-service portal (<c>/portal</c>) — a <b>separate</b> population from the
@@ -111,7 +111,7 @@ public sealed class PortalAuth
         if (principalId is null) return null;
         var principal = _principals.Get(principalId);
         if (principal is null) return null;
-        return new PortalSession(principal, parts[3]);
+        return new PortalSession(principal, parts[3], actor);
     }
 
     public string IssueCsrf(string sub)

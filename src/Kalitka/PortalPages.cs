@@ -31,6 +31,8 @@ public static class PortalPages
       + ".tag{display:inline-block;background:#171a22;border:1px solid #262b36;border-radius:20px;padding:2px 10px;margin:2px 4px 2px 0;font-size:.8rem}"
       + ".btn{display:inline-block;padding:9px 14px;border-radius:9px;background:#2456A6;color:#fff;text-decoration:none;font-size:.9rem}"
       + ".card{background:#141821;border:1px solid #262b36;border-radius:12px;padding:14px 16px;margin:10px 0}"
+      + "button{padding:7px 12px;border:0;border-radius:8px;background:#2456A6;color:#fff;cursor:pointer;font-size:.85rem}"
+      + "button:hover{background:#2b63bd}"
       + "</style></head><body>";
     private const string Foot = "</body></html>";
 
@@ -61,14 +63,20 @@ public static class PortalPages
         return sb.Append(Foot).ToString();
     }
 
+    /// <summary>How much approval a requestable unit needs, for the inline "why two approvals" note.</summary>
+    public sealed record Requestable(CatalogItem Item, int RequiredApprovals, bool SubjectRequired);
+
     /// <summary>"My access": what the person holds, what they have in flight, and — as far as their
-    /// visibility mode allows — what they may ask for.</summary>
-    public static string Home(PortalSession who, MyAccess mine, CatalogView catalog)
+    /// visibility mode allows — what they may ask for (with a Request button and the approval it needs).</summary>
+    public static string Home(PortalSession who, MyAccess mine, CatalogView catalog,
+        IReadOnlyList<Requestable> requestables, string csrf, string? message = null)
     {
         var sb = new StringBuilder(Head);
         sb.Append("<div class=\"top\"><b>kalitka</b><span class=\"spacer\"></span>")
           .Append("<span class=\"who\">").Append(H(who.Principal.DisplayName)).Append(" · ").Append(H(who.Email)).Append("</span>")
           .Append("<a href=\"/portal/logout\">Sign out</a></div><div class=\"wrap\">");
+
+        if (!string.IsNullOrEmpty(message)) sb.Append("<p class=\"card\">").Append(H(message)).Append("</p>");
 
         sb.Append("<h1>My access</h1>");
 
@@ -96,12 +104,20 @@ public static class PortalPages
         }
 
         sb.Append("<h2>Available to request</h2>");
-        if (catalog.Mode == CatalogVisibility.Full && catalog.Items.Count > 0)
+        if (catalog.Mode == CatalogVisibility.Full && requestables.Count > 0)
         {
-            sb.Append("<table><tr><th>What</th><th>Category</th></tr>");
-            foreach (var i in catalog.Items)
-                sb.Append("<tr><td>").Append(H(i.DisplayName)).Append(" <code>").Append(H(i.Resource))
-                  .Append("</code></td><td>").Append(H(i.Category)).Append("</td></tr>");
+            sb.Append("<table><tr><th>What</th><th>Category</th><th>Needs</th><th></th></tr>");
+            foreach (var q in requestables)
+            {
+                var needs = q.RequiredApprovals == 1 ? "1 approval" : $"{q.RequiredApprovals} approvals";
+                if (q.SubjectRequired) needs += " · your confirmation";
+                sb.Append("<tr><td>").Append(H(q.Item.DisplayName)).Append(" <code>").Append(H(q.Item.Resource))
+                  .Append("</code></td><td>").Append(H(q.Item.Category)).Append("</td><td class=\"muted\">").Append(H(needs))
+                  .Append("</td><td><form method=\"post\" action=\"/portal/request\" style=\"margin:0\">")
+                  .Append("<input type=\"hidden\" name=\"csrf\" value=\"").Append(H(csrf)).Append("\">")
+                  .Append("<input type=\"hidden\" name=\"item\" value=\"").Append(H(q.Item.Id)).Append("\">")
+                  .Append("<button type=\"submit\">Request</button></form></td></tr>");
+            }
             sb.Append("</table>");
         }
         else if (catalog.Mode == CatalogVisibility.Categories && catalog.Categories.Count > 0)

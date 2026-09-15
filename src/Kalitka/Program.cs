@@ -967,13 +967,47 @@ app.MapGet("/portal/oauth2/callback", async (HttpContext ctx, PortalAuth portal)
     return Results.Redirect(result.ReturnPath, false);
 });
 
-app.MapGet("/portal", (HttpContext ctx, PortalAuth portal, MyAccessService access, CatalogService catalog, IOptions<GateOptions> opt) =>
+app.MapGet("/portal", (HttpContext ctx, PortalAuth portal, MyAccessService access, CatalogService catalog,
+    PolicyService policies, IOptions<GateOptions> opt) =>
 {
     var who = portal.ReadCookie(ctx.Request.Cookies[PortalAuth.CookieName]);
     if (who is null) return Results.Redirect("/portal/login", false);
     var mine = access.For(who.Principal);
     var view = catalog.VisibleTo(who.Principal, opt.Value.PortalCatalogVisibility);
-    return Results.Content(PortalPages.Home(who, mine, view), "text/html; charset=utf-8");
+
+    // For each requestable unit, the approval it needs — the inline "why two approvals" explain.
+    var requestables = view.Items.Select(i =>
+    {
+        var d = policies.Effective(i.Resource, Array.Empty<string>());
+        return new PortalPages.Requestable(i, d.RequiredApprovals, d.Subject == SubjectApproval.Required);
+    }).ToList();
+
+    return Results.Content(
+        PortalPages.Home(who, mine, view, requestables, portal.IssueCsrf(who.Principal.Id), PortalMessage(ctx.Request.Query["msg"].ToString())),
+        "text/html; charset=utf-8");
+});
+
+app.MapPost("/portal/request", async (HttpContext ctx, PortalAuth portal, CatalogService catalog, GateService gate, IOptions<GateOptions> opt) =>
+{
+    var who = portal.ReadCookie(ctx.Request.Cookies[PortalAuth.CookieName]);
+    if (who is null) return Results.Redirect("/portal/login", false);
+
+    var form = await ctx.Request.ReadFormAsync();
+    if (!portal.ValidateCsrf(form["csrf"].ToString(), who.Principal.Id)) return Results.StatusCode(403);
+
+    // Only a unit the person is actually shown (entitled + visible) may be requested — the request
+    // surface is exactly the disclosure surface, never wider.
+    var itemId = form["item"].ToString();
+    var visible = catalog.VisibleTo(who.Principal, opt.Value.PortalCatalogVisibility).Items.FirstOrDefault(i => i.Id == itemId);
+    if (visible is null) return Results.Redirect("/portal?msg=not-available", false);
+
+    // Raised for the person themselves: their verified identity is the subject (so it shows in their
+    // "My access", and routing asks them and the admins), but claimed-not-asserted — a subject:required
+    // resource still needs a device confirmation the portal does not give.
+    var (state, _) = await gate.RaiseAction(visible.Resource, who.Principal.DisplayName, ResolveIp(ctx, gate),
+        who.Actor, ctx.RequestAborted, subjectIdentity: who.Actor, subjectTrusted: false);
+    var msg = state switch { "waiting" => "requested", "allowed" => "granted", _ => state };
+    return Results.Redirect("/portal?msg=" + Uri.EscapeDataString(msg), false);
 });
 
 app.MapGet("/portal/logout", (HttpContext ctx) =>
@@ -1653,6 +1687,18 @@ static void SetAdminCookie(HttpContext ctx, string value)
         Path = "/admin",
     });
 }
+
+// Turn the ?msg code from a request POST-redirect into a human line for the portal banner. Null
+// (unknown/empty) shows nothing.
+static string? PortalMessage(string code) => code switch
+{
+    "requested" => "Your request was raised — you'll be notified when it's decided.",
+    "granted" => "Access granted.",
+    "not-available" => "That item is not available to request.",
+    "blocked" => "That request could not be raised.",
+    "" => null,
+    _ => $"That request was not raised ({code}).",
+};
 
 // The portal session cookie: scoped to /portal (so it is never sent to /admin), Lax for the OIDC
 // callback redirect chain, absolute lifetime carried by the signed token itself.
