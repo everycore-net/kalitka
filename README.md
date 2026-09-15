@@ -439,9 +439,13 @@ Everything is environment variables prefixed `Kalitka__`. The full list with
 comments is in [`src/Kalitka/GateOptions.cs`](src/Kalitka/GateOptions.cs);
 [`deploy/.env.example`](deploy/.env.example) has the ones you actually need.
 
-The app refuses to start without `BotToken`, `WebhookPath`, `WebhookSecret`,
-`HmacSecret` and `GateHost` — an open webhook or an unsigned cookie fails
-silently, a service that does not come up does not.
+The app always needs `HmacSecret` and `GateHost` — an unsigned cookie or no base
+URL is a non-starter. Beyond that it needs **at least one approval channel**, and
+refuses to start with none: Telegram (`BotToken` plus `WebhookPath` and
+`WebhookSecret` — configure it fully or not at all), a web-console login provider
+(`GoogleClientId` or `MicrosoftClientId`, which also backs the push app), or email
+(`SmtpHost`). Telegram is one option, not a requirement — an install where it is
+disallowed can run on the console or email alone.
 
 ## Things worth knowing before you deploy
 
