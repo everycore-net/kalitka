@@ -163,6 +163,36 @@ public class RdpEnforcerTests
     }
 
     [Fact]
+    public void Grant_fails_closed_when_the_journal_is_corrupt()
+    {
+        // A corrupt journal is "state unknown", not "no leases": Grant must refuse rather than enable
+        // access it could not journal (and so could never find to revoke).
+        var (enf, grp, _, _, clock, path) = Fresh();
+        try
+        {
+            File.WriteAllText(path, "not json at all");
+            Assert.Throws<JournalUnreadableException>(() => enf.Grant(Lease("s1", Sid, clock.GetUtcNow().AddMinutes(30))));
+            Assert.DoesNotContain(Sid, grp.Members);   // no access was enabled
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Sweep_and_reconcile_fail_closed_on_a_corrupt_journal()
+    {
+        var (enf, grp, _, _, _, path) = Fresh();
+        try
+        {
+            grp.Members.Add(Sid);                       // some pre-existing membership
+            File.WriteAllText(path, "{ broken");
+            Assert.Equal(0, enf.Sweep());               // cannot sweep unknown state
+            enf.Reconcile();                            // does not throw, does not guess
+            Assert.Contains(Sid, grp.Members);          // left untouched, not silently cleared or granted
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public void A_session_kill_failure_still_removes_the_right_and_dejournals()
     {
         // Defense in depth: if WTS logoff fails, the group membership is already gone (no new

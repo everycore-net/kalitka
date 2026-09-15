@@ -9,6 +9,21 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Windows agent 0.7.0 — durable, fail-closed RDP lease journal (finding #3a).** The lease journal
+  is the one thing in the agent that must survive a crash, and it did not: it was written
+  truncate-and-write (a crash mid-write left corrupt JSON) and a corrupt file was read as an **empty
+  list** — so every active lease was forgotten, never swept, and its group membership stayed forever,
+  silently. Now:
+  - the journal is written **atomically** (temp file + `File.Replace`), so a crash leaves the whole
+    old file or the whole new one, never a truncated one;
+  - a corrupt journal reads as **unknown, not empty** — `All()` throws `JournalUnreadableException`,
+    and the enforcer **fails closed and loud**: `Grant` refuses (no access it cannot journal), and
+    `Sweep`/`Reconcile` log critically and change nothing rather than guess. The box is frozen for JIT
+    until the journal is repaired, instead of silently leaking access.
+  - Follows the enforcer pattern now written down in `docs/design/enforcer-pattern.md`. The second
+    provenance source (reconcile against Core's open sessions for the host) is the next slice (#3b).
+  - 41 agent tests (was 36).
+
 - **Windows agent 0.6.0 — end the lease when the person logs off (RDP session accounting).** A grant
   used to linger to its TTL even after the human left. Now an RDP logoff frees it immediately and
   tells Core the session closed, completing the lifecycle Core already modelled (`session.started` at
