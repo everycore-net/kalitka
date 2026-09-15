@@ -51,9 +51,13 @@ builder.Services.AddSingleton<IRdpActivator>(sp => sp.GetRequiredService<RdpActi
 builder.Services.AddHostedService<Worker>();
 builder.Services.AddHostedService<RdpSweeper>();
 
-// The Security-log watcher (auto-raise on a denied RDP logon) is opt-in: it needs rights to read
-// the Security log and is only useful once RDP gating is actually enforcing on the box.
+// The Security-log watchers are opt-in: they need rights to read the Security log and are only
+// useful once RDP gating enforces on the box. One raises on a denied logon (4625), the other ends a
+// lease early on logoff (4634) and reports the session closed to Core.
 if (builder.Configuration.GetSection("Kalitka").Get<AgentConfig>()?.RdpWatch == true)
+{
     builder.Services.AddHostedService<SecurityLogWatcher>();
+    builder.Services.AddHostedService<RdpLogoffWatcher>();
+}
 
 builder.Build().Run();

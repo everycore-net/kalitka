@@ -32,7 +32,7 @@ public sealed record RdpDenial(string Sid, string Account, string User, string I
             return null;
         if (!IsNotGranted(data)) return null;
 
-        if (!data.TryGetValue("TargetUserSid", out var sid) || !IsAccountSid(sid)) return null;
+        if (!data.TryGetValue("TargetUserSid", out var sid) || !Sids.IsAccount(sid)) return null;
         var user = data.GetValueOrDefault("TargetUserName", "");
         if (string.IsNullOrWhiteSpace(user)) return null;
 
@@ -55,8 +55,4 @@ public sealed record RdpDenial(string Sid, string Account, string User, string I
         return long.TryParse(v, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var n) ? n : 0;
     }
 
-    // A real local or domain account SID (the S-1-5-21-<domain>-<rid> shape), not a null/anonymous
-    // or service well-known SID — we only ever raise for a person who could actually be approved.
-    private static bool IsAccountSid(string sid) =>
-        !string.IsNullOrWhiteSpace(sid) && sid.StartsWith("S-1-5-21-", StringComparison.OrdinalIgnoreCase);
 }

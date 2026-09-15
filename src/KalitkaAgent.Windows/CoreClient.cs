@@ -88,6 +88,15 @@ public sealed class CoreClient
         return new RedeemResult((int)resp.StatusCode, session, subject, expiry);
     }
 
+    /// <summary>Report that a session ended, so Core closes it and audits <c>session.ended</c> —
+    /// the human logged off, freeing the grant before its TTL. Returns the HTTP status.</summary>
+    public async Task<int> EndSessionAsync(string agentId, string sessionId, string outcome, CancellationToken ct)
+    {
+        var fields = new Dictionary<string, string> { ["session_id"] = sessionId, ["outcome"] = outcome };
+        using var resp = await SendSigned(agentId, HttpMethod.Post, "/agent/v1/sessions/end", fields, ct);
+        return (int)resp.StatusCode;
+    }
+
     // Sign and send one request; the body bytes signed are exactly the bytes sent.
     private async Task<HttpResponseMessage> SendSigned(
         string agentId, HttpMethod method, string path, IDictionary<string, string>? fields, CancellationToken ct)

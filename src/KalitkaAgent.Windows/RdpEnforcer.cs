@@ -100,6 +100,13 @@ public sealed class RdpEnforcer
         _log.LogInformation("RDP granted to {Account} (sid {Sid}) until {Expiry:u}", lease.Account, lease.Sid, lease.ExpiresAt);
     }
 
+    /// <summary>The active lease for a subject SID, if any — used to end a lease early when its
+    /// owner logs off (the logoff names the SID; the lease names the Core session).</summary>
+    public RdpLease? LeaseForSid(string sid) =>
+        _journal.All()
+            .Where(l => string.Equals(l.Sid, sid, StringComparison.OrdinalIgnoreCase))
+            .MaxBy(l => l.ExpiresAt);
+
     /// <summary>End a lease early (revoked or session ended): deny access, terminate any live
     /// session so a token assembled at logon cannot outlive the grant, and forget it.</summary>
     public void Revoke(string sessionId)
