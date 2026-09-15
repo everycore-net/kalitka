@@ -136,10 +136,16 @@ public sealed class RdpEnforcer
         {
             // Enforce failed after the write-ahead. Undo the journal entry so the invariant holds — no
             // journaled lease without real access — otherwise reconcile would re-assert a grant that
-            // never took, hammering the same failure, and the lease would read as live access. Rethrow so
-            // the caller reports the failure to Core.
-            _journal.Remove(lease.SessionId);
-            throw;
+            // never took, hammering the same failure, and the lease would read as live access. The
+            // rollback is itself in a guard: if it fails (disk, race) we must still surface the ORIGINAL
+            // enforce error (what the operator needs to diagnose), not the cleanup error, and we log
+            // loudly that journal and reality may now disagree.
+            try { _journal.Remove(lease.SessionId); }
+            catch (Exception cleanup)
+            {
+                _log.LogCritical(cleanup, "rollback of write-ahead lease {Session} failed; journal and reality may disagree", lease.SessionId);
+            }
+            throw;   // the original enforce failure
         }
         _log.LogInformation("RDP granted to {Account} (sid {Sid}) until {Expiry:u}", lease.Account, lease.Sid, lease.ExpiresAt);
     }

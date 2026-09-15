@@ -22,11 +22,15 @@ public class LocalGroupIntegrationTests
     {
         if (!OperatingSystem.IsWindows()) return;   // netapi32 is Windows-only
 
+        const int ERROR_ACCESS_DENIED = 5;
         var name = "kalitka-test-" + Guid.NewGuid().ToString("N")[..8];
         var group = WindowsLocalGroup.Named(name, "kalitka marshalling test");
 
+        // Skip ONLY when we lack the privilege to manage local groups. Any other rc (e.g. a regressed
+        // CharSet on NetLocalGroupAdd giving 2220) must fail the test, not be swallowed into a green run —
+        // that silent-skip is the very failure class this test exists to catch.
         try { group.EnsureExists(); }
-        catch (InvalidOperationException) { return; }   // not elevated / can't manage groups: skip
+        catch (LocalGroupException e) when (e.Code == ERROR_ACCESS_DENIED) { return; }
 
         try
         {
