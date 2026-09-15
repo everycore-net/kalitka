@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # A hung test must fail in minutes, not burn the runner for hours (a real incident on the
+    # Windows runner). Generous over the ~5 min norm, but a hard ceiling.
+    timeout-minutes: 20
     # Postgres for the multi-node backend tests. They skip when
     # KALITKA_TEST_POSTGRES is unset (local runs); here it is set, so they run.
     services:
@@ -48,6 +51,8 @@ jobs:
     # impersonation, CNG), so its tests need a real Windows runner — they cannot run in the
     # Ubuntu job above. This gates RDP-JIT enforcement to the same standard as Core.
     runs-on: windows-latest
+    # The Windows runner bills at a multiplier; a hung test here is the expensive kind. Cap it.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
@@ -61,6 +66,7 @@ jobs:
     # Prove the Dockerfile still builds on every change. No push here; that only
     # happens on a tag, in release.yml.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: docker/build-push-action@v7

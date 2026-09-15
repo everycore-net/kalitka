@@ -7,6 +7,20 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows agent raised no requests at all — impersonation was attempted before the pipe was read.**
+  `Worker.ServeOneAsync` resolved the caller's Windows identity (`SubjectResolver.Resolve`, which uses
+  `NamedPipeServerStream.RunAsClient`) *before* reading the request. Windows only permits named-pipe
+  impersonation after the server has read from the pipe at least once, so `RunAsClient` threw
+  `IOException`, every caller got `401 identity-unresolved`, and **no request could ever rise** — while
+  the service sat in RUNNING looking healthy (a silent outage, seen live on OLDEV with agent 0.10.0.0).
+  Fixed by reading the request first, then resolving; authorization still happens only after the
+  identity is established. The existing 50 tests missed it because they exercise the read over a
+  `MemoryStream`, where impersonation does not exist — added a real-named-pipe integration test
+  (`PipeImpersonationTests`) that connects a server and client in-process and pins the ordering:
+  resolution succeeds after a read and throws before one. Agent 0.10.2.
+
 ### Changed
 
 - **"New agent" form: structured inputs instead of free text.** Enrolling an agent (often from a
