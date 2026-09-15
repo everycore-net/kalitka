@@ -65,6 +65,7 @@ builder.Services.AddSingleton<ICredentialVerifier>(sp =>
     return new DenyAllCredentialVerifier();
 });
 builder.Services.AddSingleton<LoginThrottle>();
+builder.Services.AddSingleton<RadiusClientRegistry>();
 builder.Services.AddSingleton<RadiusApproval>();
 builder.Services.AddHostedService<RadiusServer>();
 builder.Services.AddSingleton<GateService>();

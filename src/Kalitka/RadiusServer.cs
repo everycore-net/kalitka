@@ -17,20 +17,22 @@ namespace Kalitka;
 public sealed class RadiusServer : BackgroundService
 {
     private readonly RadiusApproval _approval;
+    private readonly RadiusClientRegistry _clients;
     private readonly GateOptions _options;
     private readonly ILogger<RadiusServer> _log;
 
-    public RadiusServer(RadiusApproval approval, IOptions<GateOptions> options, ILogger<RadiusServer> log)
+    public RadiusServer(RadiusApproval approval, RadiusClientRegistry clients, IOptions<GateOptions> options, ILogger<RadiusServer> log)
     {
         _approval = approval;
+        _clients = clients;
         _options = options.Value;
         _log = log;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        if (!_options.RadiusEnabled || string.IsNullOrEmpty(_options.RadiusSharedSecret))
-            return;   // dormant unless configured
+        if (!_options.RadiusEnabled || !_clients.HasAny)
+            return;   // dormant unless enabled with at least one client (legacy secret or registry)
 
         using var udp = new UdpClient(_options.RadiusPort);
         _log.LogInformation("RADIUS listening on udp/{Port}", _options.RadiusPort);
@@ -54,7 +56,8 @@ public sealed class RadiusServer : BackgroundService
             if (packet is null || packet.Code != RadiusCode.AccessRequest) return;   // ignore non-requests
 
             var response = await _approval.Handle(packet, received.Buffer, received.RemoteEndPoint.Address.ToString(), ct);
-            await udp.SendAsync(response, response.Length, received.RemoteEndPoint);
+            if (response is { Length: > 0 })   // null = unknown client, answer nothing
+                await udp.SendAsync(response, response.Length, received.RemoteEndPoint);
         }
         catch (Exception e)
         {

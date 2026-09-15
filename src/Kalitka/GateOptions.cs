@@ -359,8 +359,18 @@ public sealed class GateOptions
     public int RadiusPort { get; set; } = 1812;
 
     /// <summary>The RADIUS shared secret with the gateway. Legacy MD5-based; run in a protected
-    /// segment or over RADIUS/TLS where the gateway supports it.</summary>
+    /// segment or over RADIUS/TLS where the gateway supports it. Used for the single-client legacy
+    /// setup; prefer <see cref="RadiusClients"/> for more than one gateway.</summary>
     public string RadiusSharedSecret { get; set; } = "";
+
+    /// <summary>The previous legacy shared secret, accepted during a rotation window.</summary>
+    public string RadiusSharedSecretPrevious { get; set; } = "";
+
+    /// <summary>The RADIUS clients kalitka answers, each matched by datagram source with its own
+    /// secret and resource. When set, this replaces the single <see cref="RadiusSharedSecret"/> /
+    /// <see cref="RadiusResource"/> pair; when empty, those legacy fields synthesise one catch-all
+    /// client so existing deployments keep working.</summary>
+    public List<RadiusClientOptions> RadiusClients { get; set; } = new();
 
     /// <summary>Require an RFC 2869 Message-Authenticator on every Access-Request (default on). This
     /// is the BlastRADIUS mitigation: without it, a Response Authenticator forgery is possible. Set
