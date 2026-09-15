@@ -237,6 +237,31 @@ public class RadiusApprovalTests
     }
 
     [Fact]
+    public async Task A_clients_grant_scope_is_recorded_on_the_request()
+    {
+        // The covering scope is bound by the client's config, not the packet — a perimeter approval
+        // for RDG-01 carries the scope its gateway is configured to cover.
+        var (a, gate) = BuildClients(new RadiusClientOptions
+        {
+            Source = "10.0.0.10", Secret = "s", Resource = "rdp:rdgw-prod", GrantScope = "rdp:site-a/*",
+        });
+        var raw = InitialWith("anna", "pw", "s");
+        Assert.Equal(RadiusCode.AccessChallenge, (RadiusPacket.Parse(await a.Handle(RadiusPacket.Parse(raw)!, raw, "10.0.0.10", default))!).Code);
+        var id = gate.PendingSnapshot().Single(r => r.State == "waiting").Id;
+        Assert.Equal("rdp:site-a/*", gate.ScopeOf(id));
+    }
+
+    [Fact]
+    public async Task No_grant_scope_leaves_the_request_unscoped()
+    {
+        var (a, gate) = BuildClients(new RadiusClientOptions { Source = "10.0.0.10", Secret = "s", Resource = "rdp:rdgw-prod" });
+        var raw = InitialWith("anna", "pw", "s");
+        await a.Handle(RadiusPacket.Parse(raw)!, raw, "10.0.0.10", default);
+        var id = gate.PendingSnapshot().Single(r => r.State == "waiting").Id;
+        Assert.Equal("", gate.ScopeOf(id));
+    }
+
+    [Fact]
     public async Task The_previous_secret_is_accepted_during_rotation()
     {
         var (a, _) = BuildClients(new RadiusClientOptions

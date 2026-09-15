@@ -94,12 +94,16 @@ public sealed class GateService
     /// </summary>
     public async Task<(string state, string id)> RaiseAction(string resource, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "", string sourceAddr = "",
-        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false)
+        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false, string scope = "")
     {
-        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags, profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned);
+        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags, profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned, scope);
         await AnnounceAll(request, ct);
         return (state, id);
     }
+
+    /// <summary>The covering scope recorded on an approved request (empty = none) — read at redeem to
+    /// carry onto the session.</summary>
+    public string ScopeOf(string id) => _engine.ScopeOf(id);
 
     private async Task AnnounceAll(PendingRequest? request, CancellationToken ct)
     {

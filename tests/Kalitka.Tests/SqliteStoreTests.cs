@@ -50,6 +50,15 @@ public sealed class SqliteStoreTests : IDisposable
     }
 
     [Fact]
+    public void Request_round_trips_its_covering_scope()
+    {
+        var r = Req("r1", DateTimeOffset.UtcNow);
+        r.Scope = "rdp:site-a/*";
+        new SqliteRequestStore(_db).Add(r);
+        Assert.Equal("rdp:site-a/*", new SqliteRequestStore(_db).Get("r1")!.Scope);
+    }
+
+    [Fact]
     public void TryCreateOrGetPending_folds_a_second_identical_waiting_request()
     {
         var raised = DateTimeOffset.UtcNow;

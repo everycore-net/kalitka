@@ -14,7 +14,8 @@ namespace Kalitka;
 /// discipline as the signing keys.
 /// </summary>
 public sealed record RadiusClient(
-    string Secret, string SecretPrevious, string Resource, string DisplayName, bool? RequireMessageAuthenticator);
+    string Secret, string SecretPrevious, string Resource, string DisplayName, bool? RequireMessageAuthenticator,
+    string GrantScope = "");
 
 /// <summary>Bound from config: a RADIUS client entry.</summary>
 public sealed class RadiusClientOptions
@@ -32,6 +33,12 @@ public sealed class RadiusClientOptions
     /// <summary>Override the global Message-Authenticator requirement for this one client
     /// (the legacy escape hatch, scoped where it belongs). Null = use the global default.</summary>
     public bool? RequireMessageAuthenticator { get; set; }
+
+    /// <summary>The covering scope this client's approvals may cover — a resource glob bounding what a
+    /// perimeter approval here can reach (e.g. gateway RDG-01 covers <c>rdp:site-a/*</c>). Set on the
+    /// client (channel config), never by the requester. Empty = this client's approvals cover only
+    /// their exact resource. See docs/design/covering-grant.md.</summary>
+    public string GrantScope { get; set; } = "";
 }
 
 /// <summary>
@@ -54,7 +61,7 @@ public sealed class RadiusClientRegistry
             var client = new RadiusClient(c.Secret, c.SecretPrevious ?? "",
                 string.IsNullOrWhiteSpace(c.Resource) ? o.RadiusResource : c.Resource,
                 string.IsNullOrWhiteSpace(c.DisplayName) ? c.Source : c.DisplayName,
-                c.RequireMessageAuthenticator);
+                c.RequireMessageAuthenticator, c.GrantScope ?? "");
             if (TryParseRule(c.Source, client, out var rule)) _rules.Add(rule);
         }
 

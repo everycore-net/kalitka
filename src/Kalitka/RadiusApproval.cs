@@ -135,7 +135,7 @@ public sealed class RadiusApproval
         // untrusted os:<user>, which cannot satisfy subject: required.
         var raiseSubject = cred.Established ? "sid:" + cred.Sid : userBinding;
         var (state, id) = await _gate.RaiseAction(resource, user, callingStation, "radius", ct,
-            subjectIdentity: raiseSubject, subjectTrusted: cred.Established);
+            subjectIdentity: raiseSubject, subjectTrusted: cred.Established, scope: client.GrantScope);
 
         if (state == "allowed") return Accept(req, secret);        // allow-list: straight through
         if (state != "waiting") return Reject(req, secret, state); // blocked / policy-refused
