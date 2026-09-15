@@ -348,6 +348,40 @@ public sealed class GateOptions
     /// <summary>Lifetime of a device-enrolment invite. Short: it is a one-time capability that must
     /// end in an IdP sign-in, so an intercepted invite cannot enrol a stranger later.</summary>
     public int EnrollmentInviteMinutes { get; set; } = 30;
+
+    // ---- RADIUS channel (confirm before login, no browser) -----------------
+    // We are the auth server for a gateway (RD Gateway via NPS, VPN, Citrix, Wi-Fi 802.1X). The
+    // gateway sends Access-Request; we verify the primary credentials, ask for approval, and answer.
+    // Off unless a shared secret is set. The listener is not exposed publicly by default.
+
+    /// <summary>Enable the RADIUS listener (also needs <see cref="RadiusSharedSecret"/>).</summary>
+    public bool RadiusEnabled { get; set; } = false;
+    public int RadiusPort { get; set; } = 1812;
+
+    /// <summary>The RADIUS shared secret with the gateway. Legacy MD5-based; run in a protected
+    /// segment or over RADIUS/TLS where the gateway supports it.</summary>
+    public string RadiusSharedSecret { get; set; } = "";
+
+    /// <summary>The resource a RADIUS approval is about — the perimeter, not a host (RADIUS rarely
+    /// knows the target machine). Default <c>rdp:gateway</c>; the gateway's NAS-Identifier refines the
+    /// label when present. Composes with a host agent: RADIUS gates who enters at all.</summary>
+    public string RadiusResource { get; set; } = "rdp:gateway";
+
+    /// <summary>How long an approval is held across Access-Challenge rounds before giving up. The
+    /// human thinks longer than a single RADIUS timeout (30–60s), so the wait spans several rounds.</summary>
+    public int RadiusChallengeSeconds { get; set; } = 120;
+
+    /// <summary>DEV/DEMO ONLY: skip primary-credential verification and accept any password. Never in
+    /// production — it turns the gateway into approval-only with no password check.</summary>
+    public bool RadiusAcceptAnyCredentials { get; set; } = false;
+
+    /// <summary>LDAP URL of a domain controller for primary-credential verification (a bind as the
+    /// user). Empty = no LDAP (then only <see cref="RadiusAcceptAnyCredentials"/> can let RADIUS run).</summary>
+    public string LdapUrl { get; set; } = "";
+
+    /// <summary>How to turn a RADIUS username into a bind DN/UPN. <c>{0}</c> is the username;
+    /// e.g. <c>{0}@corp.example</c> (UPN) or <c>CORP\{0}</c>.</summary>
+    public string LdapBindFormat { get; set; } = "{0}";
 }
 
 /// <summary>How wide a Google-proven identity's session reaches. See

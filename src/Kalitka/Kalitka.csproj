@@ -7,7 +7,7 @@
     <RootNamespace>Kalitka</RootNamespace>
     <AssemblyName>Kalitka</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.44.0</Version>
+    <Version>0.45.0</Version>
     <Copyright>Copyright (C) 2026 everycore</Copyright>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
@@ -27,6 +27,10 @@
          optimisation; unlike our JCS/WebPush formalism it has no security surface and no RFC vector to
          self-test against, so a vetted encoder is proportionate. We render the SVG ourselves. -->
     <PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="2.0.6" />
+    <!-- Primary-credential verification for the RADIUS channel: an LDAP bind to the DC. First-party
+         Microsoft package; only exercised when RADIUS + LdapUrl are configured (needs libldap on
+         Linux at runtime). -->
+    <PackageReference Include="System.DirectoryServices.Protocols" Version="9.0.0" />
     <PackageReference Include="MaxMind.GeoIP2" Version="6.1.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
