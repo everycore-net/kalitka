@@ -399,6 +399,12 @@ public sealed class GateOptions
     /// e.g. <c>{0}@corp.example</c> (UPN) or <c>CORP\{0}</c>.</summary>
     public string LdapBindFormat { get; set; } = "{0}";
 
+    /// <summary>How much of the requestable catalogue the self-service portal discloses. Defaults to
+    /// the most closed (<c>ApprovedOnly</c> — a person sees what they hold, nothing requestable); raise
+    /// to <c>Categories</c> or <c>Full</c> to open the catalogue. Per-group overrides come later; this
+    /// is the global default. "What can I ask for" must not leak into "here is every server".</summary>
+    public CatalogVisibility PortalCatalogVisibility { get; set; } = CatalogVisibility.ApprovedOnly;
+
     /// <summary>The directory base DN to search after a successful bind for the user's canonical
     /// identity (objectSid), e.g. <c>DC=corp,DC=example</c>. Empty = skip it: the bind still verifies
     /// the password, but the subject stays a claimed <c>os:&lt;user&gt;</c> rather than a trusted
