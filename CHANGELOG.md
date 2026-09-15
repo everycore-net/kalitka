@@ -9,6 +9,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Covering grants — design + matcher (slice 1 of the "one request, not two" work).** When a person
+  is approved at a RADIUS-fronted perimeter, a host behind it should not raise a second approval for
+  the same access. The design (owner-ratified, `docs/design/covering-grant.md`) makes covering an
+  explicit, human-approved *scope* — never inferred — bounded by channel config, shown with its
+  cardinality, cascaded on revoke, excluding `tier: critical`, and mintable only where the subject is
+  established (not merely claimed). This slice lands the security-critical core: `Coverage.Covers`
+  (exact or a single trailing wildcard past the kind boundary — never across kinds) and
+  `Coverage.Cardinality` (the "17 hosts" count), pure and fully tested (13 cases). Inert until the
+  scope plumbing and covering endpoint land in the next slices.
+
 - **Windows agent 0.6.0 — end the lease when the person logs off (RDP session accounting).** A grant
   used to linger to its TTL even after the human left. Now an RDP logoff frees it immediately and
   tells Core the session closed, completing the lifecycle Core already modelled (`session.started` at
