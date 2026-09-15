@@ -9,6 +9,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Windows agent 0.5.0 — auto-raise on a denied RDP logon (the 4625 watcher).** With gating on, a
+  person needs no client at all: they just try to connect, the OS refuses (they lack the logon
+  right), and the agent turns that refusal into an approval. Closes the loop hard mode opened.
+  - `RdpDenial.TryParse` — a pure parse of a Security-log 4625 into an actionable denial: RDP logon
+    type (10), status/substatus `0xC000015B` (logon-type-not-granted, in either field), a real
+    account SID. The identity comes from the event's `TargetUserSid`/`TargetUserName` — LSA-asserted
+    when it refused the account, so `subject.assert` stays honest, never anything the person typed.
+  - `SecurityLogWatcher` — subscribes to the Security log for 4625 and raises for each qualifying
+    denial, with a per-subject in-flight fold so a logon storm never starts a second poll loop (Core
+    dedups the request too, from 0.46.0). Off by default (`Kalitka:RdpWatch`); reading the Security
+    log needs the agent to run as SYSTEM.
+  - `RdpActivator` — the one place a Core grant becomes local access: redeem the one-time grant,
+    confirm the approved subject is exactly the account being enabled, then hand the lease to the
+    enforcer. Shared by the pipe path and the watcher (the beneficiary check now lives in one place),
+    and drives the full raise→poll→grant loop for the watcher, which has nobody to poll for it. The
+    enrolled agent id is handed from `Worker` to the watcher via a one-shot `AgentIdentity`.
+  - 30 agent tests (was 19). Dev/test-only, no mars deploy.
+
 - **Windows agent 0.4.0 — RDP-JIT hard mode (default-deny via a deny group + LSA).** Soft mode
   (add to Remote Desktop Users on grant) is honest but fail-open: nothing stops a login the box
   already allows by other means. Hard mode is fail-closed — the subject sits, by default, in a

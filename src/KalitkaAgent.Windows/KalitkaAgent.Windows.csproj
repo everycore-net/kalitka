@@ -13,7 +13,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>KalitkaAgent</RootNamespace>
     <AssemblyName>kalitka-agent</AssemblyName>
-    <Version>0.4.0</Version>
+    <Version>0.5.0</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>

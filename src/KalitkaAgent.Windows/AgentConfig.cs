@@ -44,4 +44,9 @@ public sealed class AgentConfig
     /// <summary>The Kalitka-owned deny group used in hard mode. Created if missing and granted the
     /// deny-logon right at startup. Members are default-denied RDP until a grant lifts them out.</summary>
     public string DenyGroupName { get; set; } = "Kalitka-Gated";
+
+    /// <summary>Watch the Security log for denied RDP logons (4625, logon-type-not-granted) and raise
+    /// an approval automatically, so the person needs no client — they just try to connect. Off by
+    /// default; reading the Security log needs the agent to run as SYSTEM (or Event Log Readers).</summary>
+    public bool RdpWatch { get; set; }
 }
