@@ -38,19 +38,22 @@ public sealed class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Crash recovery first: drop any RDP lease already expired while we were down, and
-        // re-assert the ones still valid — before we accept new work.
-        try { _rdp.Reconcile(); }
+        _agentId = await EnsureEnrolledAsync(stoppingToken);
+        if (!string.IsNullOrEmpty(_agentId))
+            _identity.Set(_agentId);   // hand the id to the log watcher and to reconcile's Core check
+
+        // Crash recovery before we accept new work: re-assert leases Core still confirms, close the
+        // ones it no longer does, and honour local expiry when Core cannot be reached. Runs after
+        // enrolment so the Core second source is available; if unenrolled it falls back to local expiry.
+        try { await _rdp.ReconcileAsync(stoppingToken); }
         catch (Exception ex) { _log.LogError(ex, "RDP reconcile at startup failed"); }
 
-        _agentId = await EnsureEnrolledAsync(stoppingToken);
         if (string.IsNullOrEmpty(_agentId))
         {
             _log.LogError("Not enrolled and no enrollment token configured; idle. "
                 + "Set Kalitka:EnrollmentToken to a one-time token from a Core admin and restart.");
             return;
         }
-        _identity.Set(_agentId);   // hand the id to the log watcher, which raises requests too
         _log.LogInformation("Enrolled as agent {AgentId}; listening on pipe \\\\.\\pipe\\{Pipe} ({Instances} instances)",
             _agentId, _cfg.PipeName, _cfg.PipeInstances);
 

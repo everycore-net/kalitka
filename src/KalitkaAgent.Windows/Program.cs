@@ -28,6 +28,7 @@ builder.Services.AddHttpClient<CoreClient>((sp, http) =>
 // right). Both need the agent to run with local-admin rights; hard mode also touches local policy.
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ISessionKiller, WtsSessionKiller>();
+builder.Services.AddSingleton<ISessionLiveness, CoreSessionLiveness>();
 builder.Services.AddSingleton<ILsaPolicy, WindowsLsaPolicy>();
 builder.Services.AddSingleton<IRdpAccess>(sp =>
 {

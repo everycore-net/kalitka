@@ -38,6 +38,13 @@ public class RdpAccessTests
         public int LogoffBySid(SecurityIdentifier sid) { LoggedOff.Add(sid.Value); return 1; }
     }
 
+    // Core unreachable — this test exercises Grant/Sweep, not reconcile.
+    private sealed class FakeLiveness : ISessionLiveness
+    {
+        public Task<CoreClient.LivenessResult> OfAsync(string sessionId, CancellationToken ct) =>
+            Task.FromResult(new CoreClient.LivenessResult(false, "unknown"));
+    }
+
     private const string User = "S-1-5-21-1-2-3-1001";
 
     [Fact]
@@ -91,7 +98,7 @@ public class RdpAccessTests
         var sessions = new FakeSessions();
         var path = Path.Combine(Path.GetTempPath(), "rdp-hard-" + Guid.NewGuid().ToString("N") + ".json");
         var enf = new RdpEnforcer(new DenyListAccess(deny, new FakeLsa(), NullLogger<DenyListAccess>.Instance),
-            new RdpJournal(path), sessions, clock, NullLogger<RdpEnforcer>.Instance);
+            new RdpJournal(path), sessions, new FakeLiveness(), clock, NullLogger<RdpEnforcer>.Instance);
         try
         {
             enf.Grant(new RdpLease("s1", User, "CONTOSO\\anna", clock.GetUtcNow().AddMinutes(15)));

@@ -102,14 +102,17 @@ public sealed class RdpEnforcer
     private readonly IRdpAccess _access;
     private readonly RdpJournal _journal;
     private readonly ISessionKiller _sessions;
+    private readonly ISessionLiveness _liveness;
     private readonly TimeProvider _clock;
     private readonly ILogger<RdpEnforcer> _log;
 
-    public RdpEnforcer(IRdpAccess access, RdpJournal journal, ISessionKiller sessions, TimeProvider clock, ILogger<RdpEnforcer> log)
+    public RdpEnforcer(IRdpAccess access, RdpJournal journal, ISessionKiller sessions, ISessionLiveness liveness,
+        TimeProvider clock, ILogger<RdpEnforcer> log)
     {
         _access = access;
         _journal = journal;
         _sessions = sessions;
+        _liveness = liveness;
         _clock = clock;
         _log = log;
     }
@@ -174,10 +177,18 @@ public sealed class RdpEnforcer
         return removed;
     }
 
-    /// <summary>Startup crash-recovery: provision the access model (idempotent), drop anything
-    /// already expired, and re-assert access for anything still valid in case the grant was lost to
-    /// a crash after the journal write.</summary>
-    public void Reconcile()
+    /// <summary>Startup crash-recovery, reconciled against Core as a second source. Provision the
+    /// access model (idempotent), then for each journaled lease decide with Core:
+    /// <list type="bullet">
+    ///   <item>Core reachable and the session is <c>open</c> (and not locally expired) → re-assert;</item>
+    ///   <item>Core reachable and the session is gone (<c>expired</c>/<c>revoked</c>/<c>ended</c>) →
+    ///     deny + terminate + dejournal, so an admin's revoke made while we were down is honoured and
+    ///     never reverted by the restart;</item>
+    ///   <item>Core unreachable, or has no record (<c>unknown</c>) → fall back to the locally-known
+    ///     expiry: a Core outage must never revoke a still-valid lease, nor extend an expired one.</item>
+    /// </list>
+    /// Local expiry is a hard bound in every case.</summary>
+    public async Task ReconcileAsync(CancellationToken ct)
     {
         _access.Initialize();
         var now = _clock.GetUtcNow();
@@ -185,25 +196,31 @@ public sealed class RdpEnforcer
         try { leases = _journal.All(); }
         catch (JournalUnreadableException ex)
         {
-            // The journal is our only record of what is granted; if it is corrupt we cannot safely
-            // re-assert or remove anything. Fail loud and leave the box frozen for JIT until an
-            // operator (or the Core second source, once wired) resolves it — never guess.
+            // The journal is our only local record; if it is corrupt we cannot safely re-assert or
+            // remove anything. Fail loud and leave the box frozen for JIT until it is repaired.
             _log.LogCritical(ex, "RDP journal unreadable at startup; cannot reconcile leases until it is repaired");
             return;
         }
+
         foreach (var lease in leases)
         {
             var sid = new SecurityIdentifier(lease.Sid);
-            if (lease.ExpiresAt <= now)
+            var locallyValid = lease.ExpiresAt > now;
+            var live = await _liveness.OfAsync(lease.SessionId, ct);
+
+            // Deny when Core authoritatively says the session is gone; otherwise honour local expiry.
+            var keep = locallyValid && (!live.Reached || live.State is "unknown" or "open");
+            if (keep)
+            {
+                _access.Grant(sid);   // re-assert; idempotent
+            }
+            else
             {
                 _access.Deny(sid);
                 EndSessions(lease);
                 _journal.Remove(lease.SessionId);
-                _log.LogInformation("RDP lease already expired at startup, removed for {Account}", lease.Account);
-            }
-            else
-            {
-                _access.Grant(sid);   // re-assert; idempotent
+                _log.LogInformation("RDP lease closed at startup for {Account} (core={State}, expiry {Expiry:u})",
+                    lease.Account, live.Reached ? live.State : "unreachable", lease.ExpiresAt);
             }
         }
     }
