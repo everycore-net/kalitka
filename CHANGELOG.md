@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.48.2] - 2026-09-16
+
 ### Fixed
 
 - **RDP-JIT never actually changed group membership — a P/Invoke marshalling defect (both grant AND
