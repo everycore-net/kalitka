@@ -12,6 +12,11 @@ namespace KalitkaAgent;
 /// when it resolved and refused the account — so, like the pipe token, it is OS-asserted, not
 /// anything the person typed. Parsing is a pure function so the trigger conditions are testable
 /// without a live event log.
+///
+/// <para><b>Only with NLA disabled.</b> Measured (docs/design/rdp-signal-measured.md): with Network
+/// Level Authentication on — the secure default — a refused RDP logon writes no 4625/0xC000015B (the
+/// deny is post-authentication, at the session level, unlogged), so this never matches on a correctly
+/// configured host. See <see cref="SecurityLogWatcher"/>.</para>
 /// </summary>
 public sealed record RdpDenial(string Sid, string Account, string User, string Ip, string Resource)
 {
