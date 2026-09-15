@@ -9,6 +9,20 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Self-service — the request API for integrations (portal slice 4a).** A ticket system (Jira,
+  Freshdesk, ServiceNow) can now raise access requests through a REST API: `POST /api/v1/requests`
+  (bearer-authenticated by an **integration key**, `GET /api/v1/requests/{id}` for status). An
+  integration is configured with its own token, a resource **scope** (globs, checked with the same
+  `Coverage` matcher as covering grants), and a per-minute **rate limit**; it audits under its own
+  actor (`integration:<id>`), never an anonymous "system". It raises **on behalf of a person** named in
+  the ticket — a **claimed** subject (`subjectTrusted: false`), so a `subject: required` resource still
+  needs the person's own device confirmation; a ticket can never file a request in a colleague's name
+  and have it slip through. It **raises but never approves** (the same invariant as the missing approve
+  tool in the MCP server). Idempotent per `(integration, external_id)` — one ticket, one request; a
+  retry returns the same `request_id`. Status vocabulary: pending / approved / denied / expired. Off
+  unless integration keys are configured. (Async webhook delivery and the `revoked` status are slice
+  4b.)
+
 - **Self-service — admin console for the catalogue and principal groups (portal slice, makes it
   usable).** The control plane can now configure everything the portal needs: a **Catalogue** page
   (`/admin/catalog`) to create/update/delete requestable units — resource, category, display name, and
