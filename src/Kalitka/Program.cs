@@ -157,6 +157,7 @@ builder.Services.AddSingleton<ReconcileService>();
 builder.Services.AddSingleton<PolicyService>();
 builder.Services.AddSingleton<PolicyCopilot>();
 builder.Services.AddSingleton<PrincipalService>();
+builder.Services.AddSingleton<CatalogService>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<GateOptions>>().Value;

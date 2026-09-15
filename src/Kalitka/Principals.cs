@@ -17,9 +17,15 @@ public sealed record OperatorPrincipal(string Id, string DisplayName, string[] I
     /// <summary>Bumped on each content change (append-only history in the store).</summary>
     public int Revision { get; init; }
 
+    /// <summary>Lightweight group/role tags (e.g. <c>finance</c>, <c>devs</c>). Not permissions —
+    /// they scope what a person may see and ask for in the self-service catalogue. Empty for an
+    /// ordinary operator. Init-only with a default so older stored principals read back as empty.</summary>
+    public string[] Groups { get; init; } = Array.Empty<string>();
+
     public bool SameContent(OperatorPrincipal other) =>
         string.Equals(DisplayName, other.DisplayName, StringComparison.Ordinal)
-        && Identities.SequenceEqual(other.Identities, StringComparer.OrdinalIgnoreCase);
+        && Identities.SequenceEqual(other.Identities, StringComparer.OrdinalIgnoreCase)
+        && (Groups ?? Array.Empty<string>()).SequenceEqual(other.Groups ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Normalise an actor identity for comparison: trimmed, lower-cased. Identities
     /// are opaque typed strings (<c>scheme:value</c>); we never parse the value.</summary>
