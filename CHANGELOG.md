@@ -9,6 +9,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Agent tells a Core version skew apart from a real beneficiary mismatch.** When redeeming an RDP
+  grant, an older Core (pre-#114) returns no `subject_identity`, so the agent could not verify the
+  beneficiary and refused with `beneficiary-mismatch` and an empty subject in the log — a version skew
+  that read as a security event (seen live on OLDEV: mars ran Core 0.46.0). The agent now returns a
+  distinct **`subject-identity-missing`** (still fail-closed) and logs it as "Core too old, upgrade" —
+  separate from a genuine mismatch (a grant approved for someone else), which stays `beneficiary-mismatch`.
+  Split into a testable `RdpActivator.BeneficiaryDenial`. Agent 0.10.3 → 0.10.4.
+
+- **Agent README: the `rdp_activate` example used the wrong field name.** The flow diagram showed
+  `request_id`, but the pipe deserialises with `JsonSerializerDefaults.Web` (camelCase), so the wire
+  field is `requestId` — copying the example gave `400 request-id-required`. Corrected to `requestId`.
+
 - **Windows agent raised no requests at all — impersonation was attempted before the pipe was read.**
   `Worker.ServeOneAsync` resolved the caller's Windows identity (`SubjectResolver.Resolve`, which uses
   `NamedPipeServerStream.RunAsClient`) *before* reading the request. Windows only permits named-pipe

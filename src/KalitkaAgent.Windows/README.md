@@ -27,8 +27,8 @@ Users** group for the life of a grant, then removing them — and it does so in 
 survives a restart.
 
 ```
-caller ──pipe {"action":"rdp"}──────────▶ agent raises rdp:<host> (subject asserted) → request_id
-caller ──pipe {"action":"rdp_activate", request_id}──▶ agent polls; on approval redeems and adds
+caller ──pipe {"action":"rdp"}──────────▶ agent raises rdp:<host> (subject asserted) → returns id
+caller ──pipe {"action":"rdp_activate","requestId":id}▶ agent polls; on approval redeems and adds
                                                        the caller's SID to Remote Desktop Users
                                                        until the grant's exact expiry
 ```

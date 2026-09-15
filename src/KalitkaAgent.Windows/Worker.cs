@@ -163,6 +163,10 @@ public sealed class Worker : BackgroundService
             return new { status = 200, granted = true, expires_at = result.ExpiresAt!.Value.ToUnixTimeSeconds() };
         if (result.Outcome == GrantOutcome.Forbidden)
             return new { status = 403, granted = false, error = "beneficiary-mismatch" };
+        if (result.Outcome == GrantOutcome.SubjectIdentityMissing)
+            // A version skew, not a mismatch: Core is too old to return subject_identity. Distinct code so
+            // the operator upgrades Core rather than hunting a non-existent beneficiary problem.
+            return new { status = 409, granted = false, error = "subject-identity-missing" };
         return new { status = result.Status, granted = false, error = "redeem-failed" };
     }
 
