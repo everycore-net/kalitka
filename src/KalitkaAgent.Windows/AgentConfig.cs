@@ -59,7 +59,10 @@ public sealed class AgentConfig
     public string DenyGroupName { get; set; } = "Kalitka-Gated";
 
     /// <summary>Watch the Security log for denied RDP logons (4625, logon-type-not-granted) and raise
-    /// an approval automatically, so the person needs no client — they just try to connect. Off by
-    /// default; reading the Security log needs the agent to run as SYSTEM (or Event Log Readers).</summary>
+    /// an approval automatically. Off by default; reading the Security log needs SYSTEM (or Event Log
+    /// Readers). <b>Only effective with NLA disabled:</b> with Network Level Authentication on (the
+    /// secure default) a refused RDP logon is not logged, so this never fires (measured — see
+    /// docs/design/rdp-signal-measured.md). Do not disable NLA to enable it; use a RADIUS gateway or the
+    /// self-service portal instead. Kept for legacy NLA-off environments only.</summary>
     public bool RdpWatch { get; set; }
 }

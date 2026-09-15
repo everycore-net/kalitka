@@ -7,7 +7,20 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
+### Changed
+
+- **Honest RDP-JIT triggering — the 4625 watcher only works with NLA off.** A bench measurement
+  (`docs/design/rdp-signal-measured.md`) showed that with Network Level Authentication on (the secure
+  default) a refused RDP logon writes **no** `4625/0xC000015B` — the deny happens after network auth, at
+  the session level, unlogged — so the Windows agent's Security-log watcher never fires on a correctly
+  configured host. It stays (opt-in, off by default) for legacy NLA-off environments, but now says so
+  bluntly: a startup **warning**, and caveats on `RdpWatch`, `SecurityLogWatcher` and `RdpDenial`. New
+  guidance `docs/design/rdp-jit.md` lays out the three real cases — **RD Gateway/VPN → RADIUS** (identity
+  known before the session), **direct + cooperative → soft mode + a logon script**, **direct + serious
+  → hard mode (enforcement) + the self-service portal (ask ahead)** — and states plainly: **never
+  disable NLA** to make a trigger work. The server agent stays an executor, not a trigger. (Confirms
+  #114: the deny event's SID is empty, so full-identity beneficiary comparison was the only correct
+  option.) Agent 0.10.1.
 
 - **Self-service — the request API for integrations (portal slice 4a).** A ticket system (Jira,
   Freshdesk, ServiceNow) can now raise access requests through a REST API: `POST /api/v1/requests`

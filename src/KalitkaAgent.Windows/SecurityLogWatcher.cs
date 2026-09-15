@@ -7,11 +7,19 @@ namespace KalitkaAgent;
 
 /// <summary>
 /// Watches the Windows Security log for denied RDP logons (event 4625, logon-type-not-granted) and
-/// raises an approval for the refused person — so with hard mode enabled they need no client at all:
-/// they just try to connect, the OS refuses, this sees the refusal, and the approval fires. A 4625
-/// storm for one person folds to a single request (Core dedups; we also guard locally so we do not
-/// start a second poll loop for a subject already in flight). Reading the Security log needs
-/// privilege; the agent runs as SYSTEM, which has it.
+/// raises an approval for the refused person: they try to connect, the OS refuses, this sees the
+/// refusal, and the approval fires. A 4625 storm for one person folds to a single request (Core
+/// dedups; we also guard locally so we do not start a second poll loop for a subject already in
+/// flight). Reading the Security log needs privilege; the agent runs as SYSTEM, which has it.
+///
+/// <para><b>Important limitation (measured, see docs/design/rdp-signal-measured.md): this only fires
+/// when NLA is disabled.</b> With Network Level Authentication on — the secure default — a refused RDP
+/// logon does <b>not</b> write a 4625/0xC000015B: the deny happens after network authentication, at the
+/// session level, and is not logged. So on a correctly configured host this watcher never fires. Do
+/// not disable NLA to make it work — that weakens the machine. The real paths are a RADIUS-fronted
+/// gateway (identity known before the session) and the self-service portal (ask ahead); the hard-mode
+/// deny-group remains the enforcement. This watcher stays only for legacy NLA-off environments, behind
+/// the opt-in <c>Kalitka:RdpWatch</c>.</para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class SecurityLogWatcher : BackgroundService
@@ -48,7 +56,10 @@ public sealed class SecurityLogWatcher : BackgroundService
             _log.LogError(ex, "cannot subscribe to the Security log; RDP logon watching is off");
             return;
         }
-        _log.LogInformation("Watching the Security log for denied RDP logons (4625, logon-type-not-granted)");
+        _log.LogWarning("Watching the Security log for denied RDP logons (4625). NOTE: this fires ONLY with "
+            + "NLA disabled; on a correctly configured host (NLA on) a refused logon is not logged and this "
+            + "never triggers. Do not disable NLA for it — use a RADIUS gateway or the self-service portal. "
+            + "See docs/design/rdp-signal-measured.md.");
 
         try { await Task.Delay(Timeout.Infinite, stoppingToken); }
         catch (OperationCanceledException) { }
