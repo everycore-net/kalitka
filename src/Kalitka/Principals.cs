@@ -91,8 +91,11 @@ public sealed class PrincipalService
     }
 
     /// <summary>Create or replace a principal. Returns an error string (identity already
-    /// owned by another principal, or nothing to save) or null on success.</summary>
-    public async Task<string?> Save(string id, string displayName, IEnumerable<string> identities, string actor, CancellationToken ct)
+    /// owned by another principal, or nothing to save) or null on success. <paramref name="groups"/>
+    /// null preserves the principal's current groups (so an identity/name edit does not wipe them);
+    /// pass an explicit list (possibly empty) to set them.</summary>
+    public async Task<string?> Save(string id, string displayName, IEnumerable<string> identities, string actor,
+        CancellationToken ct, IEnumerable<string>? groups = null)
     {
         id = (id ?? "").Trim();
         if (id.Length == 0) return "id required";
@@ -112,7 +115,10 @@ public sealed class PrincipalService
             if (clash is not null) { error = $"identity {clash} is already linked to another operator"; return JsonSerializer.Serialize(hist); }
 
             var latest = hist.Where(p => Eq(p.Id, id)).OrderByDescending(p => p.Revision).FirstOrDefault();
-            var next = new OperatorPrincipal(id, displayName, idents) { Revision = (latest?.Revision ?? 0) + 1 };
+            var grps = (groups ?? latest?.Groups ?? Array.Empty<string>())
+                .Select(g => (g ?? "").Trim().ToLowerInvariant()).Where(g => g.Length > 0)
+                .Distinct().OrderBy(g => g, StringComparer.Ordinal).ToArray();
+            var next = new OperatorPrincipal(id, displayName, idents) { Revision = (latest?.Revision ?? 0) + 1, Groups = grps };
             if (latest is not null && latest.SameContent(next)) return JsonSerializer.Serialize(hist);
             hist.Add(next);
             outcome = latest is null ? "created" : "updated";
