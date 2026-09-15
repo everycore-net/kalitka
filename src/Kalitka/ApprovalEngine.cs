@@ -612,6 +612,10 @@ public sealed class ApprovalEngine
     public string? TargetOf(string id) => _store.Get(id)?.Target;
     public string? ResourceOf(string id) => _store.Get(id)?.Resource;
     public string? SubjectOf(string id) => _store.Get(id)?.Input;
+    /// <summary>The machine-readable subject identity of a request (e.g. <c>os:CONTOSO\anna</c>,
+    /// <c>sid:…</c>) — the stable identity a connector checks the beneficiary against, not the bare
+    /// login name.</summary>
+    public string SubjectIdentityOf(string id) => _store.Get(id)?.SubjectIdentity ?? "";
     public string ProfileOf(string id) => _store.Get(id)?.Profile ?? "";
     public int MaxUsesOf(string id) => _store.Get(id)?.MaxUses ?? 0;
     public string CommandOf(string id) => _store.Get(id)?.Command ?? "";

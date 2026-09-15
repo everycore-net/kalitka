@@ -67,7 +67,7 @@ public sealed class GrantService
 
     public sealed record RedeemResult(bool Ok, string? SessionId = null, string? Error = null,
         string Profile = "", DateTimeOffset? ExpiresAt = null, string Subject = "", string Command = "",
-        string SourceAddress = "");
+        string SourceAddress = "", string SubjectIdentity = "");
 
     /// <summary>Redeem a grant exactly once and start a session. The redeeming agent
     /// must itself be allowed to represent the granted resource — a valid grant is not
@@ -91,6 +91,10 @@ public sealed class GrantService
         var maxUses = _gate.MaxUsesOf(cap.RequestId);
         var command = _gate.CommandOf(cap.RequestId);
         var sourceAddr = _gate.SourceAddrOf(cap.RequestId);
+        // The machine-readable subject identity Core approved (os:CONTOSO\anna, sid:…). A connector
+        // checks the beneficiary against this stable identity, not the bare login name (which collides
+        // across domains/machines) — so a grant approved for one account cannot enable another.
+        var subjectIdentity = _gate.SubjectIdentityOf(cap.RequestId);
         var sessionId = Guid.NewGuid().ToString("N");
         var session = new SessionRecord(sessionId, cap.GrantId, cap.RequestId, cap.Subject,
             cap.Resource, agent.IsLegacy ? "-" : agent.AgentId, _clock.GetUtcNow(), null, "", reportedHostname)
@@ -114,14 +118,14 @@ public sealed class GrantService
                 scope.AppendAudit(started);
                 return true;
             }, ct);
-            return ok ? new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt, Subject: cap.Subject, Command: command, SourceAddress: sourceAddr) : new(false, Error: "used");
+            return ok ? new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt, Subject: cap.Subject, Command: command, SourceAddress: sourceAddr, SubjectIdentity: subjectIdentity) : new(false, Error: "used");
         }
 
         if (!await _replay.TryConsumeAsync(cap.Jti, cap.ExpiresAt, ct)) return new(false, Error: "used");
         _sessions.Start(session);
         await _audit.Append(redeemed, ct);
         await _audit.Append(started, ct);
-        return new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt, Subject: cap.Subject, Command: command, SourceAddress: sourceAddr);
+        return new(true, sessionId, Profile: profile, ExpiresAt: cap.ExpiresAt, Subject: cap.Subject, Command: command, SourceAddress: sourceAddr, SubjectIdentity: subjectIdentity);
     }
 
     /// <summary>The connector reports the provisioning outcome for a session: applied

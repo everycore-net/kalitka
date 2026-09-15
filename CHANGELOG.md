@@ -7,6 +7,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **RDP-JIT beneficiary check by full identity, not a bare login (finding #2).** The agent decided a
+  grant was "for this caller" by comparing the **tail** of the approved subject to the caller's login
+  name — so `CONTOSO\anna` and `SRV01\anna` matched, while the lease was created on the caller's SID.
+  A caller could redeem a grant approved for a different account with the same login and have it
+  enabled for themselves (a confused deputy; hard to hit, since raise and redeem share one pipe
+  token, but wrong). Now the check compares the **full stable subject identity** (`os:DOMAIN\user`),
+  case-insensitively, and refuses an empty one. To make this possible Core's grant redeem now returns
+  `subject_identity` (the identity it approved and routed on) — additive (Core `0.48.1`); the agent
+  (`0.9.0`) compares it to the caller's own. 49 agent tests.
+
 ### Added
 
 - **Windows agent 0.8.0 — pipe hardening against a local DoS (finding #4).** The agent served the IPC

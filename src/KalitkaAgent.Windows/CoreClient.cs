@@ -21,7 +21,7 @@ public sealed class CoreClient
 
     public sealed record RaiseResult(int Status, string? Id, string? State);
     public sealed record PollResult(int Status, string? State, string? Grant);
-    public sealed record RedeemResult(int Status, string? SessionId, string? Subject, DateTimeOffset? ExpiresAt);
+    public sealed record RedeemResult(int Status, string? SessionId, string? Subject, DateTimeOffset? ExpiresAt, string SubjectIdentity = "");
 
     /// <summary>Register this agent's public key with a one-time token; returns the agent id.</summary>
     public async Task<string> EnrollAsync(string token, string hostname, CancellationToken ct)
@@ -74,18 +74,19 @@ public sealed class CoreClient
         var fields = new Dictionary<string, string> { ["grant"] = grant, ["agent"] = Environment.MachineName };
         using var resp = await SendSigned(agentId, HttpMethod.Post, "/agent/v1/grants/redeem", fields, ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
-        string? session = null, subject = null; DateTimeOffset? expiry = null;
+        string? session = null, subject = null; DateTimeOffset? expiry = null; var subjectIdentity = "";
         try
         {
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
             if (root.TryGetProperty("session_id", out var s)) session = s.GetString();
             if (root.TryGetProperty("subject", out var su)) subject = su.GetString();
+            if (root.TryGetProperty("subject_identity", out var si)) subjectIdentity = si.GetString() ?? "";
             if (root.TryGetProperty("expires_at", out var e) && e.ValueKind == JsonValueKind.Number)
                 expiry = DateTimeOffset.FromUnixTimeSeconds(e.GetInt64());
         }
         catch (JsonException) { }
-        return new RedeemResult((int)resp.StatusCode, session, subject, expiry);
+        return new RedeemResult((int)resp.StatusCode, session, subject, expiry, subjectIdentity);
     }
 
     /// <summary>Report that a session ended, so Core closes it and audits <c>session.ended</c> —
