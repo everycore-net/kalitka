@@ -21,16 +21,31 @@ public class RdpEnforcerTests
         public void Remove(SecurityIdentifier m) => Members.Remove(m.Value);
     }
 
+    // A stand-in for WTS: records which SIDs were asked to be logged off, and can be made to fail
+    // to prove a kill failure never blocks group removal or journal cleanup.
+    private sealed class FakeSessions : ISessionKiller
+    {
+        public readonly List<string> LoggedOff = new();
+        public bool Throw;
+        public int LogoffBySid(SecurityIdentifier sid)
+        {
+            if (Throw) throw new InvalidOperationException("boom");
+            LoggedOff.Add(sid.Value);
+            return 1;
+        }
+    }
+
     private const string Sid = "S-1-5-21-1-2-3-1001";
     private const string Sid2 = "S-1-5-21-1-2-3-1002";
 
-    private static (RdpEnforcer enf, FakeGroup grp, RdpJournal jrn, FakeTimeProvider clock, string path) Fresh()
+    private static (RdpEnforcer enf, FakeGroup grp, FakeSessions ses, RdpJournal jrn, FakeTimeProvider clock, string path) Fresh()
     {
         var clock = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
         var grp = new FakeGroup();
+        var ses = new FakeSessions();
         var path = Path.Combine(Path.GetTempPath(), "rdp-jrn-" + Guid.NewGuid().ToString("N") + ".json");
         var jrn = new RdpJournal(path);
-        return (new RdpEnforcer(grp, jrn, clock, NullLogger<RdpEnforcer>.Instance), grp, jrn, clock, path);
+        return (new RdpEnforcer(grp, jrn, ses, clock, NullLogger<RdpEnforcer>.Instance), grp, ses, jrn, clock, path);
     }
 
     private static RdpLease Lease(string session, string sid, DateTimeOffset expires) =>
@@ -39,13 +54,14 @@ public class RdpEnforcerTests
     [Fact]
     public void Grant_adds_the_member_and_journals_write_ahead()
     {
-        var (enf, grp, jrn, clock, path) = Fresh();
+        var (enf, grp, ses, jrn, clock, path) = Fresh();
         try
         {
             enf.Grant(Lease("s1", Sid, clock.GetUtcNow().AddMinutes(30)));
             Assert.Contains(Sid, grp.Members);
             Assert.Single(jrn.All());
             Assert.Equal("s1", jrn.All()[0].SessionId);
+            Assert.Empty(ses.LoggedOff);   // granting never terminates a session
         }
         finally { File.Delete(path); }
     }
@@ -53,7 +69,7 @@ public class RdpEnforcerTests
     [Fact]
     public void Sweep_removes_only_expired_leases()
     {
-        var (enf, grp, _, clock, path) = Fresh();
+        var (enf, grp, ses, _, clock, path) = Fresh();
         try
         {
             enf.Grant(Lease("short", Sid, clock.GetUtcNow().AddMinutes(15)));
@@ -65,6 +81,7 @@ public class RdpEnforcerTests
             Assert.Equal(1, removed);
             Assert.DoesNotContain(Sid, grp.Members);
             Assert.Contains(Sid2, grp.Members);
+            Assert.Equal(new[] { Sid }, ses.LoggedOff);   // only the expired lease's session ended
         }
         finally { File.Delete(path); }
     }
@@ -72,13 +89,14 @@ public class RdpEnforcerTests
     [Fact]
     public void Revoke_removes_the_member_and_forgets_the_lease()
     {
-        var (enf, grp, jrn, clock, path) = Fresh();
+        var (enf, grp, ses, jrn, clock, path) = Fresh();
         try
         {
             enf.Grant(Lease("s1", Sid, clock.GetUtcNow().AddMinutes(30)));
             enf.Revoke("s1");
             Assert.DoesNotContain(Sid, grp.Members);
             Assert.Empty(jrn.All());
+            Assert.Equal(new[] { Sid }, ses.LoggedOff);   // the live session is ejected, not just the right
         }
         finally { File.Delete(path); }
     }
@@ -86,7 +104,7 @@ public class RdpEnforcerTests
     [Fact]
     public void Reconcile_after_restart_drops_expired_and_reasserts_valid()
     {
-        var (enf, _, jrn, clock, path) = Fresh();
+        var (enf, _, _, jrn, clock, path) = Fresh();
         try
         {
             enf.Grant(Lease("gone", Sid, clock.GetUtcNow().AddMinutes(10)));
@@ -96,11 +114,13 @@ public class RdpEnforcerTests
             // enforcer over the SAME journal must repair the group state.
             clock.Advance(TimeSpan.FromMinutes(30));   // 'gone' has expired
             var freshGroup = new FakeGroup();
-            var enf2 = new RdpEnforcer(freshGroup, new RdpJournal(path), clock, NullLogger<RdpEnforcer>.Instance);
+            var freshSessions = new FakeSessions();
+            var enf2 = new RdpEnforcer(freshGroup, new RdpJournal(path), freshSessions, clock, NullLogger<RdpEnforcer>.Instance);
             enf2.Reconcile();
 
             Assert.DoesNotContain(Sid, freshGroup.Members);   // expired lease removed + dejournaled
             Assert.Contains(Sid2, freshGroup.Members);         // valid lease re-asserted
+            Assert.Equal(new[] { Sid }, freshSessions.LoggedOff);   // and its stale session ended
             Assert.Single(new RdpJournal(path).All());
         }
         finally { File.Delete(path); }
@@ -111,13 +131,30 @@ public class RdpEnforcerTests
     {
         // Sweep uses only the local clock and journal — no Core call — so an expired lease is
         // removed regardless of whether Core is reachable.
-        var (enf, grp, _, clock, path) = Fresh();
+        var (enf, grp, _, _, clock, path) = Fresh();
         try
         {
             enf.Grant(Lease("s1", Sid, clock.GetUtcNow().AddMinutes(5)));
             clock.Advance(TimeSpan.FromMinutes(6));
             enf.Sweep();
             Assert.DoesNotContain(Sid, grp.Members);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void A_session_kill_failure_still_removes_the_right_and_dejournals()
+    {
+        // Defense in depth: if WTS logoff fails, the group membership is already gone (no new
+        // logon) and the lease must not linger in the journal — the failure is logged, not fatal.
+        var (enf, grp, ses, jrn, clock, path) = Fresh();
+        try
+        {
+            enf.Grant(Lease("s1", Sid, clock.GetUtcNow().AddMinutes(30)));
+            ses.Throw = true;
+            enf.Revoke("s1");
+            Assert.DoesNotContain(Sid, grp.Members);
+            Assert.Empty(jrn.All());
         }
         finally { File.Delete(path); }
     }

@@ -75,13 +75,15 @@ public sealed class RdpEnforcer
 {
     private readonly ILocalGroup _group;
     private readonly RdpJournal _journal;
+    private readonly ISessionKiller _sessions;
     private readonly TimeProvider _clock;
     private readonly ILogger<RdpEnforcer> _log;
 
-    public RdpEnforcer(ILocalGroup group, RdpJournal journal, TimeProvider clock, ILogger<RdpEnforcer> log)
+    public RdpEnforcer(ILocalGroup group, RdpJournal journal, ISessionKiller sessions, TimeProvider clock, ILogger<RdpEnforcer> log)
     {
         _group = group;
         _journal = journal;
+        _sessions = sessions;
         _clock = clock;
         _log = log;
     }
@@ -95,12 +97,14 @@ public sealed class RdpEnforcer
         _log.LogInformation("RDP granted to {Account} (sid {Sid}) until {Expiry:u}", lease.Account, lease.Sid, lease.ExpiresAt);
     }
 
-    /// <summary>End a lease early (session ended): remove the member and forget it.</summary>
+    /// <summary>End a lease early (revoked or session ended): remove the member, terminate any
+    /// live session so a token assembled at logon cannot outlive the grant, and forget it.</summary>
     public void Revoke(string sessionId)
     {
         var lease = _journal.All().FirstOrDefault(l => l.SessionId == sessionId);
         if (lease is null) return;
         _group.Remove(new SecurityIdentifier(lease.Sid));
+        EndSessions(lease);
         _journal.Remove(sessionId);
         _log.LogInformation("RDP revoked for {Account} (session {Session})", lease.Account, sessionId);
     }
@@ -114,6 +118,7 @@ public sealed class RdpEnforcer
         foreach (var lease in _journal.All().Where(l => l.ExpiresAt <= now))
         {
             _group.Remove(new SecurityIdentifier(lease.Sid));
+            EndSessions(lease);
             _journal.Remove(lease.SessionId);
             _log.LogInformation("RDP expired for {Account} (session {Session})", lease.Account, lease.SessionId);
             removed++;
@@ -133,6 +138,7 @@ public sealed class RdpEnforcer
             if (lease.ExpiresAt <= now)
             {
                 _group.Remove(sid);
+                EndSessions(lease);
                 _journal.Remove(lease.SessionId);
                 _log.LogInformation("RDP lease already expired at startup, removed for {Account}", lease.Account);
             }
@@ -140,6 +146,23 @@ public sealed class RdpEnforcer
             {
                 _group.Add(sid);   // re-assert; idempotent
             }
+        }
+    }
+
+    // Terminate any interactive session the beneficiary still holds. Best-effort by design: the
+    // group membership is already gone (no new logon), so a session that cannot be killed is the
+    // lesser, logged failure — it must never block dejournaling and leave a phantom lease behind.
+    private void EndSessions(RdpLease lease)
+    {
+        try
+        {
+            var ended = _sessions.LogoffBySid(new SecurityIdentifier(lease.Sid));
+            if (ended > 0)
+                _log.LogInformation("Terminated {Count} live session(s) for {Account} on lease close", ended, lease.Account);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Could not terminate session(s) for {Account}; membership already removed", lease.Account);
         }
     }
 }
