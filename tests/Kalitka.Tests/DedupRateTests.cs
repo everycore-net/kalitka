@@ -60,6 +60,17 @@ public class DedupRateTests
     }
 
     [Fact]
+    public async Task Requests_that_differ_in_the_authority_do_not_fold()
+    {
+        // Same resource and subject, but a different command is a different authority — the fingerprint
+        // keeps them apart, so an admin approves each command, not one for both.
+        var e = Engine();
+        await e.RaiseAction("ssh:box", "anna", "10.0.0.9", "agent", default, subjectIdentity: "sid:S-1", command: "ls");
+        await e.RaiseAction("ssh:box", "anna", "10.0.0.9", "agent", default, subjectIdentity: "sid:S-1", command: "rm -rf /");
+        Assert.Equal(2, e.PendingCount());
+    }
+
+    [Fact]
     public async Task A_stuck_user_is_throttled_per_subject_even_across_ips()
     {
         var e = Engine(maxPerIp: 2);

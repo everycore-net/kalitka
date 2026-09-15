@@ -47,6 +47,31 @@ public sealed class PostgresStoreTests
     private static SessionRecord Session(string id, DateTimeOffset at) =>
         new(id, "g1", "r1", "sergej", "ssh:prod-01", "linux-prod-03", at, null, "", "");
 
+    // ---- Dedup ---------------------------------------------------------------
+
+    [Fact]
+    public void TryCreateOrGetPending_folds_atomically_on_postgres()
+    {
+        if (Skip) return;
+        var raised = DateTimeOffset.UtcNow;
+        var fresh = raised.AddMinutes(-5);
+        var store = new PgRequestStore(_cs!);
+
+        var a = Req("r1", raised); a.DedupKey = "fp-1";
+        var b = Req("r2", raised); b.DedupKey = "fp-1";
+
+        Assert.True(store.TryCreateOrGetPending(a, fresh, out var first));
+        Assert.Equal("r1", first.Id);
+        Assert.False(store.TryCreateOrGetPending(b, fresh, out var folded));
+        Assert.Equal("r1", folded.Id);
+        Assert.Single(store.Snapshot());
+
+        // An empty key never folds.
+        Assert.True(store.TryCreateOrGetPending(Req("r3", raised), fresh, out _));
+        Assert.True(store.TryCreateOrGetPending(Req("r4", raised), fresh, out _));
+        Assert.Equal(3, store.Snapshot().Count);
+    }
+
     // ---- Audit tamper-evidence ----------------------------------------------
 
     [Fact]

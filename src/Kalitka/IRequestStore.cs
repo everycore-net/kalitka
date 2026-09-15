@@ -14,6 +14,17 @@ namespace Kalitka;
 public interface IRequestStore
 {
     void Add(PendingRequest request);
+
+    /// <summary>
+    /// Atomically create <paramref name="candidate"/>, or — if one already exists — return the
+    /// still-waiting request with the same non-empty <see cref="PendingRequest.DedupKey"/> raised at
+    /// or after <paramref name="notOlderThan"/>. Returns true only when THIS call created the row.
+    /// An empty DedupKey never folds (always creates). This is the atomic backstop for dedup: two
+    /// identical raises racing (two 4625 events, or two cluster nodes) settle on one pending request,
+    /// because the create-or-fold decision is made by the store, not by a check-then-add in the engine.
+    /// </summary>
+    bool TryCreateOrGetPending(PendingRequest candidate, DateTimeOffset notOlderThan, out PendingRequest effective);
+
     PendingRequest? Get(string id);
     void Remove(string id);
 
