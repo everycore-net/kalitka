@@ -126,7 +126,16 @@ public sealed class Worker : BackgroundService
         if (string.IsNullOrWhiteSpace(req.Resource)) return new { status = 400, error = "resource-required" };
         _log.LogInformation("Request from {Account} (sid {Sid}) for {Resource}", caller.Account, caller.Sid, req.Resource);
         var r = await _core.RaiseAsync(_agentId, caller, req.Resource, req.Command, ct);
-        return new { status = r.Status, id = r.Id, state = r.State };
+        return Reply(r, req.Resource);
+    }
+
+    // Surface Core's refusal reason (e.g. capability-missing / resource-not-allowed) to the caller and
+    // the log, instead of a bare status — a silent 403 cost three sessions half an hour to diagnose.
+    private object Reply(CoreClient.RaiseResult r, string resource)
+    {
+        if (r.Error is null) return new { status = r.Status, id = r.Id, state = r.State };
+        _log.LogWarning("Request for {Resource} refused by Core ({Status}): {Error}", resource, r.Status, r.Error);
+        return new { status = r.Status, id = r.Id, state = r.State, error = r.Error };
     }
 
     // RDP JIT: raise an rdp:<thishost> request for the pipe caller (subject asserted from the
@@ -137,7 +146,7 @@ public sealed class Worker : BackgroundService
         var resource = "rdp:" + Environment.MachineName;
         _log.LogInformation("RDP request from {Account} (sid {Sid}) for {Resource}", caller.Account, caller.Sid, resource);
         var r = await _core.RaiseAsync(_agentId, caller, resource, command: null, ct);
-        return new { status = r.Status, id = r.Id, state = r.State };
+        return Reply(r, resource);
     }
 
     private async Task<object> ActivateRdp(CallerSubject caller, string? requestId, CancellationToken ct)
@@ -154,6 +163,10 @@ public sealed class Worker : BackgroundService
             return new { status = 200, granted = true, expires_at = result.ExpiresAt!.Value.ToUnixTimeSeconds() };
         if (result.Outcome == GrantOutcome.Forbidden)
             return new { status = 403, granted = false, error = "beneficiary-mismatch" };
+        if (result.Outcome == GrantOutcome.SubjectIdentityMissing)
+            // A version skew, not a mismatch: Core is too old to return subject_identity. Distinct code so
+            // the operator upgrades Core rather than hunting a non-existent beneficiary problem.
+            return new { status = 409, granted = false, error = "subject-identity-missing" };
         return new { status = result.Status, granted = false, error = "redeem-failed" };
     }
 

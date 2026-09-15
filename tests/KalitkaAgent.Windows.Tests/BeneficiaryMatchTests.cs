@@ -37,4 +37,16 @@ public class BeneficiaryMatchTests
         Assert.False(RdpActivator.BeneficiaryMatches("", c));
         Assert.False(RdpActivator.BeneficiaryMatches(null, c));
     }
+
+    [Fact]
+    public void BeneficiaryDenial_separates_version_skew_from_a_real_mismatch()
+    {
+        var c = Caller("CONTOSO\\anna");
+        // Both refuse (fail closed), but the operator's fix differs: upgrade Core vs investigate a grant
+        // for someone else. A bare beneficiary-mismatch on a version skew read as a security event.
+        Assert.Null(RdpActivator.BeneficiaryDenial("os:contoso\\anna", c));                       // may proceed
+        Assert.Equal(GrantOutcome.SubjectIdentityMissing, RdpActivator.BeneficiaryDenial("", c)); // Core too old
+        Assert.Equal(GrantOutcome.SubjectIdentityMissing, RdpActivator.BeneficiaryDenial(null, c));
+        Assert.Equal(GrantOutcome.Forbidden, RdpActivator.BeneficiaryDenial("os:SRV01\\anna", c)); // genuine mismatch
+    }
 }

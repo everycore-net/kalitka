@@ -48,6 +48,22 @@ public class AgentRegistryTests : IClassFixture<GateFactory>
     }
 
     [Fact]
+    public void RepresentDenial_names_which_half_of_the_scope_refused()
+    {
+        // The reason handed to an already-authenticated agent so it need not be diagnosed by eye in the
+        // console. Coverage is checked first: a resource outside scope is resource-not-allowed even if a
+        // capability would also be missing; capability-missing is only for a resource that IS in scope.
+        var a = new AgentIdentity("a", new[] { "ssh" }, new[] { "ssh:*", "sudo:*" }, IsLegacy: false);
+        Assert.Null(a.RepresentDenial("ssh:prod-01", AgentCapabilities.Request));   // covered + capability
+        Assert.Equal("resource-not-allowed", a.RepresentDenial("rdp:prod-01", AgentCapabilities.Request));  // not covered
+        Assert.Equal("capability-missing", a.RepresentDenial("sudo:prod-01", AgentCapabilities.Request));   // covered, no sudo cap
+
+        // Legacy caller has no capability model: only the resource binding can refuse.
+        Assert.Null(AgentIdentity.Legacy(Array.Empty<string>()).RepresentDenial("ssh:whatever"));
+        Assert.Equal("resource-not-allowed", AgentIdentity.Legacy(new[] { "ssh:prod-01" }).RepresentDenial("ssh:other"));
+    }
+
+    [Fact]
     public void Credential_rotation_invalidates_the_old_secret()
     {
         var store = new InMemoryAgentStore();
