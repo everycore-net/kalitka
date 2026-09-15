@@ -9,6 +9,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **"New agent" form: structured inputs instead of free text.** Enrolling an agent (often from a
+  phone) meant typing capabilities, platform, resources and tags as free text — a typo silently left
+  an agent without a right, surfacing later as a confusing error. Now: **capabilities are a checkbox
+  set** (the closed vocabulary), with **`subject.assert` set apart and labelled sudo-grade** (it
+  asserts the OS user identity — trusted executor only, not one more tick in a row); **platform is a
+  dropdown**; lower-case fields (hostname, resources, tags) carry `autocapitalize=off`/`autocorrect=off`/
+  `spellcheck=false` so a phone keyboard can't turn `rdp:OLDEV` into `Rdp:OLDEV` unnoticed; and a
+  **profile is presented as the recommended path**. The provisioning buttons are re-ordered to lead
+  with **"Create enrollment token"** (secretless, the 0.21.3 primary path) and mark the shared-secret
+  path **"Legacy"**. (Dynamic resource/tag chips + a pre-create summary are a follow-up.)
+
 - **Honest RDP-JIT triggering — the 4625 watcher only works with NLA off.** A bench measurement
   (`docs/design/rdp-signal-measured.md`) showed that with Network Level Authentication on (the secure
   default) a refused RDP logon writes **no** `4625/0xC000015B` — the deny happens after network auth, at

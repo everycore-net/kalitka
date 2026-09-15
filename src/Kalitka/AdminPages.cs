@@ -508,23 +508,46 @@ async function kalitkaApprove(id,verb,csrf){
         // Create form. From a profile (pick one + a hostname; its templates expand
         // and are snapshotted onto the agent), or free-form. Two ways to provision:
         // a secret shown once, or a single-use enrollment token.
+        var selectStyle = "display:block;width:100%;max-width:420px;margin:6px 0;padding:8px;"
+            + "border-radius:8px;border:1px solid #2a3140;background:#0f1117;color:#e6e6e6";
         sb.Append("<h2>New agent</h2>")
           .Append("<form method=\"post\" action=\"/admin/agents/create\">")
           .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
-          .Append("<select name=\"profile\" style=\"display:block;width:100%;max-width:420px;margin:6px 0;padding:8px;"
-              + "border-radius:8px;border:1px solid #2a3140;background:#0f1117;color:#e6e6e6\">")
-          .Append("<option value=\"\">— no profile (free-form below) —</option>");
+          // Profile is the primary path — capabilities/resources are snapshotted from it, not typed.
+          .Append("<p class=\"muted\" style=\"margin:0 0 4px\">Recommended: pick a profile — it fills capabilities and resources for you.</p>")
+          .Append($"<select name=\"profile\" style=\"{selectStyle}\">")
+          .Append("<option value=\"\">— no profile (fill the fields below) —</option>");
         foreach (var p in profiles) sb.Append($"<option value=\"{H(p.Name)}\">{H(p.Name)}</option>");
         sb.Append("</select>")
-          .Append(In("hostname", "hostname — fills {hostname} in profile templates"))
-          .Append(In("display_name", "name (free-form; defaults to hostname)"))
-          .Append(In("platform", "platform (free-form only: linux, windows, …)"))
-          .Append(In("capabilities", "capabilities (free-form only: access.request grant.redeem …)"))
-          .Append(In("allowed_resources", "allowed resources (free-form only: ssh:prod-01 ssh:*)"))
-          .Append(In("tags", "tags (free-form only: env:prod role:web)"))
+          .Append(InLower("hostname", "hostname — fills {hostname} in profile templates"))
+          .Append(In("display_name", "name (defaults to hostname)"))
+
+          // ---- Free-form (only used when no profile is picked) --------------------------------
+          .Append("<p class=\"muted\" style=\"margin:14px 0 4px\">Or, without a profile:</p>")
+          .Append($"<label class=\"muted\" style=\"font-size:.8rem\">Platform</label><select name=\"platform\" style=\"{selectStyle}\">");
+        foreach (var pf in AgentPlatforms.All) sb.Append($"<option value=\"{H(pf)}\">{H(pf)}</option>");
+        sb.Append("</select>");
+
+        // Capabilities as a checkbox set — a closed vocabulary, so a typo can't silently leave an
+        // agent without a right. subject.assert is set apart: it is sudo-grade.
+        sb.Append("<label class=\"muted\" style=\"font-size:.8rem;display:block;margin-top:8px\">Capabilities</label>");
+        foreach (var cap in AgentCapabilities.All)
+        {
+            if (AgentCapabilities.IsPrivileged(cap)) continue;
+            sb.Append($"<label style=\"display:block;margin:3px 0\"><input type=\"checkbox\" name=\"cap\" value=\"{H(cap)}\"> <code>{H(cap)}</code></label>");
+        }
+        foreach (var cap in AgentCapabilities.All.Where(AgentCapabilities.IsPrivileged))
+            sb.Append("<label class=\"priv\" style=\"display:block;margin:6px 0;padding:6px 10px;border-radius:8px\">"
+                + $"<input type=\"checkbox\" name=\"cap\" value=\"{H(cap)}\"> <code>{H(cap)}</code> — "
+                + "asserts the OS user identity of requests (sudo-grade). Only for a trusted executor like the Windows agent.</label>");
+
+        sb.Append(InLower("allowed_resources", "allowed resources — space-separated (ssh:prod-01 rdp:* db:reports)"))
+          .Append("<p class=\"muted\" style=\"margin:0 0 6px;font-size:.8rem\">schemes: web: ssh: db: rdp: app: mcp: — a trailing * is an explicit glob (e.g. <code>rdp:*</code>)</p>")
+          .Append(InLower("tags", "tags — space-separated key:value (env:prod role:web)"))
           .Append("<div class=\"btns\">")
-          .Append("<button name=\"mode\" value=\"create\">Create (show secret once)</button>")
-          .Append("<button class=\"mut\" name=\"mode\" value=\"token\">Enrollment token</button>")
+          // Secretless enrolment is the primary path (0.21.3); the shared secret is legacy/migration.
+          .Append("<button name=\"mode\" value=\"token\">Create enrollment token</button>")
+          .Append("<button class=\"mut\" name=\"mode\" value=\"create\">Legacy: create with a shared secret</button>")
           .Append("</div></form>");
 
         sb.Append("<h2>Registered</h2>");
@@ -1135,6 +1158,14 @@ async function kalitkaApprove(id,verb,csrf){
 
     private static string In(string name, string placeholder) =>
         $"<input name=\"{name}\" placeholder=\"{H(placeholder)}\" "
+        + "style=\"display:block;width:100%;max-width:420px;margin:6px 0;padding:8px;border-radius:8px;"
+        + "border:1px solid #2a3140;background:#0f1117;color:#e6e6e6\">";
+
+    // Same field, but for values that must stay lower-case and verbatim (resources, tags, hostnames):
+    // a phone keyboard otherwise capitalises and autocorrects "rdp:OLDEV" and nobody notices.
+    private static string InLower(string name, string placeholder) =>
+        $"<input name=\"{name}\" placeholder=\"{H(placeholder)}\" "
+        + "autocapitalize=\"off\" autocorrect=\"off\" spellcheck=\"false\" inputmode=\"text\" "
         + "style=\"display:block;width:100%;max-width:420px;margin:6px 0;padding:8px;border-radius:8px;"
         + "border:1px solid #2a3140;background:#0f1117;color:#e6e6e6\">";
 

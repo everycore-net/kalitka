@@ -36,6 +36,16 @@ public static class AgentCapabilities
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { AssertSubject };
 
     public static bool IsPrivileged(string capability) => Privileged.Contains(capability);
+
+    /// <summary>The full closed set, for a checkbox UI — a typo in free text just leaves an agent
+    /// silently without a right, discovered later as a confusing error.</summary>
+    public static readonly IReadOnlyList<string> All = new[] { Request, Redeem, SessionEnd, AssertSubject };
+}
+
+/// <summary>The platforms an agent declares — a closed set, for a dropdown.</summary>
+public static class AgentPlatforms
+{
+    public static readonly IReadOnlyList<string> All = new[] { "linux", "windows", "macos", "gateway", "generic" };
 }
 
 /// <summary>
