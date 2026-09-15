@@ -19,7 +19,7 @@ public sealed class CoreClient
         _key = key;
     }
 
-    public sealed record RaiseResult(int Status, string? Id, string? State);
+    public sealed record RaiseResult(int Status, string? Id, string? State, string? Error = null);
     public sealed record PollResult(int Status, string? State, string? Grant);
     public sealed record RedeemResult(int Status, string? SessionId, string? Subject, DateTimeOffset? ExpiresAt, string SubjectIdentity = "");
     /// <summary>A session's liveness as Core sees it. <see cref="Reached"/> distinguishes "Core says
@@ -58,15 +58,15 @@ public sealed class CoreClient
         };
         if (!string.IsNullOrEmpty(command)) fields["command"] = command;
         using var resp = await SendSigned(agentId, HttpMethod.Post, "/agent/v1/requests", fields, ct);
-        var (id, state, _) = await ReadFields(resp, ct);
-        return new RaiseResult((int)resp.StatusCode, id, state);
+        var (id, state, _, error) = await ReadFields(resp, ct);
+        return new RaiseResult((int)resp.StatusCode, id, state, error);
     }
 
     /// <summary>Poll a request; on approval the response carries the one-time grant token.</summary>
     public async Task<PollResult> PollAsync(string agentId, string requestId, CancellationToken ct)
     {
         using var resp = await SendSigned(agentId, HttpMethod.Get, "/agent/v1/requests/" + Uri.EscapeDataString(requestId), null, ct);
-        var (_, state, grant) = await ReadFields(resp, ct);
+        var (_, state, grant, _) = await ReadFields(resp, ct);
         return new PollResult((int)resp.StatusCode, state, grant);
     }
 
@@ -121,6 +121,15 @@ public sealed class CoreClient
         return (int)resp.StatusCode;
     }
 
+    /// <summary>Report that a session Core minted could not be provisioned locally (the group change
+    /// failed), so Core does not leave it looking like live access. A non-empty error marks it failed.</summary>
+    public async Task<int> ReportProvisionFailedAsync(string agentId, string sessionId, string error, CancellationToken ct)
+    {
+        var fields = new Dictionary<string, string> { ["session_id"] = sessionId, ["error"] = error };
+        using var resp = await SendSigned(agentId, HttpMethod.Post, "/agent/v1/sessions/provisioned", fields, ct);
+        return (int)resp.StatusCode;
+    }
+
     // Sign and send one request; the body bytes signed are exactly the bytes sent.
     private async Task<HttpResponseMessage> SendSigned(
         string agentId, HttpMethod method, string path, IDictionary<string, string>? fields, CancellationToken ct)
@@ -146,10 +155,10 @@ public sealed class CoreClient
         return await _http.SendAsync(req, ct);
     }
 
-    private static async Task<(string? id, string? state, string? grant)> ReadFields(HttpResponseMessage resp, CancellationToken ct)
+    private static async Task<(string? id, string? state, string? grant, string? error)> ReadFields(HttpResponseMessage resp, CancellationToken ct)
     {
         var body = await resp.Content.ReadAsStringAsync(ct);
-        string? id = null, state = null, grant = null;
+        string? id = null, state = null, grant = null, error = null;
         try
         {
             using var doc = JsonDocument.Parse(body);
@@ -157,8 +166,9 @@ public sealed class CoreClient
             if (root.TryGetProperty("id", out var i)) id = i.GetString();
             if (root.TryGetProperty("state", out var s)) state = s.GetString();
             if (root.TryGetProperty("grant", out var g) && g.ValueKind == JsonValueKind.String) grant = g.GetString();
+            if (root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String) error = e.GetString();
         }
-        catch (JsonException) { /* non-JSON (e.g. 403) — status carries it */ }
-        return (id, state, grant);
+        catch (JsonException) { /* non-JSON body — status carries it */ }
+        return (id, state, grant, error);
     }
 }

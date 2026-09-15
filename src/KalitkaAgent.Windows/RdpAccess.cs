@@ -23,7 +23,13 @@ public interface IRdpAccess
     /// <summary>One-time setup at startup (idempotent). Hard mode ensures the deny group exists and
     /// carries the deny-logon right; soft mode has nothing to do.</summary>
     void Initialize();
-    /// <summary>Make the subject able to sign in over RDP.</summary>
+    /// <summary>Make the subject able to sign in over RDP. <b>Contract: all-or-nothing.</b> On failure
+    /// the implementation must have applied <i>nothing</i>, so the caller may safely roll back the
+    /// write-ahead lease. An implementation whose failure is <i>ambiguous</i> — the change may or may not
+    /// have taken (e.g. a connection dropped after a SQL <c>CREATE ROLE</c>) — must NOT be used this way:
+    /// per the enforcer pattern (unknown ≠ empty), it must record the state as <i>unknown</i> rather than
+    /// let the lease be rolled back, or real access becomes invisible. The netapi32 implementations here
+    /// qualify because each is a single call that either applied or did not.</summary>
     void Grant(SecurityIdentifier sid);
     /// <summary>Make the subject unable to sign in over RDP.</summary>
     void Deny(SecurityIdentifier sid);

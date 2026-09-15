@@ -17,9 +17,14 @@ public class RdpEnforcerTests
     private sealed class FakeGroup : ILocalGroup
     {
         public readonly HashSet<string> Members = new(StringComparer.OrdinalIgnoreCase);
+        public bool ThrowOnAdd;   // simulate an enforce failure (e.g. the netapi32 2220) to test rollback
         public void EnsureExists() { }
         public SecurityIdentifier GroupSid() => new("S-1-5-32-555");
-        public void Add(SecurityIdentifier m) => Members.Add(m.Value);
+        public void Add(SecurityIdentifier m)
+        {
+            if (ThrowOnAdd) throw new InvalidOperationException("local-group membership change failed (rc=2220)");
+            Members.Add(m.Value);
+        }
         public void Remove(SecurityIdentifier m) => Members.Remove(m.Value);
     }
 
@@ -68,6 +73,23 @@ public class RdpEnforcerTests
 
     private static RdpLease Lease(string session, string sid, DateTimeOffset expires) =>
         new(session, sid, "CONTOSO\\anna", expires);
+
+    [Fact]
+    public void A_failed_enforce_rolls_back_the_write_ahead_lease()
+    {
+        var (enf, grp, _, jrn, clock, path) = Fresh();
+        try
+        {
+            grp.ThrowOnAdd = true;   // the group change fails after the lease is journaled
+            Assert.Throws<InvalidOperationException>(() => enf.Grant(Lease("s1", Sid, clock.GetUtcNow().AddMinutes(30))));
+
+            // The invariant: no journaled lease may outlive a grant that never took — otherwise reconcile
+            // re-asserts it forever and it reads as live access.
+            Assert.Empty(jrn.All());
+            Assert.DoesNotContain(Sid, grp.Members);
+        }
+        finally { File.Delete(path); }
+    }
 
     [Fact]
     public void Grant_adds_the_member_and_journals_write_ahead()

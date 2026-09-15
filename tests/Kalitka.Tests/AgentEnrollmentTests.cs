@@ -56,7 +56,7 @@ public class AgentEnrollmentTests
     }
 
     [Fact]
-    public async Task Expired_enrollment_token_is_rejected()
+    public async Task Expired_enrollment_token_reports_expired()
     {
         var (svc, _, clock) = Fresh();
         var token = await svc.CreateEnrollmentToken("a", "linux", new[] { "ssh" }, new[] { "ssh:*" }, "google:admin", default);
@@ -64,7 +64,32 @@ public class AgentEnrollmentTests
         clock.Advance(TimeSpan.FromMinutes(61));   // past EnrollmentTokenMinutes
         var r = await svc.Enroll(token, Secret, "h", "", default);
         Assert.False(r.Ok);
+        Assert.Equal("expired", r.Error);   // distinct from "not a token" — that was a 30-min diagnosis
+    }
+
+    [Fact]
+    public async Task A_pasted_secret_where_a_token_belongs_reports_invalid()
+    {
+        var (svc, _, _) = Fresh();
+        // The live incident: an agent secret (a bare hex string) put in the token field. It does not
+        // verify as one of our signed tokens at all, so it is "invalid" — not "expired".
+        var r = await svc.Enroll(AgentSecrets.NewSecret(), Secret, "h", "", default);
+        Assert.False(r.Ok);
         Assert.Equal("invalid", r.Error);
+    }
+
+    [Fact]
+    public async Task A_valid_token_for_another_flow_reports_wrong_purpose()
+    {
+        var (svc, _, clock) = Fresh();
+        // A properly signed, unexpired token — but minted for a different purpose (same signing key/clock
+        // as the service, so it verifies). It is a real token, just not an enrollment one.
+        var tokens = new OneTimeTokenService(new TokenSigner("unit-test-signing-key-0123456789"), clock);
+        var alien = tokens.Mint("approve", "req-1", "", "a", 60);
+
+        var r = await svc.Enroll(alien, Secret, "h", "", default);
+        Assert.False(r.Ok);
+        Assert.Equal("wrong-purpose", r.Error);
     }
 
     [Fact]

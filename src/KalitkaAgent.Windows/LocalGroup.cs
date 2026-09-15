@@ -11,6 +11,15 @@ namespace KalitkaAgent;
 /// mode: remove on grant). Behind an interface so the enforcement logic is testable off-box, and
 /// so the P/Invoke lives in one place. Add/remove are idempotent so a reconcile can re-assert.
 /// </summary>
+/// <summary>A netapi32 local-group call failed. Carries the raw return <see cref="Code"/> so callers
+/// can act on the reason (e.g. skip a test only on <c>ERROR_ACCESS_DENIED</c>) rather than parse a
+/// message. Derives from <see cref="InvalidOperationException"/> so existing catch sites still work.</summary>
+public sealed class LocalGroupException : InvalidOperationException
+{
+    public int Code { get; }
+    public LocalGroupException(string message, int code) : base(message) => Code = code;
+}
+
 public interface ILocalGroup
 {
     /// <summary>Create the group if it does not exist. A no-op for a built-in group.</summary>
@@ -46,10 +55,15 @@ public sealed class WindowsLocalGroup : ILocalGroup
     [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     private static extern int NetLocalGroupAdd(string? servername, uint level, ref LOCALGROUP_INFO_1 buf, out uint parmErr);
 
-    [DllImport("netapi32.dll")]
+    // CharSet.Unicode is load-bearing, not cosmetic: netapi32 is Unicode-only (no ANSI variants), so
+    // the default CharSet.Ansi marshals `groupname` as one-byte chars, the API reads garbage, and every
+    // call returns NERR_GroupNotFound (2220) — silently breaking BOTH add (grant never applied) AND
+    // delete (membership never removed at expiry, so access would not self-expire). Matches
+    // NetLocalGroupAdd above.
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     private static extern int NetLocalGroupAddMembers(string? servername, string groupname, uint level, IntPtr buf, uint totalentries);
 
-    [DllImport("netapi32.dll")]
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     private static extern int NetLocalGroupDelMembers(string? servername, string groupname, uint level, IntPtr buf, uint totalentries);
 
     private readonly string _group;
@@ -77,7 +91,7 @@ public sealed class WindowsLocalGroup : ILocalGroup
         var info = new LOCALGROUP_INFO_1 { lgrpi1_name = _group, lgrpi1_comment = _comment };
         var rc = NetLocalGroupAdd(null, 1, ref info, out _);
         if (rc != NERR_Success && rc != ERROR_ALIAS_EXISTS)
-            throw new InvalidOperationException($"could not create local group '{_group}' (rc={rc})");
+            throw new LocalGroupException($"could not create local group '{_group}' (rc={rc})", rc);
     }
 
     public SecurityIdentifier GroupSid() =>
@@ -98,7 +112,7 @@ public sealed class WindowsLocalGroup : ILocalGroup
             Marshal.StructureToPtr(new LOCALGROUP_MEMBERS_INFO_0 { lgrmi0_sid = sidPtr }, infoPtr, false);
             var rc = api(null, _group, 0, infoPtr, 1);
             if (rc != NERR_Success && rc != benignError)
-                throw new InvalidOperationException($"local-group membership change failed (rc={rc}) for {member}");
+                throw new LocalGroupException($"local-group membership change failed (rc={rc}) for {member}", rc);
         }
         finally
         {

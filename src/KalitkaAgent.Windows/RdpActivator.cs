@@ -12,7 +12,7 @@ public interface IRdpActivator
 
 /// <summary>What became of a redeem+grant attempt. The pipe path maps these to reply codes; the
 /// watcher just logs.</summary>
-public enum GrantOutcome { Granted, Forbidden, RedeemFailed }
+public enum GrantOutcome { Granted, Forbidden, RedeemFailed, SubjectIdentityMissing, ProvisionFailed }
 
 public sealed record GrantResult(GrantOutcome Outcome, DateTimeOffset? ExpiresAt = null, int Status = 200);
 
@@ -58,13 +58,34 @@ public sealed class RdpActivator : IRdpActivator
         // identity (os:DOMAIN\user, sid:…) — never a bare login name, which collides across domains
         // and machines (CONTOSO\anna vs SRV01\anna). This is what stops a caller redeeming a grant
         // approved for someone else and having it enabled for themselves.
-        if (!BeneficiaryMatches(redeemed.SubjectIdentity, caller))
+        if (BeneficiaryDenial(redeemed.SubjectIdentity, caller) is { } denial)
         {
-            _log.LogWarning("RDP activate refused: grant subject {Subject} is not {Identity}", redeemed.SubjectIdentity, caller.SubjectIdentity);
-            return new GrantResult(GrantOutcome.Forbidden);
+            if (denial == GrantOutcome.SubjectIdentityMissing)
+                // Core returned no subject_identity. That redeem field arrived in #114; a Core too old to
+                // send it leaves us unable to verify the beneficiary, so we fail closed — but this is a
+                // version skew (upgrade Core), NOT a beneficiary mismatch, and must not read as one.
+                _log.LogError("RDP activate refused: Core returned no subject_identity — Core is too old "
+                    + "(the redeem field arrived in #114). Upgrade Core; this is a version skew, not a beneficiary mismatch.");
+            else
+                _log.LogWarning("RDP activate refused: grant subject {Subject} is not {Identity}", redeemed.SubjectIdentity, caller.SubjectIdentity);
+            return new GrantResult(denial);
         }
 
-        _rdp.Grant(new RdpLease(redeemed.SessionId, caller.Sid, caller.Account, redeemed.ExpiresAt.Value));
+        try
+        {
+            _rdp.Grant(new RdpLease(redeemed.SessionId, caller.Sid, caller.Account, redeemed.ExpiresAt.Value));
+        }
+        catch (Exception ex)
+        {
+            // Enforce failed after Core minted the session. RdpEnforcer.Grant has already rolled back its
+            // write-ahead lease (no lease survives a grant that never took, so reconcile won't re-assert
+            // it). Tell Core the session was NOT provisioned, so a failed grant is not left looking like
+            // live access in the audit and an orphaned "open" session does not linger.
+            _log.LogError(ex, "RDP enforce failed for {Account}; reporting provision-failed to Core", caller.Account);
+            try { await _core.ReportProvisionFailedAsync(agentId, redeemed.SessionId, ex.Message, ct); }
+            catch (Exception report) { _log.LogError(report, "could not report provision-failed for session {Session}", redeemed.SessionId); }
+            return new GrantResult(GrantOutcome.ProvisionFailed, Status: 500);
+        }
         return new GrantResult(GrantOutcome.Granted, redeemed.ExpiresAt.Value);
     }
 
@@ -108,5 +129,16 @@ public sealed class RdpActivator : IRdpActivator
     {
         if (string.IsNullOrEmpty(approvedSubjectIdentity)) return false;
         return string.Equals(approvedSubjectIdentity, caller.SubjectIdentity, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The refusal outcome for a redeemed grant's approved subject, or null if it may proceed.
+    /// Splits the two fail-closed cases the operator must act on differently: an <b>absent</b> approved
+    /// identity means Core is too old to send <c>subject_identity</c> (a version skew — upgrade Core),
+    /// while a <b>present but different</b> identity is a genuine beneficiary mismatch (a grant for
+    /// someone else). Both refuse; only the reason and the fix differ.</summary>
+    public static GrantOutcome? BeneficiaryDenial(string? approvedSubjectIdentity, CallerSubject caller)
+    {
+        if (string.IsNullOrEmpty(approvedSubjectIdentity)) return GrantOutcome.SubjectIdentityMissing;
+        return BeneficiaryMatches(approvedSubjectIdentity, caller) ? null : GrantOutcome.Forbidden;
     }
 }
