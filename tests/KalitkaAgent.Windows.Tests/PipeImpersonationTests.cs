@@ -27,7 +27,11 @@ public class PipeImpersonationTests
     private static async Task<(NamedPipeServerStream server, NamedPipeClientStream client)> ConnectedPairAsync(CancellationToken ct)
     {
         var name = "kalitka-test-" + Guid.NewGuid().ToString("N");
-        var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        // A real buffer (not the 0-byte default of the short overload): otherwise the client's write
+        // blocks until the server reads, and the "resolve before read" test — which deliberately never
+        // reads — would deadlock the write instead of exercising impersonation.
+        var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous, inBufferSize: 4096, outBufferSize: 4096);
         var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
         var accept = server.WaitForConnectionAsync(ct);
         await client.ConnectAsync(ct);
