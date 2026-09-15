@@ -142,11 +142,20 @@ public sealed record AgentIdentity(
     /// what profiles use); passing either form keeps both kinds of agent working. The
     /// legacy global-secret caller keeps its resource-only binding.
     /// </summary>
-    public bool MayRepresent(string resource, string operation = "")
+    public bool MayRepresent(string resource, string operation = "") => RepresentDenial(resource, operation) is null;
+
+    /// <summary>Why <see cref="MayRepresent"/> would refuse, or null when it allows. A diagnostic reason
+    /// safe to hand back to an <i>already-authenticated</i> agent — it holds a valid credential, so naming
+    /// its own missing scope leaks nothing to an outsider. <c>resource-not-allowed</c>: no covering
+    /// allowed-resource; <c>capability-missing</c>: the resource is in scope but the agent lacks the
+    /// capability for the operation.</summary>
+    public string? RepresentDenial(string resource, string operation = "")
     {
-        if (IsLegacy) return AllowedResources.Count == 0 || Covered(resource);
-        if (!Covered(resource)) return false;
-        return HasCap(SchemeOf(resource)) || (operation.Length > 0 && HasCap(operation));
+        if (IsLegacy)
+            return (AllowedResources.Count == 0 || Covered(resource)) ? null : "resource-not-allowed";
+        if (!Covered(resource)) return "resource-not-allowed";
+        if (HasCap(SchemeOf(resource)) || (operation.Length > 0 && HasCap(operation))) return null;
+        return "capability-missing";
     }
 
     private bool HasCap(string c) => Capabilities.Any(x => string.Equals(x, c, StringComparison.OrdinalIgnoreCase));

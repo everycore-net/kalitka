@@ -516,11 +516,18 @@ app.MapPost("/agent/enroll", AgentEnroll);
 app.MapPost("/agent/v1/heartbeat", AgentHeartbeat);
 app.MapPost("/agent/heartbeat", AgentHeartbeat);
 
-static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgentStore agents, IReplayStore replay)
+static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgentStore agents, IReplayStore replay, ILogger<Program> log)
 {
     MarkAgentVersion(ctx);
     var identity = await AuthenticateAgent(ctx, gate, agents, replay);
-    if (identity is null) return Results.StatusCode(403);
+    if (identity is null)
+    {
+        // Stay opaque to the caller — don't confirm to an unauthenticated client whether a key is valid
+        // — but leave a server-side trace. Its absence turned a scope refusal into a 30-minute,
+        // three-session hunt: the only sign of a refusal was that there was no sign.
+        log.LogWarning("Agent request refused: unauthenticated (peer {Ip})", ResolveIp(ctx, gate));
+        return Results.StatusCode(403);
+    }
 
     var form = await ctx.Request.ReadFormAsync();
     var host = form["host"].ToString().Trim();
@@ -546,7 +553,13 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
 
     // The authenticated agent may only raise resources it is scoped to (capability
     // + allowed resource) — a valid credential is not a licence for any resource.
-    if (!identity.MayRepresent(resource, AgentCapabilities.Request)) return Results.StatusCode(403);
+    if (identity.RepresentDenial(resource, AgentCapabilities.Request) is { } denial)
+    {
+        // Authenticated already, so telling it *which* half of its scope refused (missing capability vs
+        // resource not allowed) leaks nothing to an outsider and saves the console-spelunking.
+        log.LogWarning("Agent {Agent} refused for {Resource}: {Reason}", identity.Actor, resource, denial);
+        return Results.Json(new { error = denial }, statusCode: 403);
+    }
 
     // Optional command (0.26): the exact command the operator asks to run. When set, the
     // human approves this command and an SSH-cert signer forces it (force-command). Kept to

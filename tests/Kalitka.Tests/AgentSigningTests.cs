@@ -128,6 +128,43 @@ public class AgentSigningTests
             Assert.True(doc.RootElement.TryGetProperty("id", out _));
         }
 
+        private string Register(string id, string pubB64, string[] caps, string[] resources)
+        {
+            _f.Services.GetRequiredService<IAgentStore>().Create(new Agent(
+                id, id, "linux", "h", AgentStatus.Active, AgentSecrets.Hash("unused-secret"),
+                caps, resources, "", _f.Clock.GetUtcNow(), null, "", null)
+            { Keys = new[] { new AgentKey("k1", pubB64, _f.Clock.GetUtcNow()) } });
+            return id;
+        }
+
+        private static async Task<string> ErrorOf(HttpResponseMessage res)
+        {
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            return doc.RootElement.GetProperty("error").GetString() ?? "";
+        }
+
+        [Fact]
+        public async Task An_out_of_scope_resource_says_resource_not_allowed()
+        {
+            // Authenticated, so it is safe to tell the agent which half of its scope refused — a bare 403
+            // once cost three sessions half an hour.
+            var (pub, priv) = NewKeyPair();
+            var id = Register("sig-res", pub, new[] { "ssh" }, new[] { "ssh:*" });
+            var res = await Client().SendAsync(Signed(id, priv, "resource=rdp:box&user=sergej&ip=203.0.113.7"));
+            Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+            Assert.Equal("resource-not-allowed", await ErrorOf(res));
+        }
+
+        [Fact]
+        public async Task A_covered_resource_without_the_capability_says_capability_missing()
+        {
+            var (pub, priv) = NewKeyPair();
+            var id = Register("sig-cap", pub, new[] { "ssh" }, new[] { "sudo:*", "ssh:*" });
+            var res = await Client().SendAsync(Signed(id, priv, "resource=sudo:box&user=sergej&ip=203.0.113.7"));
+            Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+            Assert.Equal("capability-missing", await ErrorOf(res));
+        }
+
         [Fact]
         public async Task A_tampered_body_is_rejected()
         {

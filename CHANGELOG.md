@@ -23,6 +23,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Agent requests say *why* a 403 was returned (to the agent, and in the Core log).** `POST
+  /agent/v1/requests` gave a bare `403` for both "not authenticated" and "authenticated but out of
+  scope", and logged nothing — so the only sign of a scope refusal was its absence, and diagnosis meant
+  reading the agent card by eye (a live case cost three sessions ~30 min). Now: the unauthenticated 403
+  stays **opaque** to the caller (never confirm to an outsider that a key is valid) but is **logged at
+  warning** with the peer IP; an authenticated-but-refused request returns a **reason** —
+  `resource-not-allowed` (no covering allowed-resource) or `capability-missing` (in scope, but the
+  capability for the operation is absent) — and is logged with the agent id and resource. Safe because
+  the reason is shown only to an already-authenticated agent, which its valid credential already proves
+  is "one of ours". The Windows agent threads the reason through to the pipe reply and its own log.
+  Same shape as the enrolment-reason split; the integration request API already worked this way. Agent 0.10.3.
+
 - **Request API: JSON bodies and race-safe idempotency (portal slice 4b).** The integration request
   endpoint (`POST /api/v1/requests`) now accepts a **JSON body** (`{resource, subject, external_id}`),
   what most ticket systems post, alongside the existing form encoding; a body that claims to be JSON but
