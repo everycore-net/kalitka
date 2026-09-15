@@ -128,7 +128,19 @@ public sealed class RdpEnforcer
             _log.LogCritical(ex, "RDP journal unreadable; refusing to grant {Account} until it is repaired", lease.Account);
             throw;   // fail closed: never enable access we cannot journal (and so cannot later revoke)
         }
-        _access.Grant(new SecurityIdentifier(lease.Sid));
+        try
+        {
+            _access.Grant(new SecurityIdentifier(lease.Sid));
+        }
+        catch
+        {
+            // Enforce failed after the write-ahead. Undo the journal entry so the invariant holds — no
+            // journaled lease without real access — otherwise reconcile would re-assert a grant that
+            // never took, hammering the same failure, and the lease would read as live access. Rethrow so
+            // the caller reports the failure to Core.
+            _journal.Remove(lease.SessionId);
+            throw;
+        }
         _log.LogInformation("RDP granted to {Account} (sid {Sid}) until {Expiry:u}", lease.Account, lease.Sid, lease.ExpiresAt);
     }
 

@@ -167,6 +167,9 @@ public sealed class Worker : BackgroundService
             // A version skew, not a mismatch: Core is too old to return subject_identity. Distinct code so
             // the operator upgrades Core rather than hunting a non-existent beneficiary problem.
             return new { status = 409, granted = false, error = "subject-identity-missing" };
+        if (result.Outcome == GrantOutcome.ProvisionFailed)
+            // The grant was minted but enabling access failed; the lease was rolled back and Core told.
+            return new { status = 500, granted = false, error = "provision-failed" };
         return new { status = result.Status, granted = false, error = "redeem-failed" };
     }
 

@@ -121,6 +121,15 @@ public sealed class CoreClient
         return (int)resp.StatusCode;
     }
 
+    /// <summary>Report that a session Core minted could not be provisioned locally (the group change
+    /// failed), so Core does not leave it looking like live access. A non-empty error marks it failed.</summary>
+    public async Task<int> ReportProvisionFailedAsync(string agentId, string sessionId, string error, CancellationToken ct)
+    {
+        var fields = new Dictionary<string, string> { ["session_id"] = sessionId, ["error"] = error };
+        using var resp = await SendSigned(agentId, HttpMethod.Post, "/agent/v1/sessions/provisioned", fields, ct);
+        return (int)resp.StatusCode;
+    }
+
     // Sign and send one request; the body bytes signed are exactly the bytes sent.
     private async Task<HttpResponseMessage> SendSigned(
         string agentId, HttpMethod method, string path, IDictionary<string, string>? fields, CancellationToken ct)

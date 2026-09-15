@@ -33,25 +33,36 @@ public sealed class WtsSessionKiller : ISessionKiller
 
     // Populated by the marshaller from the WTS buffer, so the fields are never assigned in source;
     // the layout must still carry all three for the sequential marshalling to line up.
+    //
+    // pWinStationName is an IntPtr, NOT a marshalled string, on purpose: WTSEnumerateSessions binds to
+    // the W variant below, whose buffer holds the station name as a pointer we never read. Marshalling
+    // it as a string here would make Marshal.PtrToStructure walk the pointer every iteration — and with
+    // the old default-ANSI import (which bound to WTSEnumerateSessionsA, ANSI names) read as UTF-16 that
+    // ran off the end of the buffer: an out-of-bounds read under SYSTEM on the access-revocation path.
+    // The field is unused, so we simply don't marshal it.
 #pragma warning disable CS0649
     [StructLayout(LayoutKind.Sequential)]
     private struct WTS_SESSION_INFO
     {
         public int SessionId;
-        [MarshalAs(UnmanagedType.LPWStr)] public string pWinStationName;
+        public IntPtr pWinStationName;
         public int State;
     }
 #pragma warning restore CS0649
 
     private enum WtsInfoClass { WTSUserName = 5, WTSDomainName = 7 }
 
-    [DllImport("wtsapi32.dll", SetLastError = true)]
+    // CharSet.Unicode so this binds to WTSEnumerateSessionsW (the intended function); wtsapi32 has both
+    // A and W, and the default Ansi would silently bind to the A variant.
+    [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern int WTSEnumerateSessions(IntPtr hServer, int reserved, int version, out IntPtr ppSessionInfo, out int pCount);
 
     [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool WTSQuerySessionInformation(IntPtr hServer, int sessionId, WtsInfoClass infoClass, out IntPtr ppBuffer, out int pBytesReturned);
 
-    [DllImport("wtsapi32.dll", SetLastError = true)]
+    // Takes no strings, so A/W is functionally moot — pinned to W to match the rest and not puzzle the
+    // next reader.
+    [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool WTSLogoffSession(IntPtr hServer, int sessionId, bool bWait);
 
     [DllImport("wtsapi32.dll")]

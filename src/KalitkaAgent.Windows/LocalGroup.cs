@@ -46,10 +46,15 @@ public sealed class WindowsLocalGroup : ILocalGroup
     [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     private static extern int NetLocalGroupAdd(string? servername, uint level, ref LOCALGROUP_INFO_1 buf, out uint parmErr);
 
-    [DllImport("netapi32.dll")]
+    // CharSet.Unicode is load-bearing, not cosmetic: netapi32 is Unicode-only (no ANSI variants), so
+    // the default CharSet.Ansi marshals `groupname` as one-byte chars, the API reads garbage, and every
+    // call returns NERR_GroupNotFound (2220) — silently breaking BOTH add (grant never applied) AND
+    // delete (membership never removed at expiry, so access would not self-expire). Matches
+    // NetLocalGroupAdd above.
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     private static extern int NetLocalGroupAddMembers(string? servername, string groupname, uint level, IntPtr buf, uint totalentries);
 
-    [DllImport("netapi32.dll")]
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     private static extern int NetLocalGroupDelMembers(string? servername, string groupname, uint level, IntPtr buf, uint totalentries);
 
     private readonly string _group;

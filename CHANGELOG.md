@@ -9,6 +9,28 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **RDP-JIT never actually changed group membership — a P/Invoke marshalling defect (both grant AND
+  revoke).** `NetLocalGroupAddMembers`/`NetLocalGroupDelMembers` were declared without
+  `CharSet = CharSet.Unicode`. netapi32 is Unicode-only, so the default ANSI marshalling passed the
+  group name as one-byte chars, the API read garbage, and every call returned `NERR_GroupNotFound`
+  (2220). The agent therefore **never added anyone to Remote Desktop Users on grant, and never removed
+  them at expiry** — so a granted access would not have self-expired either. Fixed by pinning both
+  imports to Unicode (matching `NetLocalGroupAdd`). This whole layer — the one that applies real OS
+  authority — had no test; added a Windows-runner integration test that adds and removes a SID on a
+  throwaway local group, which catches exactly this class of defect (skips off Windows / without the
+  privilege).
+- **Session-teardown enumeration bound to the wrong (ANSI) API and read out of bounds.**
+  `WTSEnumerateSessions` defaulted to ANSI, binding to `WTSEnumerateSessionsA`, whose buffer holds
+  ANSI station names — while `WTS_SESSION_INFO.pWinStationName` was marshalled as `LPWStr` (UTF-16),
+  so `Marshal.PtrToStructure` walked past the buffer end reading a wide string, under SYSTEM, on the
+  access-revocation path. The field is unused, so it is now an unmarshalled `IntPtr` and the import is
+  pinned to the Unicode `W` variant.
+- **A failed RDP enforce no longer looks like success.** The lease is journaled write-ahead (intent
+  before effect); if enabling access then throws, `RdpEnforcer.Grant` now **rolls back the journal**
+  (so reconcile can't re-assert a grant that never took and it can't read as live access) and the
+  activator reports **`session.provisioned` with an error** to Core, returning `provision-failed`
+  rather than leaving an orphaned "open" session. Agent 0.10.4 → 0.10.5.
+
 - **Agent tells a Core version skew apart from a real beneficiary mismatch.** When redeeming an RDP
   grant, an older Core (pre-#114) returns no `subject_identity`, so the agent could not verify the
   beneficiary and refused with `beneficiary-mismatch` and an empty subject in the log — a version skew

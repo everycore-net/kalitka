@@ -12,7 +12,7 @@ public interface IRdpActivator
 
 /// <summary>What became of a redeem+grant attempt. The pipe path maps these to reply codes; the
 /// watcher just logs.</summary>
-public enum GrantOutcome { Granted, Forbidden, RedeemFailed, SubjectIdentityMissing }
+public enum GrantOutcome { Granted, Forbidden, RedeemFailed, SubjectIdentityMissing, ProvisionFailed }
 
 public sealed record GrantResult(GrantOutcome Outcome, DateTimeOffset? ExpiresAt = null, int Status = 200);
 
@@ -71,7 +71,21 @@ public sealed class RdpActivator : IRdpActivator
             return new GrantResult(denial);
         }
 
-        _rdp.Grant(new RdpLease(redeemed.SessionId, caller.Sid, caller.Account, redeemed.ExpiresAt.Value));
+        try
+        {
+            _rdp.Grant(new RdpLease(redeemed.SessionId, caller.Sid, caller.Account, redeemed.ExpiresAt.Value));
+        }
+        catch (Exception ex)
+        {
+            // Enforce failed after Core minted the session. RdpEnforcer.Grant has already rolled back its
+            // write-ahead lease (no lease survives a grant that never took, so reconcile won't re-assert
+            // it). Tell Core the session was NOT provisioned, so a failed grant is not left looking like
+            // live access in the audit and an orphaned "open" session does not linger.
+            _log.LogError(ex, "RDP enforce failed for {Account}; reporting provision-failed to Core", caller.Account);
+            try { await _core.ReportProvisionFailedAsync(agentId, redeemed.SessionId, ex.Message, ct); }
+            catch (Exception report) { _log.LogError(report, "could not report provision-failed for session {Session}", redeemed.SessionId); }
+            return new GrantResult(GrantOutcome.ProvisionFailed, Status: 500);
+        }
         return new GrantResult(GrantOutcome.Granted, redeemed.ExpiresAt.Value);
     }
 
