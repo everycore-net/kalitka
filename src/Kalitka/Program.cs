@@ -53,6 +53,19 @@ builder.Services.AddTransient<EnrollService>();
 // from operator passkeys and agents — a visitor credential only lets its holder in.
 builder.Services.AddSingleton<VisitorPasskeyStore>(sp => new VisitorPasskeyStore(sp.GetRequiredService<IConfigStore>()));
 builder.Services.AddSingleton<VisitorPasskeyService>();
+// RADIUS channel (confirm before login, no browser). The verifier is chosen from config: the dev
+// accept-any switch, else an LDAP bind, else fail-closed. The listener runs only when configured.
+builder.Services.AddSingleton<ICredentialVerifier>(sp =>
+{
+    var o = sp.GetRequiredService<IOptions<GateOptions>>().Value;
+    if (o.RadiusAcceptAnyCredentials) return new AcceptAnyCredentialVerifier();
+    if (!string.IsNullOrEmpty(o.LdapUrl))
+        return new LdapCredentialVerifier(sp.GetRequiredService<IOptions<GateOptions>>(),
+            sp.GetRequiredService<ILogger<LdapCredentialVerifier>>());
+    return new DenyAllCredentialVerifier();
+});
+builder.Services.AddSingleton<RadiusApproval>();
+builder.Services.AddHostedService<RadiusServer>();
 builder.Services.AddSingleton<GateService>();
 builder.Services.AddSingleton<TokenSigner>(sp =>
 {

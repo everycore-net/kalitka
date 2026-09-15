@@ -7,6 +7,38 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-09-15
+
+### Added
+
+- **RADIUS channel — confirm before login, no browser, one implementation for RD Gateway / VPN /
+  Citrix / Wi-Fi 802.1X.** kalitka can now be the auth server a gateway (RD Gateway via NPS, a VPN,
+  Citrix, Wi-Fi 802.1X) points at: the client sits on "Connecting…" while the person taps approve on
+  their phone — the approval happens **before** login, on the first attempt, with no browser. Pure
+  .NET on the BCL, not blocked by the code-signing freeze, and a new **input channel to the same
+  engine** (same `rdp:` resources, same approval/quorum/audit) rather than a new model.
+  - **Codec** (RFC 2865/2869): parse/build, the User-Password cipher, the Response Authenticator, and
+    the Message-Authenticator (verified on requests, added to responses). Hand-rolled on MD5/HMAC-MD5,
+    which is all RADIUS needs.
+  - **Approval exchange**, Duo-shaped and stateless across rounds: verify the primary credentials
+    ourselves (an **LDAP bind** to the DC), raise the approval, answer **Access-Challenge** to hold
+    the wait (a human thinks longer than one RADIUS timeout, so the gateway re-sends with our signed
+    `State` and we answer Challenge again until the decision — then Access-Accept / Access-Reject).
+  - **Honest scope:** RADIUS gates the **perimeter**, not a host (it rarely knows the target machine),
+    so the approval names the gateway (NAS-Identifier) and this **composes with a host agent** — RADIUS
+    decides who enters at all, the agent who reaches a specific machine. The username routes to the
+    person via the usual subject mechanism.
+  - **Off by default**, and the UDP listener is **not exposed publicly** — a deployment enables it,
+    sets the shared secret, and points a gateway at it. Credential verification is fail-closed: LDAP
+    when `LdapUrl` is set, a dev-only `RadiusAcceptAnyCredentials` switch, else deny. RADIUS's MD5
+    shared-secret is legacy — run it in a protected segment or over RADIUS/TLS. New options
+    `RadiusEnabled`, `RadiusPort`, `RadiusSharedSecret`, `RadiusResource`, `RadiusChallengeSeconds`,
+    `RadiusAcceptAnyCredentials`, `LdapUrl`, `LdapBindFormat`. Deps: `System.DirectoryServices.Protocols`
+    (first-party; LDAP needs libldap on Linux at runtime, only on that path).
+  - 14 tests (codec: User-Password round-trip incl. multi-block, Response & Message-Authenticator,
+    malformed packets; the exchange: challenge→approve→accept, bad creds, denial, tampered State,
+    wrong-secret authenticator). Core suite 421.
+
 ## [0.44.0] - 2026-09-15
 
 ### Added
