@@ -9,6 +9,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Covering grants — scope on the request (slice 2a).** A raised request now carries an approved
+  `Scope` (a resource glob), set **only by a trusted channel from its own config** — a RADIUS client's
+  new per-client `GrantScope` (e.g. gateway `RDG-01` covers `rdp:site-a/*`) — never from the agent
+  API, so a requester cannot ask to cover more than the channel is configured for. Plumbed through the
+  engine and persisted in all three request stores (`ScopeOf`). Inert until the covering endpoint
+  carries it onto the session and resolves it (slice 2b). See `docs/design/covering-grant.md`.
+
 - **Windows agent 0.6.0 — end the lease when the person logs off (RDP session accounting).** A grant
   used to linger to its TTL even after the human left. Now an RDP logoff frees it immediately and
   tells Core the session closed, completing the lifecycle Core already modelled (`session.started` at

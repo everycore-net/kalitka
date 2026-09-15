@@ -48,6 +48,7 @@ public sealed class PgRequestStore : IRequestStore
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS subject_identity TEXT NOT NULL DEFAULT '';
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS subject_mode TEXT NOT NULL DEFAULT '';
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS dedup_key TEXT NOT NULL DEFAULT '';
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT '';
             CREATE INDEX IF NOT EXISTS ix_requests_state ON requests(state, raised);
             -- At most one waiting request per dedup key: the backstop that makes TryCreateOrGetPending
             -- atomic across nodes (an empty key never dedups, so it is excluded from the constraint).
@@ -64,15 +65,15 @@ public sealed class PgRequestStore : IRequestStore
         using var conn = PgState.Open(_cs);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key)
-            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup)
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key,scope)
+            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup,@scope)
             ON CONFLICT(id) DO UPDATE SET
               target=EXCLUDED.target,input=EXCLUDED.input,ip=EXCLUDED.ip,resource=EXCLUDED.resource,
               country=EXCLUDED.country,country_code=EXCLUDED.country_code,city=EXCLUDED.city,
               raised=EXCLUDED.raised,state=EXCLUDED.state,grant_tok=EXCLUDED.grant_tok,
               required_approvals=EXCLUDED.required_approvals,profile=EXCLUDED.profile,max_uses=EXCLUDED.max_uses,
               command=EXCLUDED.command,source_addr=EXCLUDED.source_addr,subject_identity=EXCLUDED.subject_identity,
-              subject_mode=EXCLUDED.subject_mode,dedup_key=EXCLUDED.dedup_key;
+              subject_mode=EXCLUDED.subject_mode,dedup_key=EXCLUDED.dedup_key,scope=EXCLUDED.scope;
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -97,8 +98,8 @@ public sealed class PgRequestStore : IRequestStore
             using (var cmd = conn.CreateCommand())
             {
                 cmd.CommandText = """
-                    INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key)
-                    VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup)
+                    INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key,scope)
+                    VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup,@scope)
                     ON CONFLICT (dedup_key) WHERE state='waiting' AND dedup_key<>'' DO NOTHING
                     RETURNING id;
                     """;
@@ -132,8 +133,8 @@ public sealed class PgRequestStore : IRequestStore
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key)
-            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup);
+            INSERT INTO requests(id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key,scope)
+            VALUES(@id,@target,@input,@ip,@resource,@country,@cc,@city,@raised,@state,@grant,@req,@profile,@uses,@command,@srcaddr,@subjid,@submode,@dedup,@scope);
             """;
         Bind(cmd, r);
         cmd.ExecuteNonQuery();
@@ -277,7 +278,7 @@ public sealed class PgRequestStore : IRequestStore
     }
 
     private const string Cols =
-        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key";
+        "id,target,input,ip,resource,country,country_code,city,raised,state,grant_tok,required_approvals,profile,max_uses,command,source_addr,subject_identity,subject_mode,dedup_key,scope";
 
     private static void Bind(NpgsqlCommand cmd, PendingRequest r)
     {
@@ -300,6 +301,7 @@ public sealed class PgRequestStore : IRequestStore
         cmd.Parameters.AddWithValue("subjid", r.SubjectIdentity);
         cmd.Parameters.AddWithValue("submode", SubjectModes.ToDb(r.Subject));
         cmd.Parameters.AddWithValue("dedup", r.DedupKey);
+        cmd.Parameters.AddWithValue("scope", r.Scope);
     }
 
     private static PendingRequest Read(NpgsqlDataReader r) => new()
@@ -309,7 +311,8 @@ public sealed class PgRequestStore : IRequestStore
         City = r.GetString(7), Raised = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(8)),
         State = r.GetString(9), Grant = r.GetString(10), RequiredApprovals = r.GetInt32(11),
         Profile = r.GetString(12), MaxUses = r.GetInt32(13), Command = r.GetString(14), SourceAddr = r.GetString(15),
-        SubjectIdentity = r.GetString(16), Subject = SubjectModes.FromDb(r.GetString(17)), DedupKey = r.GetString(18)
+        SubjectIdentity = r.GetString(16), Subject = SubjectModes.FromDb(r.GetString(17)), DedupKey = r.GetString(18),
+        Scope = r.GetString(19)
     };
 }
 

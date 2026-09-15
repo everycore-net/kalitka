@@ -49,6 +49,12 @@ public sealed class PendingRequest
     // fold onto the one still-waiting request with the same key; requests that differ in any of those
     // fields do not fold. Empty = never folds (a web visitor, or any raise without a subject identity).
     public string DedupKey = "";
+    // Covering scope (0.47): a resource glob this approval is explicitly for, so a perimeter approval
+    // can cover a family of hosts behind it (see docs/design/covering-grant.md). Set ONLY by a trusted
+    // channel from its own config (e.g. a RADIUS client's GrantScope) — never from the agent API, so a
+    // requester cannot ask to cover more than the channel is configured for. Empty = covers nothing
+    // beyond the exact resource (today's behaviour). Carried onto the session at redeem.
+    public string Scope = "";
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.
@@ -406,11 +412,12 @@ public sealed class ApprovalEngine
     public async Task<(string state, string id, PendingRequest? request)> RaiseAction(
         string resource, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "",
-        string sourceAddr = "", string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false)
+        string sourceAddr = "", string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false,
+        string scope = "")
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned);
+        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned, scope);
     }
 
     /// <summary>
@@ -421,7 +428,7 @@ public sealed class ApprovalEngine
     private async Task<(string state, string id, PendingRequest? request)> Raise(
         string resource, string target, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string> agentTags, string profile, int maxUses, string command = "", string sourceAddr = "",
-        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false)
+        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false, string scope = "")
     {
         command = (command ?? "").Trim();
         sourceAddr = (sourceAddr ?? "").Trim();
@@ -548,7 +555,7 @@ public sealed class ApprovalEngine
             Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required,
             Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command, SourceAddr = sourceAddr,
             SubjectIdentity = subjectIdentity, Subject = decision.Subject, RequireSignedApproval = requireSigned,
-            DedupKey = dedupKey
+            DedupKey = dedupKey, Scope = scope ?? ""
         };
 
         // Atomic create-or-fold: if an identical raise won a concurrent race (two 4625s, or two
@@ -609,6 +616,7 @@ public sealed class ApprovalEngine
     public int MaxUsesOf(string id) => _store.Get(id)?.MaxUses ?? 0;
     public string CommandOf(string id) => _store.Get(id)?.Command ?? "";
     public string SourceAddrOf(string id) => _store.Get(id)?.SourceAddr ?? "";
+    public string ScopeOf(string id) => _store.Get(id)?.Scope ?? "";
 
     /// <summary>The approval-defining terms of a waiting request, as an immutable snapshot — for the
     /// signing layer, which must bind a signature to exactly what is being approved.</summary>
