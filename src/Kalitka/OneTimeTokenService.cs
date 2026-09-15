@@ -51,19 +51,35 @@ public sealed class OneTimeTokenService
         return _signer.Sign(JsonSerializer.Serialize(cap), KeyId);
     }
 
+    /// <summary>Why a token was rejected, so a caller can report a precise reason instead of a blanket
+    /// "invalid". <see cref="Malformed"/> is the crypto/shape failure — the string does not verify as one
+    /// of our signed tokens at all (a secret pasted where a token belongs, or tampering); <see cref="Expired"/>
+    /// is a genuine token past its lifetime.</summary>
+    public enum ReadStatus { Ok, Malformed, Expired }
+
+    public readonly record struct ReadResult(ReadStatus Status, Capability? Capability)
+    {
+        public bool Ok => Status == ReadStatus.Ok;
+    }
+
     /// <summary>Verifies signature and expiry and returns the claims — does NOT
     /// consume. Consuming is a separate, deliberate step (a POST, never a GET).</summary>
-    public Capability? Read(string token)
+    public Capability? Read(string token) => ReadDetailed(token) is { Ok: true } r ? r.Capability : null;
+
+    /// <summary>Like <see cref="Read"/>, but distinguishes <i>why</i> a token was rejected (see
+    /// <see cref="ReadStatus"/>). An expired token still returns its claims, so a caller can, for
+    /// instance, name the resource it was for; a malformed one carries none.</summary>
+    public ReadResult ReadDetailed(string token)
     {
-        if (!_signer.Verify(token, KeyId, out var payload)) return null;
+        if (!_signer.Verify(token, KeyId, out var payload)) return new(ReadStatus.Malformed, null);
 
         Capability? cap;
         try { cap = JsonSerializer.Deserialize<Capability>(payload); }
-        catch { return null; }
+        catch { return new(ReadStatus.Malformed, null); }
 
-        if (cap is null || cap.V != 1) return null;
-        if (_clock.GetUtcNow().ToUnixTimeSeconds() > cap.Exp) return null;
-        return cap;
+        if (cap is null || cap.V != 1) return new(ReadStatus.Malformed, null);
+        if (_clock.GetUtcNow().ToUnixTimeSeconds() > cap.Exp) return new(ReadStatus.Expired, cap);
+        return new(ReadStatus.Ok, cap);
     }
 
     /// <summary>
