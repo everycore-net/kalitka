@@ -516,11 +516,18 @@ app.MapPost("/agent/enroll", AgentEnroll);
 app.MapPost("/agent/v1/heartbeat", AgentHeartbeat);
 app.MapPost("/agent/heartbeat", AgentHeartbeat);
 
-static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgentStore agents, IReplayStore replay)
+static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgentStore agents, IReplayStore replay, ILogger<Program> log)
 {
     MarkAgentVersion(ctx);
     var identity = await AuthenticateAgent(ctx, gate, agents, replay);
-    if (identity is null) return Results.StatusCode(403);
+    if (identity is null)
+    {
+        // Stay opaque to the caller — don't confirm to an unauthenticated client whether a key is valid
+        // — but leave a server-side trace. Its absence turned a scope refusal into a 30-minute,
+        // three-session hunt: the only sign of a refusal was that there was no sign.
+        log.LogWarning("Agent request refused: unauthenticated (peer {Ip})", ResolveIp(ctx, gate));
+        return Results.StatusCode(403);
+    }
 
     var form = await ctx.Request.ReadFormAsync();
     var host = form["host"].ToString().Trim();
@@ -546,7 +553,13 @@ static async Task<IResult> AgentRequest(HttpContext ctx, GateService gate, IAgen
 
     // The authenticated agent may only raise resources it is scoped to (capability
     // + allowed resource) — a valid credential is not a licence for any resource.
-    if (!identity.MayRepresent(resource, AgentCapabilities.Request)) return Results.StatusCode(403);
+    if (identity.RepresentDenial(resource, AgentCapabilities.Request) is { } denial)
+    {
+        // Authenticated already, so telling it *which* half of its scope refused (missing capability vs
+        // resource not allowed) leaks nothing to an outsider and saves the console-spelunking.
+        log.LogWarning("Agent {Agent} refused for {Resource}: {Reason}", identity.Actor, resource, denial);
+        return Results.Json(new { error = denial }, statusCode: 403);
+    }
 
     // Optional command (0.26): the exact command the operator asks to run. When set, the
     // human approves this command and an SSH-cert signer forces it (force-command). Kept to
@@ -1028,25 +1041,53 @@ app.MapPost("/api/v1/requests", async (HttpContext ctx, IntegrationRegistry regi
     if (client is null) return Results.Json(new { error = "unauthorized" }, statusCode: 401);
     if (!registry.WithinRate(client)) return Results.Json(new { error = "rate-limited" }, statusCode: 429);
 
-    var form = await ctx.Request.ReadFormAsync();
-    var resource = form["resource"].ToString().Trim();
-    var subject = form["subject"].ToString().Trim();       // the person the ticket is for
-    var externalId = form["external_id"].ToString().Trim();
+    var fields = await ReadRequestFields(ctx);   // JSON or form; null on a malformed JSON body
+    if (fields is null) return Results.Json(new { error = "malformed body" }, statusCode: 400);
+    var (resource, subject, externalId) = fields.Value;   // subject: the person the ticket is for
     if (resource.Length == 0 || subject.Length == 0) return Results.Json(new { error = "resource and subject required" }, statusCode: 400);
     if (!client.MayRequest(resource)) return Results.Json(new { error = "out-of-scope" }, statusCode: 403);
 
-    // Idempotency: one ticket, one request.
-    if (externalId.Length > 0 && idem.Lookup(IntegrationIdempotency.Compose(client.Id, externalId)) is { } existing)
-        return Results.Json(new { request_id = existing, external_id = externalId, status = ApiStatus(gate.StateOf(existing)) });
+    // Idempotency: one ticket, one request — even under concurrent first calls. A settled id is returned
+    // as-is; otherwise we claim the ticket before raising, so a second concurrent call cannot also raise.
+    var composite = externalId.Length > 0 ? IntegrationIdempotency.Compose(client.Id, externalId) : null;
+    if (composite is not null)
+    {
+        if (idem.Lookup(composite) is { } existing)
+            return Results.Json(new { request_id = existing, external_id = externalId, status = ApiStatus(gate.StateOf(existing)) });
 
-    var (state, id) = await gate.RaiseAction(resource, subject, ResolveIp(ctx, gate), client.Actor, ctx.RequestAborted,
-        subjectIdentity: subject, subjectTrusted: false);   // claimed, not asserted
+        if (!idem.TryReserve(composite))   // another call is raising this same ticket right now
+        {
+            var settled = await idem.AwaitSettled(composite, TimeSpan.FromSeconds(2), ctx.RequestAborted);
+            return settled is not null
+                ? Results.Json(new { request_id = settled, external_id = externalId, status = ApiStatus(gate.StateOf(settled)) })
+                : Results.Json(new { error = "in-progress", external_id = externalId }, statusCode: 409);   // retry
+        }
+    }
 
-    if (state == "allowed") return Results.Json(new { status = "approved" });   // allow-list: no request to track
-    if (state != "waiting") return Results.Json(new { error = state }, statusCode: 400);
+    try
+    {
+        var (state, id) = await gate.RaiseAction(resource, subject, ResolveIp(ctx, gate), client.Actor, ctx.RequestAborted,
+            subjectIdentity: subject, subjectTrusted: false);   // claimed, not asserted
 
-    if (externalId.Length > 0) idem.Record(IntegrationIdempotency.Compose(client.Id, externalId), id);
-    return Results.Json(new { request_id = id, external_id = externalId, status = "pending" }, statusCode: 202);
+        if (state == "allowed")   // allow-list: no request to track
+        {
+            if (composite is not null) idem.Release(composite);
+            return Results.Json(new { status = "approved" });
+        }
+        if (state != "waiting")
+        {
+            if (composite is not null) idem.Release(composite);
+            return Results.Json(new { error = state }, statusCode: 400);
+        }
+
+        if (composite is not null) idem.Record(composite, id);
+        return Results.Json(new { request_id = id, external_id = externalId, status = "pending" }, statusCode: 202);
+    }
+    catch
+    {
+        if (composite is not null) idem.Release(composite);   // don't wedge the ticket on a transient failure
+        throw;
+    }
 });
 
 app.MapGet("/api/v1/requests/{id}", (HttpContext ctx, string id, IntegrationRegistry registry, GateService gate) =>
@@ -1767,6 +1808,30 @@ static string? BearerToken(HttpContext ctx)
 {
     var h = ctx.Request.Headers.Authorization.ToString();
     return h.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? h["Bearer ".Length..].Trim() : null;
+}
+
+// Read (resource, subject, external_id) from the request API body: a JSON object (what most ticket
+// systems post) or a classic form. Returns null only for a body that claims to be JSON but does not
+// parse — so a genuine client error is a 400, not a 500. Missing fields come back as "" (validated by
+// the caller); values are trimmed so trailing whitespace can't defeat scope or idempotency matching.
+static async Task<(string resource, string subject, string externalId)?> ReadRequestFields(HttpContext ctx)
+{
+    if ((ctx.Request.ContentType ?? "").Contains("application/json", StringComparison.OrdinalIgnoreCase))
+    {
+        try
+        {
+            using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            return (Str(doc.RootElement, "resource"), Str(doc.RootElement, "subject"), Str(doc.RootElement, "external_id"));
+        }
+        catch (JsonException) { return null; }
+
+        static string Str(JsonElement o, string name) =>
+            o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? (v.GetString() ?? "").Trim() : "";
+    }
+
+    var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
+    return (form["resource"].ToString().Trim(), form["subject"].ToString().Trim(), form["external_id"].ToString().Trim());
 }
 
 // Map the engine's request state to the integration status vocabulary. (revoked — approved then

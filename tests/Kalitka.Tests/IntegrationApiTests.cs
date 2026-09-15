@@ -133,6 +133,49 @@ public class IntegrationApiTests : IClassFixture<RequestApiFactory>
     }
 
     [Fact]
+    public async Task A_json_body_is_accepted_like_a_form()
+    {
+        var json = "{\"resource\":\"rdp:WIN-05\",\"subject\":\"os:contoso\\\\erin\",\"external_id\":\"JIRA-5\"}";
+        var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/requests")
+        { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+        req.Headers.Add("Authorization", "Bearer " + RequestApiFactory.Token);
+
+        var (code, body) = await Send(Client(), req);
+        Assert.Equal(HttpStatusCode.Accepted, code);
+        Assert.Contains("\"status\":\"pending\"", body);
+
+        var gate = _f.Services.GetRequiredService<GateService>();
+        Assert.Contains(gate.PendingSnapshot(), r => r.Target == "rdp:WIN-05" && r.State == "waiting");
+    }
+
+    [Fact]
+    public async Task A_malformed_json_body_is_a_client_error_not_a_crash()
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/requests")
+        { Content = new StringContent("{not json", System.Text.Encoding.UTF8, "application/json") };
+        req.Headers.Add("Authorization", "Bearer " + RequestApiFactory.Token);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(Client(), req)).code);
+    }
+
+    [Fact]
+    public async Task Concurrent_first_calls_for_one_ticket_raise_a_single_request()
+    {
+        var c = Client();
+        // Fire the same ticket twice at once: one wins the reservation and raises, the other waits for
+        // it to settle and returns the same id. Never two requests.
+        var (r1, r2) = (Send(c, Raise(RequestApiFactory.Token, "rdp:WIN-06", "os:contoso\\finn", externalId: "TICKET-C")),
+                        Send(c, Raise(RequestApiFactory.Token, "rdp:WIN-06", "os:contoso\\finn", externalId: "TICKET-C")));
+        var results = await Task.WhenAll(r1, r2);
+
+        string Id(string b) => System.Text.Json.JsonDocument.Parse(b).RootElement.GetProperty("request_id").GetString()!;
+        Assert.Equal(Id(results[0].body), Id(results[1].body));
+        Assert.All(results, r => Assert.True(r.code is HttpStatusCode.Accepted or HttpStatusCode.OK));
+
+        var gate = _f.Services.GetRequiredService<GateService>();
+        Assert.Single(gate.PendingSnapshot(), r => r.Target == "rdp:WIN-06");
+    }
+
+    [Fact]
     public async Task The_integration_is_rate_limited()
     {
         using var f = new RateLimitedApiFactory();   // isolated counter, budget 2/min
