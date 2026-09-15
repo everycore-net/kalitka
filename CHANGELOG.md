@@ -106,6 +106,19 @@ release accumulates several fixes; more follow.
   opt-out remains for a gateway that cannot send one). Every response —
   Accept/Reject/Challenge — always carries a Message-Authenticator now, whether or
   not the request had one.
+- **RADIUS is no longer an account-lockout weapon.** A flood of bad passwords for
+  one username would, one LDAP bind each, trip the domain lockout policy and lock
+  the person out. A per-username failure cap (`RadiusMaxUsernameFailures` within
+  `RadiusFailureWindowMinutes`, default 5/15 min) now refuses further attempts
+  **without binding** once tripped — kalitka never forwards the attempts that would
+  do the locking; a success clears the count. (Not keyed on the peer: the RADIUS
+  peer is the gateway, one address for every user.) Plus bounded concurrency
+  (`RadiusMaxConcurrentVerifications`, `RadiusVerifyQueueTimeoutSeconds`) so a
+  flood or a hung DC cannot avalanche binds.
+- **LDAP fails closed on plaintext.** A plaintext `ldap://` URL is refused unless
+  `LdapAllowInsecure` is explicitly set (passwords go to the DC on the bind, so
+  `ldaps://` is the norm), and the bind now has a timeout (`LdapTimeoutSeconds`) so
+  a hung DC cannot pin a verification slot open.
 
 ## [0.46.0] - 2026-09-15
 

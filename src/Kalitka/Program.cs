@@ -64,6 +64,7 @@ builder.Services.AddSingleton<ICredentialVerifier>(sp =>
             sp.GetRequiredService<ILogger<LdapCredentialVerifier>>());
     return new DenyAllCredentialVerifier();
 });
+builder.Services.AddSingleton<LoginThrottle>();
 builder.Services.AddSingleton<RadiusApproval>();
 builder.Services.AddHostedService<RadiusServer>();
 builder.Services.AddSingleton<GateService>();

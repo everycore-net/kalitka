@@ -31,7 +31,7 @@ public class RadiusApprovalTests
             new InMemoryRequestStore(), null, new InMemoryConfigStore(), null, null);
         var approval = new RadiusApproval(gate, verifier ?? new AcceptAnyCredentialVerifier(),
             new TokenSigner("unit-test-signing-key-0123456789"), new InMemoryReplayStore(clock),
-            opts, clock, NullLogger<RadiusApproval>.Instance);
+            new LoginThrottle(opts, clock), opts, clock, NullLogger<RadiusApproval>.Instance);
         return (approval, gate);
     }
 
