@@ -79,7 +79,10 @@ public sealed class RadiusApproval
         var user = req.GetString(RadiusAttr.UserName);
         if (string.IsNullOrWhiteSpace(user)) return Reject(req, secret, "no user");
 
-        var subjectIdentity = "os:" + user;
+        // The round-stable binding for the State: the username as seen on every round (a resume does
+        // not re-bind, so it cannot re-derive the canonical sid — the binding must be what is always
+        // present). Distinct from the subject we route the approval to, resolved after the bind below.
+        var userBinding = "os:" + user;
         var resource = client.Resource;   // the client's policy namespace; NAS-Identifier is evidence only
         var callingStation = req.GetString(RadiusAttr.CallingStationId) ?? remoteIp;
 
@@ -89,8 +92,8 @@ public sealed class RadiusApproval
             var token = Encoding.UTF8.GetString(stateBytes);
             if (!TryReadState(token, out var st)) return Reject(req, secret, "invalid state");
 
-            // The State must belong to this exact attempt: same subject, client, resource and station.
-            if (st.SubjectIdentity != subjectIdentity || st.Client != remoteIp ||
+            // The State must belong to this exact attempt: same user, client, resource and station.
+            if (st.SubjectIdentity != userBinding || st.Client != remoteIp ||
                 st.Resource != resource || st.CallingStation != callingStation)
                 return Reject(req, secret, "state does not match this request");
             if (_clock.GetUtcNow().ToUnixTimeSeconds() > st.ExpiresAtUnix) return Reject(req, secret, "approval timed out");
@@ -116,24 +119,29 @@ public sealed class RadiusApproval
         // account out at the DC nor avalanche binds), then raise the approval and hold via Challenge.
         var permit = await _throttle.AcquireAsync(user, ct);
         if (permit is null) return Reject(req, secret, "too many attempts, try again later");
-        bool verified;
+        CredentialResult cred;
         try
         {
             var password = req.DecryptPassword(secret);
-            verified = password is not null && await _verifier.Verify(user, password, ct);
-            permit.Record(verified);
+            cred = password is not null ? await _verifier.Verify(user, password, ct) : CredentialResult.Fail;
+            permit.Record(cred.Ok);
         }
         finally { permit.Dispose(); }
-        if (!verified) return Reject(req, secret, "bad credentials");
+        if (!cred.Ok) return Reject(req, secret, "bad credentials");
 
+        // Route the approval to the canonical directory identity when the bind resolved one: a
+        // trusted sid: — the same subject a Windows host agent asserts, so one person is one subject
+        // across RADIUS and direct RDP (and a covering grant can span them). Otherwise the claimed,
+        // untrusted os:<user>, which cannot satisfy subject: required.
+        var raiseSubject = cred.Established ? "sid:" + cred.Sid : userBinding;
         var (state, id) = await _gate.RaiseAction(resource, user, callingStation, "radius", ct,
-            subjectIdentity: subjectIdentity);
+            subjectIdentity: raiseSubject, subjectTrusted: cred.Established);
 
         if (state == "allowed") return Accept(req, secret);        // allow-list: straight through
         if (state != "waiting") return Reject(req, secret, state); // blocked / policy-refused
 
         var exp = _clock.GetUtcNow().AddSeconds(_options.RadiusChallengeSeconds).ToUnixTimeSeconds();
-        var newState = MintState(new RadiusState(id, subjectIdentity, remoteIp, resource, callingStation, exp));
+        var newState = MintState(new RadiusState(id, userBinding, remoteIp, resource, callingStation, exp));
         return Challenge(req, secret, newState);
     }
 

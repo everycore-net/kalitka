@@ -22,7 +22,7 @@ public class LdapVerifierTests
     public async Task An_empty_password_is_rejected_without_binding()
     {
         var v = Verifier("ldaps://dc.example", allowInsecure: false);
-        Assert.False(await v.Verify("anna", "", default));
+        Assert.False((await v.Verify("anna", "", default)).Ok);
     }
 
     [Fact]
@@ -30,6 +30,6 @@ public class LdapVerifierTests
     {
         // Refused before any connection — fail closed, do not send the password in the clear.
         var refused = Verifier("ldap://dc.example", allowInsecure: false);
-        Assert.False(await refused.Verify("anna", "pw", default));
+        Assert.False((await refused.Verify("anna", "pw", default)).Ok);
     }
 }
