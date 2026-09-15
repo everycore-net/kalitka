@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -29,18 +30,21 @@ public sealed class RadiusApproval
     private readonly TokenSigner _signer;
     private readonly IReplayStore _replay;
     private readonly LoginThrottle _throttle;
+    private readonly RadiusClientRegistry _clients;
     private readonly GateOptions _options;
     private readonly TimeProvider _clock;
     private readonly ILogger<RadiusApproval> _log;
 
     public RadiusApproval(GateService gate, ICredentialVerifier verifier, TokenSigner signer,
-        IReplayStore replay, LoginThrottle throttle, IOptions<GateOptions> options, TimeProvider clock, ILogger<RadiusApproval> log)
+        IReplayStore replay, LoginThrottle throttle, RadiusClientRegistry clients, IOptions<GateOptions> options,
+        TimeProvider clock, ILogger<RadiusApproval> log)
     {
         _gate = gate;
         _verifier = verifier;
         _signer = signer;
         _replay = replay;
         _throttle = throttle;
+        _clients = clients;
         _options = options.Value;
         _clock = clock;
         _log = log;
@@ -49,25 +53,34 @@ public sealed class RadiusApproval
     private sealed record RadiusState(string RequestId, string SubjectIdentity, string Client,
         string Resource, string CallingStation, long ExpiresAtUnix);
 
-    /// <summary>Handle one Access-Request datagram and produce the response datagram.
-    /// <paramref name="remoteIp"/> is the datagram source (the RADIUS client), which is what binds and
-    /// identifies the client — never a packet attribute the sender chose.</summary>
-    public async Task<byte[]> Handle(RadiusPacket req, byte[] raw, string remoteIp, CancellationToken ct)
+    /// <summary>Handle one Access-Request datagram and produce the response datagram, or null to send
+    /// nothing (an unknown client — we never answer, nor could we sign a response we have no secret
+    /// for). <paramref name="remoteIp"/> is the datagram source, which identifies the client and binds
+    /// the State — never a packet attribute the sender chose.</summary>
+    public async Task<byte[]?> Handle(RadiusPacket req, byte[] raw, string remoteIp, CancellationToken ct)
     {
-        var secret = _options.RadiusSharedSecret;
+        // Identify the client by the datagram source alone. An unknown source is dropped silently.
+        if (!IPAddress.TryParse(remoteIp, out var sourceIp) || _clients.Match(sourceIp) is not { } client)
+        {
+            _log.LogWarning("RADIUS packet from unknown client {Peer} dropped", remoteIp);
+            return null;
+        }
 
-        // BlastRADIUS: require a Message-Authenticator on the request (unless a legacy gateway is
-        // explicitly exempted), and always emit one on the response.
-        if (req.Get(RadiusAttr.MessageAuthenticator) is null && _options.RadiusRequireMessageAuthenticator)
-            return Reject(req, secret, "message-authenticator required");
-        if (!req.VerifyMessageAuthenticator(raw, secret))
-            return Reject(req, secret, "bad message authenticator");
+        var requireMac = client.RequireMessageAuthenticator ?? _options.RadiusRequireMessageAuthenticator;
+        var maPresent = req.Get(RadiusAttr.MessageAuthenticator) is not null;
+
+        // BlastRADIUS: require a Message-Authenticator (unless this client is explicitly exempted),
+        // and pick the secret that authenticates the request — trying the previous one too, so the
+        // shared secret can be rotated without a flap.
+        if (!maPresent && requireMac) return Reject(req, client.Secret, "message-authenticator required");
+        var secret = ResolveSecret(client, req, raw, maPresent);
+        if (secret is null) return Reject(req, client.Secret, "bad message authenticator");
 
         var user = req.GetString(RadiusAttr.UserName);
         if (string.IsNullOrWhiteSpace(user)) return Reject(req, secret, "no user");
 
         var subjectIdentity = "os:" + user;
-        var resource = Resource(req);
+        var resource = client.Resource;   // the client's policy namespace; NAS-Identifier is evidence only
         var callingStation = req.GetString(RadiusAttr.CallingStationId) ?? remoteIp;
 
         // Resume: a re-sent request carrying our State — check it is the SAME attempt, then the decision.
@@ -141,18 +154,20 @@ public sealed class RadiusApproval
         return true;
     }
 
+    // The secret that authenticates this request: when a Message-Authenticator is present it must
+    // verify (current secret, else the previous one during a rotation window); without a MA (a legacy
+    // client explicitly exempted) we cannot disambiguate, so we use the current secret.
+    private string? ResolveSecret(RadiusClient client, RadiusPacket req, byte[] raw, bool maPresent)
+    {
+        if (!maPresent) return client.Secret;
+        if (req.VerifyMessageAuthenticator(raw, client.Secret)) return client.Secret;
+        if (!string.IsNullOrEmpty(client.SecretPrevious) && req.VerifyMessageAuthenticator(raw, client.SecretPrevious))
+            return client.SecretPrevious;
+        return null;
+    }
+
     private static string StateJti(string token) => "radius-state:" + AgentSignatures.Sha256Hex(Encoding.UTF8.GetBytes(token));
     private static DateTimeOffset Expiry(long unix) => DateTimeOffset.FromUnixTimeSeconds(unix);
-
-    // The gateway (NAS-Identifier) refines the perimeter label shown to the approver; else the config
-    // default. Kept to a sane charset — it lands in audit and the notification.
-    private string Resource(RadiusPacket req)
-    {
-        var nas = req.GetString(RadiusAttr.NasIdentifier);
-        if (string.IsNullOrWhiteSpace(nas)) return _options.RadiusResource;
-        var clean = new string(nas.Where(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_').Take(60).ToArray());
-        return clean.Length == 0 ? _options.RadiusResource : "rdp:" + clean;
-    }
 
     // Responses always carry a Message-Authenticator (RFC 2869), the BlastRADIUS-hardened default,
     // whether or not the request had one.

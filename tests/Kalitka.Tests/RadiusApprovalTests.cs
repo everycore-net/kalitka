@@ -31,7 +31,8 @@ public class RadiusApprovalTests
             new InMemoryRequestStore(), null, new InMemoryConfigStore(), null, null);
         var approval = new RadiusApproval(gate, verifier ?? new AcceptAnyCredentialVerifier(),
             new TokenSigner("unit-test-signing-key-0123456789"), new InMemoryReplayStore(clock),
-            new LoginThrottle(opts, clock), opts, clock, NullLogger<RadiusApproval>.Instance);
+            new LoginThrottle(opts, clock), new RadiusClientRegistry(opts), opts, clock,
+            NullLogger<RadiusApproval>.Instance);
         return (approval, gate);
     }
 
@@ -166,5 +167,67 @@ public class RadiusApprovalTests
 
         Assert.Equal(RadiusCode.AccessAccept, (await Handle(a, Resume(state))).Code);   // first accept
         Assert.Equal(RadiusCode.AccessReject, (await Handle(a, Resume(state))).Code);   // replay refused
+    }
+
+    // A registry-backed builder: clients matched by source, each with its own secret and resource.
+    private static (RadiusApproval approval, GateService gate) BuildClients(params RadiusClientOptions[] clients)
+    {
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
+        var opts = Options.Create(new GateOptions
+        {
+            HmacSecret = "unit-test-signing-key-0123456789",
+            RadiusChallengeSeconds = 120, RadiusAcceptAnyCredentials = true,
+            RadiusClients = clients.ToList(),
+        });
+        var gate = new GateService(new FakeTelegram(), new NullGeoLookup(),
+            new AccessLists(opts, NullLogger<AccessLists>.Instance, new InMemoryConfigStore(), clock),
+            opts, NullLogger<GateService>.Instance, clock, null, new InMemoryAuditStore(),
+            new InMemoryRequestStore(), null, new InMemoryConfigStore(), null, null);
+        var approval = new RadiusApproval(gate, new AcceptAnyCredentialVerifier(),
+            new TokenSigner("unit-test-signing-key-0123456789"), new InMemoryReplayStore(clock),
+            new LoginThrottle(opts, clock), new RadiusClientRegistry(opts), opts, clock,
+            NullLogger<RadiusApproval>.Instance);
+        return (approval, gate);
+    }
+
+    private static byte[] InitialWith(string user, string password, string secret)
+    {
+        var auth = RadiusPacket.NewAuthenticator();
+        return RadiusPacket.BuildAccessRequest(1, auth, new[]
+        {
+            new RadiusAttribute(RadiusAttr.UserName, System.Text.Encoding.UTF8.GetBytes(user)),
+            new RadiusAttribute(RadiusAttr.UserPassword, RadiusPacket.EncryptPassword(password, secret, auth)),
+        }, secret, withMessageAuthenticator: true);
+    }
+
+    [Fact]
+    public async Task A_packet_from_an_unknown_client_is_dropped_without_a_reply()
+    {
+        var (a, gate) = BuildClients(new RadiusClientOptions { Source = "10.0.0.5", Secret = "s", Resource = "vpn:office" });
+        var raw = InitialWith("anna", "pw", "s");
+        Assert.Null(await a.Handle(RadiusPacket.Parse(raw)!, raw, "203.0.113.9", default));   // no response
+        Assert.Empty(gate.PendingSnapshot());
+    }
+
+    [Fact]
+    public async Task The_resource_comes_from_the_matched_client_not_the_packet()
+    {
+        var (a, gate) = BuildClients(new RadiusClientOptions { Source = "10.0.0.5", Secret = "s", Resource = "vpn:office" });
+        var raw = InitialWith("anna", "pw", "s");
+        var res = RadiusPacket.Parse(await a.Handle(RadiusPacket.Parse(raw)!, raw, "10.0.0.5", default))!;
+        Assert.Equal(RadiusCode.AccessChallenge, res.Code);
+        Assert.Equal("vpn:office", gate.PendingSnapshot().Single(r => r.State == "waiting").Target);
+    }
+
+    [Fact]
+    public async Task The_previous_secret_is_accepted_during_rotation()
+    {
+        var (a, _) = BuildClients(new RadiusClientOptions
+        {
+            Source = "10.0.0.5", Secret = "new-secret", SecretPrevious = "old-secret", Resource = "vpn:office",
+        });
+        var raw = InitialWith("anna", "pw", "old-secret");   // gateway still on the old secret
+        var res = RadiusPacket.Parse(await a.Handle(RadiusPacket.Parse(raw)!, raw, "10.0.0.5", default))!;
+        Assert.Equal(RadiusCode.AccessChallenge, res.Code);
     }
 }

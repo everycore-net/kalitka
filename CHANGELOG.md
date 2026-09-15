@@ -119,6 +119,18 @@ release accumulates several fixes; more follow.
   `LdapAllowInsecure` is explicitly set (passwords go to the DC on the bind, so
   `ldaps://` is the norm), and the bind now has a timeout (`LdapTimeoutSeconds`) so
   a hung DC cannot pin a verification slot open.
+- **Client registry: the packet no longer picks its own policy namespace.** The
+  resource was built from the NAS-Identifier attribute, so a VPN or Wi-Fi request
+  could label itself `rdp:<whatever>` and land in the wrong policy space. A RADIUS
+  client is now identified by the **datagram source** (exact IP or CIDR, most
+  specific wins), and each client carries its own secret, resource
+  (`rdp:rdgw-prod`, `vpn:office`, `network:wifi-corp`), display name and optional
+  per-client Message-Authenticator requirement (`RadiusClients`). NAS-Identifier is
+  evidence only. A packet from an unknown source is dropped with no reply. Shared
+  secrets rotate without a flap (`SecretPrevious`, accepted alongside the current
+  one — the same overlap as the signing keys). The legacy single
+  `RadiusSharedSecret`/`RadiusResource` pair still works as a synthesised catch-all
+  client.
 
 ## [0.46.0] - 2026-09-15
 
