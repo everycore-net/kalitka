@@ -85,19 +85,25 @@ public sealed class Worker : BackgroundService
         var cct = timeout.Token;
         try
         {
+            // Read the request BEFORE impersonating the caller. On Windows, NamedPipeServerStream.RunAsClient
+            // (how SubjectResolver reads the client token) is only permitted once the server has read from
+            // the pipe at least once; resolving first throws "cannot impersonate ... until the pipe has been
+            // read from", which drops every request as 401 while the service still shows RUNNING — a silent
+            // outage. Parsing before authorization is safe: nothing is acted on until the caller identity is
+            // established just below, and the read is already length- and time-bounded.
+            var req = await ReadRequestAsync(pipe, _cfg.PipeMaxRequestBytes, cct);
+            if (req is null)
+            {
+                await WriteAsync(pipe, new { status = 400, error = "bad-request" }, cct);
+                return;
+            }
+
             CallerSubject caller;
             try { caller = SubjectResolver.Resolve(pipe); }
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "could not resolve caller identity");
                 await WriteAsync(pipe, new { status = 401, error = "identity-unresolved" }, cct);
-                return;
-            }
-
-            var req = await ReadRequestAsync(pipe, _cfg.PipeMaxRequestBytes, cct);
-            if (req is null)
-            {
-                await WriteAsync(pipe, new { status = 400, error = "bad-request" }, cct);
                 return;
             }
 
