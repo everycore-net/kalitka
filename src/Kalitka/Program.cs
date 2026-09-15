@@ -1338,7 +1338,10 @@ guarded.MapPost("/agents/create", async (HttpContext ctx, AdminAuth auth, AgentS
 
     var name = form["display_name"].ToString();
     var platform = form["platform"].ToString();
-    var caps = Words(form["capabilities"].ToString());
+    // Capabilities come from the checkbox set (closed vocabulary); fall back to the old free-text
+    // field for any API caller still posting it.
+    var caps = form["cap"].Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c!.Trim()).ToArray();
+    if (caps.Length == 0) caps = Words(form["capabilities"].ToString());
     var resources = Words(form["allowed_resources"].ToString());
     var tags = Words(form["tags"].ToString());
 
