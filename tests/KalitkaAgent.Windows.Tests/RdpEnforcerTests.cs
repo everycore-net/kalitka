@@ -17,6 +17,8 @@ public class RdpEnforcerTests
     private sealed class FakeGroup : ILocalGroup
     {
         public readonly HashSet<string> Members = new(StringComparer.OrdinalIgnoreCase);
+        public void EnsureExists() { }
+        public SecurityIdentifier GroupSid() => new("S-1-5-32-555");
         public void Add(SecurityIdentifier m) => Members.Add(m.Value);
         public void Remove(SecurityIdentifier m) => Members.Remove(m.Value);
     }
@@ -45,7 +47,10 @@ public class RdpEnforcerTests
         var ses = new FakeSessions();
         var path = Path.Combine(Path.GetTempPath(), "rdp-jrn-" + Guid.NewGuid().ToString("N") + ".json");
         var jrn = new RdpJournal(path);
-        return (new RdpEnforcer(grp, jrn, ses, clock, NullLogger<RdpEnforcer>.Instance), grp, ses, jrn, clock, path);
+        // Drive the enforcer through the real soft-mode strategy, so grant/deny map to group
+        // add/remove and the existing membership assertions keep their meaning.
+        var enf = new RdpEnforcer(new AllowListAccess(grp), jrn, ses, clock, NullLogger<RdpEnforcer>.Instance);
+        return (enf, grp, ses, jrn, clock, path);
     }
 
     private static RdpLease Lease(string session, string sid, DateTimeOffset expires) =>
@@ -115,7 +120,7 @@ public class RdpEnforcerTests
             clock.Advance(TimeSpan.FromMinutes(30));   // 'gone' has expired
             var freshGroup = new FakeGroup();
             var freshSessions = new FakeSessions();
-            var enf2 = new RdpEnforcer(freshGroup, new RdpJournal(path), freshSessions, clock, NullLogger<RdpEnforcer>.Instance);
+            var enf2 = new RdpEnforcer(new AllowListAccess(freshGroup), new RdpJournal(path), freshSessions, clock, NullLogger<RdpEnforcer>.Instance);
             enf2.Reconcile();
 
             Assert.DoesNotContain(Sid, freshGroup.Members);   // expired lease removed + dejournaled
