@@ -9,6 +9,21 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Windows agent 0.6.0 — end the lease when the person logs off (RDP session accounting).** A grant
+  used to linger to its TTL even after the human left. Now an RDP logoff frees it immediately and
+  tells Core the session closed, completing the lifecycle Core already modelled (`session.started` at
+  redeem → `session.ended` on report):
+  - `RdpLogoff.TryParse` — a pure parse of a Security-log 4634 (logoff) of logon type 10 for a real
+    account. A 4634 is a genuine logoff, not a mere disconnect (4779), so a session that can be
+    reconnected rightly keeps its grant until reconnect-and-logoff or the TTL sweep.
+  - `RdpLogoffWatcher` — on a qualifying logoff it ends the matching lease early: deny access +
+    dejournal locally (authoritative, Core reachable or not), then report `session.end` to Core
+    (best-effort; a reconcile closes anything a Core outage missed). Under the same `Kalitka:RdpWatch`
+    switch as the denied-logon watcher.
+  - `CoreClient.EndSessionAsync` (POST `/agent/v1/sessions/end`) and `RdpEnforcer.LeaseForSid` (map a
+    logged-off SID to its Core session). Shared `Sids.IsAccount` helper across the parsers.
+  - 36 agent tests (was 30). Dev/test-only, no mars deploy.
+
 - **Windows agent 0.5.0 — auto-raise on a denied RDP logon (the 4625 watcher).** With gating on, a
   person needs no client at all: they just try to connect, the OS refuses (they lack the logon
   right), and the agent turns that refusal into an approval. Closes the loop hard mode opened.

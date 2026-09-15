@@ -148,6 +148,21 @@ public class RdpEnforcerTests
     }
 
     [Fact]
+    public void LeaseForSid_finds_the_active_lease_and_is_empty_once_revoked()
+    {
+        var (enf, _, _, _, clock, path) = Fresh();
+        try
+        {
+            enf.Grant(Lease("s1", Sid, clock.GetUtcNow().AddMinutes(30)));
+            Assert.Equal("s1", enf.LeaseForSid(Sid)?.SessionId);   // found by subject SID
+            Assert.Null(enf.LeaseForSid(Sid2));                    // a different subject has none
+            enf.Revoke("s1");
+            Assert.Null(enf.LeaseForSid(Sid));                     // gone after the lease closes
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public void A_session_kill_failure_still_removes_the_right_and_dejournals()
     {
         // Defense in depth: if WTS logoff fails, the group membership is already gone (no new
