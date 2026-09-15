@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.48.1] - 2026-09-15
+
 ### Fixed
 
 - **Agent tells a Core version skew apart from a real beneficiary mismatch.** When redeeming an RDP
