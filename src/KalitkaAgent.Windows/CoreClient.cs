@@ -55,6 +55,9 @@ public sealed class CoreClient
             ["resource"] = resource,
             ["user"] = caller.User,
             ["subject_identity"] = caller.SubjectIdentity,
+            // The absolute, rename-proof identity from the OS token, shown to the approver alongside the
+            // account. Core honours it only from an agent with subject.assert (which this one holds).
+            ["subject_sid"] = caller.Sid,
         };
         if (!string.IsNullOrEmpty(command)) fields["command"] = command;
         using var resp = await SendSigned(agentId, HttpMethod.Post, "/agent/v1/requests", fields, ct);

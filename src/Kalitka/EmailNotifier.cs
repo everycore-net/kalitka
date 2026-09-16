@@ -44,6 +44,7 @@ public sealed class EmailNotifier : INotifier
         var body =
             $"Someone is asking to reach {r.Target}.\n\n"
           + $"Says: {r.Input}\n"
+          + (r.SubjectDisplay() is { Length: > 0 } subj ? $"Subject: {subj}\n" : "")
           + $"IP:   {r.Ip}\n\n"
           + $"Approve: {approve}\n"
           + $"Deny:    {deny}\n\n"

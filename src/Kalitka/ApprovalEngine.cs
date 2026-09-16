@@ -34,6 +34,12 @@ public sealed class PendingRequest
     // asked — not the global admins. Empty = ordinary request (ask admins). Distinct from the
     // free-text Input, which is what a visitor typed and cannot be matched to a principal.
     public string SubjectIdentity = "";
+    // The subject's SID (e.g. S-1-5-21-…), advisory and display/audit-only — the absolute, rename-proof
+    // identity a capable agent reads from the OS token, shown to the approver alongside the account so a
+    // privileged action is decided against the real principal, not a spoofable bare login. Never used
+    // for matching (SubjectIdentity does that) and never part of the dedup fingerprint. Empty when the
+    // channel has no SID (a web visitor; RADIUS already carries the SID as SubjectIdentity = sid:…).
+    public string SubjectSid = "";
     // Subject-approval (0.30.1), snapshotted at raise (like RequiredApprovals): Required =
     // the subject's operator principal must be among the distinct approvers (and the count
     // must still reach RequiredApprovals); Forbidden = the subject's principal may NOT
@@ -55,6 +61,19 @@ public sealed class PendingRequest
     // requester cannot ask to cover more than the channel is configured for. Empty = covers nothing
     // beyond the exact resource (today's behaviour). Carried onto the session at redeem.
     public string Scope = "";
+
+    /// <summary>The asserted subject for an approver to read: the machine identity plus the SID when
+    /// both are known (e.g. <c>os:CONTOSO\anna (sid:S-1-5-21-…)</c>). Empty when no subject identity was
+    /// asserted (an ordinary web visitor). Distinct from <see cref="Input"/>, which is only the free
+    /// text that was typed and cannot be trusted to name a principal.</summary>
+    public string SubjectDisplay()
+    {
+        var id = (SubjectIdentity ?? "").Trim();
+        var sid = (SubjectSid ?? "").Trim();
+        if (id.Length == 0) return sid.Length == 0 ? "" : "sid:" + sid;
+        return sid.Length > 0 && !id.StartsWith("sid:", StringComparison.OrdinalIgnoreCase)
+            ? $"{id} (sid:{sid})" : id;
+    }
 }
 
 /// <summary>What a callback decision came to — enough for a notifier to render it.
@@ -413,11 +432,11 @@ public sealed class ApprovalEngine
         string resource, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "",
         string sourceAddr = "", string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false,
-        string scope = "")
+        string scope = "", string subjectSid = "")
     {
         subject = (subject ?? "").Trim();
         if (subject.Length is 0 or > 120 || string.IsNullOrWhiteSpace(resource)) return ("invalid", "", null);
-        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned, scope);
+        return await Raise(resource, resource, subject, ip, actor, ct, agentTags ?? Array.Empty<string>(), profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned, scope, subjectSid);
     }
 
     /// <summary>
@@ -428,7 +447,8 @@ public sealed class ApprovalEngine
     private async Task<(string state, string id, PendingRequest? request)> Raise(
         string resource, string target, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string> agentTags, string profile, int maxUses, string command = "", string sourceAddr = "",
-        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false, string scope = "")
+        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false, string scope = "",
+        string subjectSid = "")
     {
         command = (command ?? "").Trim();
         sourceAddr = (sourceAddr ?? "").Trim();
@@ -555,7 +575,7 @@ public sealed class ApprovalEngine
             Raised = _clock.GetUtcNow(), State = "waiting", RequiredApprovals = required,
             Profile = profile ?? "", MaxUses = Math.Max(0, maxUses), Command = command, SourceAddr = sourceAddr,
             SubjectIdentity = subjectIdentity, Subject = decision.Subject, RequireSignedApproval = requireSigned,
-            DedupKey = dedupKey, Scope = scope ?? ""
+            DedupKey = dedupKey, Scope = scope ?? "", SubjectSid = (subjectSid ?? "").Trim()
         };
 
         // Atomic create-or-fold: if an identical raise won a concurrent race (two 4625s, or two

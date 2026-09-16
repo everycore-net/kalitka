@@ -220,7 +220,9 @@ public sealed class PushNotifier : INotifier
 
     private static string Describe(PendingRequest r)
     {
-        var who = string.IsNullOrWhiteSpace(r.Input) ? "" : r.Input + " → ";
+        // Prefer the asserted subject (os:DOMAIN\user, optionally + SID) over the free-text input.
+        var who = r.SubjectDisplay() is { Length: > 0 } s ? s + " → "
+                : string.IsNullOrWhiteSpace(r.Input) ? "" : r.Input + " → ";
         var what = string.IsNullOrWhiteSpace(r.Command) ? r.Target : r.Command;
         return who + what;
     }
