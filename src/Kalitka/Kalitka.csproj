@@ -26,7 +26,7 @@
          image deps) — QR at link sizes needs multi-block Reed-Solomon interleaving and mask
          optimisation; unlike our JCS/WebPush formalism it has no security surface and no RFC vector to
          self-test against, so a vetted encoder is proportionate. We render the SVG ourselves. -->
-    <PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="2.0.6" />
+    <PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="3.2.1" />
     <!-- Primary-credential verification for the RADIUS channel: an LDAP bind to the DC. First-party
          Microsoft package; only exercised when RADIUS + LdapUrl are configured (needs libldap on
          Linux at runtime). -->
