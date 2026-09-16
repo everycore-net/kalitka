@@ -39,7 +39,7 @@
          Microsoft.Data.Sqlite 9.0.0 expects (the 3.0.x line is a major bump). Explicit here so it flows
          to every project referencing Kalitka — those build with TreatWarningsAsErrors, where NU1903
          would otherwise fail the build. -->
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
