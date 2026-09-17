@@ -43,21 +43,20 @@ builder.Services.AddSingleton(sp =>
     new RdpJournal(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentConfig>>().Value.RdpJournalPath));
 builder.Services.AddSingleton<RdpEnforcer>();
 
-// The enrolled id is handed from Worker to the log watcher; the activator turns a Core grant into
-// local access (redeem + beneficiary check + enable), shared by the pipe path and the watcher.
+// The enrolled id is handed from Worker to the logoff watcher; the activator turns a Core grant into
+// local access (redeem + beneficiary check + enable) for the pipe request path.
 builder.Services.AddSingleton<AgentIdentity>();
 builder.Services.AddSingleton<RdpActivator>();
-builder.Services.AddSingleton<IRdpActivator>(sp => sp.GetRequiredService<RdpActivator>());
 
 builder.Services.AddHostedService<Worker>();
 builder.Services.AddHostedService<RdpSweeper>();
 
-// The Security-log watchers are opt-in: they need rights to read the Security log and are only
-// useful once RDP gating enforces on the box. One raises on a denied logon (4625), the other ends a
-// lease early on logoff (4634) and reports the session closed to Core.
+// The logoff watcher is opt-in: it needs rights to read the Security log and is only useful once RDP
+// gating enforces on the box. It ends a lease early on logoff (4634) and reports the session closed to
+// Core. (The 4625 "denied-logon" auto-trigger was withdrawn: on a TLS listener the refusal is not
+// written server-side as 4625 at all — see docs/design/rdp-signal-measured.md — so it never fired.)
 if (builder.Configuration.GetSection("Kalitka").Get<AgentConfig>()?.RdpWatch == true)
 {
-    builder.Services.AddHostedService<SecurityLogWatcher>();
     builder.Services.AddHostedService<RdpLogoffWatcher>();
 }
 

@@ -3,46 +3,28 @@ using Microsoft.Extensions.Logging;
 
 namespace KalitkaAgent;
 
-/// <summary>Raises and drives an RDP request to a grant on the subject's behalf — used by the
-/// security-log watcher, which has no interactive client to poll for it.</summary>
-public interface IRdpActivator
-{
-    Task ActivateAsync(RdpDenial denial, CancellationToken ct);
-}
-
-/// <summary>What became of a redeem+grant attempt. The pipe path maps these to reply codes; the
-/// watcher just logs.</summary>
+/// <summary>What became of a redeem+grant attempt. The pipe path maps these to reply codes.</summary>
 public enum GrantOutcome { Granted, Forbidden, RedeemFailed, SubjectIdentityMissing, ProvisionFailed }
 
 public sealed record GrantResult(GrantOutcome Outcome, DateTimeOffset? ExpiresAt = null, int Status = 200);
 
 /// <summary>
-/// The one place a Core grant turns into local RDP access. It owns the security-critical steps so
-/// both callers (the interactive pipe flow and the log watcher) share exactly one implementation:
-/// redeem the one-time grant, confirm the Core-approved subject is the very account we are about to
-/// enable (never grant to someone else), then hand the lease to the enforcer. It also drives the
-/// full raise→poll→grant loop for the watcher, which has nobody to poll on its behalf.
+/// The one place a Core grant turns into local RDP access, for the pipe request flow (a local process
+/// asks via <c>rdp_activate</c>). It owns the security-critical steps: redeem the one-time grant, confirm
+/// the Core-approved subject is the very account we are about to enable (never grant to someone else),
+/// then hand the lease to the enforcer.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class RdpActivator : IRdpActivator
+public sealed class RdpActivator
 {
-    // Poll a raised request until the human decides. The window matches Core's pending lifetime; a
-    // few seconds between polls is well within human-paced approval and the request dedups anyway.
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
-    private static readonly TimeSpan PollTimeout = TimeSpan.FromMinutes(5);
-
     private readonly CoreClient _core;
     private readonly RdpEnforcer _rdp;
-    private readonly AgentIdentity _identity;
-    private readonly TimeProvider _clock;
     private readonly ILogger<RdpActivator> _log;
 
-    public RdpActivator(CoreClient core, RdpEnforcer rdp, AgentIdentity identity, TimeProvider clock, ILogger<RdpActivator> log)
+    public RdpActivator(CoreClient core, RdpEnforcer rdp, ILogger<RdpActivator> log)
     {
         _core = core;
         _rdp = rdp;
-        _identity = identity;
-        _clock = clock;
         _log = log;
     }
 
@@ -89,42 +71,10 @@ public sealed class RdpActivator : IRdpActivator
         return new GrantResult(GrantOutcome.Granted, redeemed.ExpiresAt.Value);
     }
 
-    /// <summary>The watcher's autonomous path: raise the request for the denied subject, poll until
-    /// the human decides, and enable RDP on approval. No-op if the id is not published yet.</summary>
-    public async Task ActivateAsync(RdpDenial denial, CancellationToken ct)
-    {
-        var agentId = _identity.Current;
-        if (agentId is null) return;
-
-        var caller = denial.ToSubject();
-        var raise = await _core.RaiseAsync(agentId, caller, denial.Resource, command: null, ct);
-        if (raise.State == "allowed") return;                    // already permitted; nothing to enable
-        if (raise.State != "waiting" || string.IsNullOrEmpty(raise.Id))
-        {
-            _log.LogInformation("RDP request for {Account} not pending ({State}); nothing to do", caller.Account, raise.State);
-            return;
-        }
-
-        var deadline = _clock.GetUtcNow() + PollTimeout;
-        while (!ct.IsCancellationRequested && _clock.GetUtcNow() < deadline)
-        {
-            await Task.Delay(PollInterval, _clock, ct);
-            var poll = await _core.PollAsync(agentId, raise.Id!, ct);
-            if (poll.State == "approved" && !string.IsNullOrEmpty(poll.Grant))
-            {
-                var result = await RedeemAndGrantAsync(agentId, caller, poll.Grant!, ct);
-                if (result.Outcome == GrantOutcome.Granted)
-                    _log.LogInformation("RDP enabled for {Account} until {Expiry:u}", caller.Account, result.ExpiresAt);
-                return;
-            }
-            if (poll.State is "denied" or "expired" || poll.State is null) return;   // terminal
-        }
-    }
-
     /// <summary>The Core-approved subject identity must be the caller's full, stable identity — the
     /// whole <c>os:DOMAIN\user</c> / <c>sid:…</c> string, compared case-insensitively (Core stores it
     /// lower-cased), never a bare login-name tail. An empty approved identity never matches (fail
-    /// closed). Shared by both activation paths.</summary>
+    /// closed).</summary>
     public static bool BeneficiaryMatches(string? approvedSubjectIdentity, CallerSubject caller)
     {
         if (string.IsNullOrEmpty(approvedSubjectIdentity)) return false;

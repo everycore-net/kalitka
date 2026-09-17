@@ -55,7 +55,7 @@ public sealed class RdpLogoffWatcher : BackgroundService
     {
         if (record is null) return;
         RdpLogoff? logoff = null;
-        try { logoff = RdpLogoff.TryParse(SecurityLogWatcher.ParseEventData(record.ToXml())); }
+        try { logoff = RdpLogoff.TryParse(EventData.Parse(record.ToXml())); }
         catch (Exception ex) { _log.LogWarning(ex, "could not read a 4634 event"); }
         finally { record.Dispose(); }
 

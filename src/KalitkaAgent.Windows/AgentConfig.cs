@@ -58,11 +58,10 @@ public sealed class AgentConfig
     /// deny-logon right at startup. Members are default-denied RDP until a grant lifts them out.</summary>
     public string DenyGroupName { get; set; } = "Kalitka-Gated";
 
-    /// <summary>Watch the Security log for denied RDP logons (4625, logon-type-not-granted) and raise
-    /// an approval automatically. Off by default; reading the Security log needs SYSTEM (or Event Log
-    /// Readers). <b>Only effective with NLA disabled:</b> with Network Level Authentication on (the
-    /// secure default) a refused RDP logon is not logged, so this never fires (measured — see
-    /// docs/design/rdp-signal-measured.md). Do not disable NLA to enable it; use a RADIUS gateway or the
-    /// self-service portal instead. Kept for legacy NLA-off environments only.</summary>
+    /// <summary>Watch the Security log for RDP <b>logoffs</b> (event 4634) and end the person's lease
+    /// early — reporting the session closed to Core — rather than waiting for its TTL. Off by default;
+    /// reading the Security log needs SYSTEM (or Event Log Readers). (The former 4625 "denied-logon"
+    /// auto-trigger was withdrawn: on a TLS listener the refusal is never written server-side as 4625,
+    /// so it fired nowhere realistic — see docs/design/rdp-signal-measured.md.)</summary>
     public bool RdpWatch { get; set; }
 }

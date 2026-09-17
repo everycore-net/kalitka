@@ -68,7 +68,7 @@ public class RdpLogoffTests
           </EventData>
         </Event>
         """;
-        var l = RdpLogoff.TryParse(SecurityLogWatcher.ParseEventData(xml));
+        var l = RdpLogoff.TryParse(EventData.Parse(xml));
         Assert.NotNull(l);
         Assert.Equal("CONTOSO\\anna", l!.Account);
     }

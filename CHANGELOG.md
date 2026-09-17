@@ -60,6 +60,26 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the audit, SQLite-store and durable-integration tests (41) and the full Core suite pass, and the net10
   agent/MCP-gateway build clean under `TreatWarningsAsErrors`.
 
+### Removed
+
+- **The RDP 4625 "denied-logon" auto-trigger (Security-log watcher) is withdrawn — and the shipped
+  comment advising that NLA be disabled with it.** Repeated measurement on a live host
+  (`docs/design/rdp-signal-measured.md`) showed the server-side `4625/0xC000015B` is **not emitted on a
+  TLS RDP listener at all** — turning NLA off does not help (the listener stays `SecurityLayer=2`; the
+  refusal goes to the *client* as event 226, never to the server), and a server-side 4625 would need
+  `SecurityLayer=0`, classic RDP without TLS, which we never recommend. So the watcher fired nowhere
+  realistic, while its code comment actively invited weakening a machine (disable NLA) for a feature that
+  could not work — for a security product, advice that trades real protection for nothing is worse than
+  the dead code. Removed `SecurityLogWatcher`, `RdpDenial` and `RdpActivator.ActivateAsync`/`IRdpActivator`
+  (the shared 4625-XML parser moved to `EventData.Parse`). **Kept**: the request-driven paths (RD
+  Gateway/RADIUS, the self-service portal, and the local pipe `rdp`/`rdp_activate` via
+  `RedeemAndGrantAsync`), and the RDP **logoff** watcher (event 4634, ends a lease early) which still
+  sits behind `Kalitka:RdpWatch`. Agent 0.10.6 → 0.10.7.
+  **Upgrade note — if you disabled NLA to make this watcher fire, re-enable it.** It never worked in
+  that configuration either (the server-side 4625 is not written on a TLS listener regardless), so
+  turning NLA off bought nothing but a weakened machine; upgrading removes the watcher but cannot undo
+  a manual NLA change, so re-enable it yourself.
+
 ## [0.48.2] - 2026-09-16
 
 ### Fixed
