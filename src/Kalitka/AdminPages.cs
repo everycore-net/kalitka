@@ -99,6 +99,7 @@ public static class AdminPages
         + Nav(who, Perm.PoliciesManage, "/admin/policies/copilot", "Copilot")
         + Nav(who, Perm.PrincipalsRead, "/admin/principals", "Operators")
         + Nav(who, Perm.CatalogRead, "/admin/catalog", "Catalogue")
+        + Nav(who, Perm.IntegrationsRead, "/admin/integrations", "Integrations")
         + Nav(who, Perm.HistoryRead, "/admin/history", "History")
         + Nav(who, Perm.HistoryRead, "/admin/audit/verify", "Integrity")
         // Self-service for every admin — you register and revoke your own devices.
@@ -999,6 +1000,63 @@ async function kalitkaApprove(id,verb,csrf){
         }
         return Shell(who, sb.ToString());
     }
+
+    /// <summary>Runtime integration keys: the ticket systems allowed to raise requests over the REST
+    /// API, each scoped to resource globs and rate-limited. The bearer token is shown once at creation;
+    /// only its hash is stored, so the table never renders it — rotate to get a fresh one.</summary>
+    public static string Integrations(AdminIdentity who, IReadOnlyList<IntegrationKey> keys, string csrf)
+    {
+        var sb = new StringBuilder("<h1>Integration keys</h1>");
+        sb.Append("<p class=\"muted\">Credentials for ticket systems (Jira, Freshdesk, ServiceNow) that raise access "
+            + "requests via <code>POST /api/v1/requests</code>. Each key is <b>scoped</b> to resource globs (same "
+            + "matcher as covering grants, e.g. <code>rdp:*</code>) and rate-limited per minute. It can only <b>raise</b> "
+            + "requests, never approve — an integration is not an approver. The token is shown once on create; only its "
+            + "hash is stored, so rotate to replace a lost one.</p>");
+
+        sb.Append("<h2>New key</h2>")
+          .Append("<form method=\"post\" action=\"/admin/integrations/save\">")
+          .Append($"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">")
+          .Append(In("id", "id (stable slug, e.g. jira)"))
+          .Append(In("scope", "scope globs — space-separated (rdp:* db:reports)"))
+          .Append(In("rpm", "max requests per minute (default 60)"))
+          .Append("<div class=\"btns\"><button>Create key</button></div></form>")
+          .Append("<p class=\"muted\">Re-saving an existing id updates its scope/rate and keeps the token.</p>");
+
+        sb.Append("<h2>Keys</h2>");
+        if (keys.Count == 0)
+            sb.Append("<p class=\"muted\">No keys yet — the request API is closed to integrations.</p>");
+        else
+        {
+            sb.Append("<table><tr><th>Id</th><th>Scope</th><th>Rate/min</th><th></th></tr>");
+            foreach (var k in keys)
+                sb.Append("<tr>")
+                  .Append($"<td><code>{H(k.Id)}</code></td>")
+                  .Append($"<td><code>{H(string.Join(" ", k.Scope ?? Array.Empty<string>()))}</code></td>")
+                  .Append($"<td>{k.MaxRequestsPerMinute}</td>")
+                  .Append("<td><form class=\"inline\" method=\"post\" action=\"/admin/integrations/rotate\">"
+                      + $"<input type=\"hidden\" name=\"id\" value=\"{H(k.Id)}\">"
+                      + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                      + "<button>Rotate</button></form> "
+                      + "<form class=\"inline\" method=\"post\" action=\"/admin/integrations/delete\">"
+                      + $"<input type=\"hidden\" name=\"id\" value=\"{H(k.Id)}\">"
+                      + $"<input type=\"hidden\" name=\"csrf\" value=\"{H(csrf)}\">"
+                      + "<button class=\"no\">Delete</button></form></td>")
+                  .Append("</tr>");
+            sb.Append("</table>");
+        }
+        return Shell(who, sb.ToString());
+    }
+
+    /// <summary>The one-time display of a newly minted or rotated integration bearer token.</summary>
+    public static string IntegrationTokenShown(AdminIdentity who, string id, string token) =>
+        Shell(who,
+            $"<h1>Integration key: {H(id)}</h1>"
+            + "<div class=\"card\" style=\"max-width:640px\">"
+            + "<p class=\"muted\">Bearer token — copy it now, it is not shown again. Send it as "
+            + "<code>Authorization: Bearer &lt;token&gt;</code> to <code>/api/v1/requests</code>.</p>"
+            + $"<p><code style=\"font-size:1rem;word-break:break-all\">{H(token)}</code></p>"
+            + "<p class=\"muted\">Only the hash is stored; if lost, rotate the key for a new one.</p></div>"
+            + "<p style=\"margin-top:18px\"><a class=\"row\" href=\"/admin/integrations\">← back to integrations</a></p>");
 
     public static string AgentDetail(AdminIdentity who, Agent a, string csrf, ReconcileService.Plan? drift = null)
     {

@@ -7,6 +7,21 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Admin console for integration keys (portal slice 4b).** The REST request API's credentials
+  (ticket systems that raise access requests) can now be created, rotated and deleted from the admin
+  console at runtime, instead of only via static `Kalitka__IntegrationClients` config that needs a
+  restart. A key is a config entity (`IntegrationKeyService`, append-only revisions, audited CRUD —
+  same shape as the catalogue): it holds a resource **scope** (globs, the covering-grant matcher) and a
+  per-minute **rate limit**, and its bearer token is minted server-side, **shown once**, and stored
+  only as a PBKDF2 hash (`AgentSecrets`) — never in plaintext. `IntegrationRegistry` now resolves a
+  bearer token against both config-defined clients (constant-time plaintext compare) and store-defined
+  keys (fixed-time hash verify), so the two coexist. New page `/admin/integrations` (create / rotate /
+  delete) behind `Perm.IntegrationsRead`/`IntegrationsManage` (in the PolicyAdmin bundle), CSRF-guarded,
+  auditing `integration.created/updated/rotated/deleted`. A key can only *raise* requests, never
+  approve — the same invariant as the missing approve tool.
+
 ### Changed
 
 - **`Microsoft.Data.Sqlite` 9.0.0 → 10.0.12, and the explicit `SQLitePCLRaw.bundle_e_sqlite3` pin

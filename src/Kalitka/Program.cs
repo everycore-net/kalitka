@@ -160,6 +160,7 @@ builder.Services.AddSingleton<PolicyCopilot>();
 builder.Services.AddSingleton<PrincipalService>();
 builder.Services.AddSingleton<CatalogService>();
 builder.Services.AddSingleton<MyAccessService>();
+builder.Services.AddSingleton<IntegrationKeyService>();
 builder.Services.AddSingleton<IntegrationRegistry>();
 builder.Services.AddSingleton<IntegrationIdempotency>();
 
@@ -1606,6 +1607,48 @@ guarded.MapPost("/catalog/delete", async (HttpContext ctx, AdminAuth auth, Catal
     await catalog.Delete(form["id"].ToString().Trim(), who.Actor, ctx.RequestAborted);
     return Results.Redirect("/admin/catalog", false);
 }).RequirePermission(Perm.CatalogManage);
+
+// ---- Integration keys (self-service request API credentials) -----------------
+guarded.MapGet("/integrations", (HttpContext ctx, AdminAuth auth, IntegrationKeyService keys) =>
+{
+    var who = Admin(ctx);
+    return Results.Content(AdminPages.Integrations(who, keys.All(), auth.IssueCsrf(who.Sub)), "text/html; charset=utf-8");
+}).RequirePermission(Perm.IntegrationsRead);
+
+guarded.MapPost("/integrations/save", async (HttpContext ctx, AdminAuth auth, IntegrationKeyService keys) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var (token, error) = await keys.Save(form["id"].ToString(), Words(form["scope"].ToString()),
+        int.TryParse(form["rpm"].ToString(), out var r) ? r : 0, who.Actor, ctx.RequestAborted);
+    if (error is not null) return Results.BadRequest(error);
+    // A freshly minted token is shown exactly once; an in-place update just returns to the list.
+    return token is not null
+        ? Results.Content(AdminPages.IntegrationTokenShown(who, form["id"].ToString().Trim(), token), "text/html; charset=utf-8")
+        : Results.Redirect("/admin/integrations", false);
+}).RequirePermission(Perm.IntegrationsManage);
+
+guarded.MapPost("/integrations/rotate", async (HttpContext ctx, AdminAuth auth, IntegrationKeyService keys) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    var id = form["id"].ToString().Trim();
+    var token = await keys.Rotate(id, who.Actor, ctx.RequestAborted);
+    return token is not null
+        ? Results.Content(AdminPages.IntegrationTokenShown(who, id, token), "text/html; charset=utf-8")
+        : Results.Redirect("/admin/integrations", false);
+}).RequirePermission(Perm.IntegrationsManage);
+
+guarded.MapPost("/integrations/delete", async (HttpContext ctx, AdminAuth auth, IntegrationKeyService keys) =>
+{
+    var who = Admin(ctx);
+    var form = await ctx.Request.ReadFormAsync();
+    if (!auth.ValidateCsrf(form["csrf"].ToString(), who.Sub)) return Results.StatusCode(403);
+    await keys.Delete(form["id"].ToString().Trim(), who.Actor, ctx.RequestAborted);
+    return Results.Redirect("/admin/integrations", false);
+}).RequirePermission(Perm.IntegrationsManage);
 
 guarded.MapPost("/principals/delete", async (HttpContext ctx, AdminAuth auth, PrincipalService principals) =>
 {
