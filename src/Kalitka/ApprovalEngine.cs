@@ -914,15 +914,43 @@ public sealed class ApprovalEngine
 
     /// <summary>The audit event for a resolved decision — built the same way whether
     /// it is appended inside the transaction or as the best-effort second step.</summary>
-    private AuditEvent DecisionEvent(string toState, string actor, PendingRequest request, string verb, string proof = "") =>
-        Event(toState == "approved" ? AuditEvents.AccessApproved : AuditEvents.AccessDenied,
+    private AuditEvent DecisionEvent(string toState, string actor, PendingRequest request, string verb, string proof = "")
+    {
+        // Stamp the self-approval verdict — regardless of policy, so a "person opened their own door" is
+        // visible in the sealed append-only chain and never mistaken for a four-eyes decision. Recorded
+        // as THREE states so absence is unambiguous (unknown != empty, applied to the audit itself): a
+        // record written now can never gain the mark later. The default path (Subject=Optional, quorum 1)
+        // skips the subject branch above, so this is the only place it is recorded.
+        var mark = toState == "approved" ? SelfApprovalMark(actor, request) : "";
+        var self = mark.Length > 0 ? " " + mark : "";
+        // A device-signed decision folds a short commitment to its proof into the hashed Metadata (the
+        // proof itself rides on AuditEvent.Proof, outside the chain hash), so the proof is tamper-evident
+        // without rewriting the chain's field set.
+        var meta = proof.Length == 0 ? verb + self : $"{verb}{self} p={WebAuthnProof.Commitment(proof)}";
+        return Event(toState == "approved" ? AuditEvents.AccessApproved : AuditEvents.AccessDenied,
             actor: actor, subject: request.Input, resource: request.Resource,
-            requestId: request.Id, channel: ChannelOf(actor),
-            // A device-signed decision folds a short commitment to its proof into the hashed Metadata
-            // (the proof itself rides on AuditEvent.Proof, outside the chain hash), so the proof is
-            // tamper-evident without rewriting the chain's field set.
-            metadata: proof.Length == 0 ? verb : $"{verb} p={WebAuthnProof.Commitment(proof)}")
+            requestId: request.Id, channel: ChannelOf(actor), metadata: meta)
         with { Proof = proof };
+    }
+
+    /// <summary>The self-approval verdict for the audit record — three states, so no single one is
+    /// silently overloaded (unknown != empty): <c>self_approved</c> when approver and subject resolve to
+    /// the same operator principal; <c>self_unknown</c> when it cannot be determined (no asserted subject,
+    /// or either side not linked to a principal); and the empty string ONLY when both resolve and are
+    /// genuinely different people — a verified four-eyes decision. One principal lookup per side; the
+    /// decision itself is unchanged.</summary>
+    private string SelfApprovalMark(string actor, PendingRequest request)
+    {
+        if (_principals is null) return "self_unknown";
+        var subj = (request.SubjectIdentity ?? "").Trim();
+        if (subj.Length == 0) return "self_unknown";              // no asserted subject to compare against
+        var subjectPrincipal = _principals.Resolve(subj);
+        if (subjectPrincipal is null) return "self_unknown";      // subject not linked to a principal
+        var approverPrincipal = _principals.Resolve(actor);
+        if (approverPrincipal is null) return "self_unknown";     // approver not linked to a principal
+        return string.Equals(approverPrincipal, subjectPrincipal, StringComparison.OrdinalIgnoreCase)
+            ? "self_approved" : "";                               // "" = verified different people
+    }
 
     // ---- Lists: read and mutate (formatting lives in the notifier) ----------
 

@@ -24,6 +24,20 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Self-approval is now marked in the audit chain — as a three-state verdict.** When the approver and
+  the request's subject resolve to the same operator principal (a person approving their own access), the
+  `AccessApproved` event is stamped `self_approved`, independent of policy. Previously this was invisible
+  after the fact: `AccessApproved` recorded approver and subject separately, and only re-running identity
+  resolution could reveal they were the same. Crucially the mark is **three-state**, so no single value
+  is silently overloaded (unknown ≠ empty, applied to the audit itself): `self_approved` (same person),
+  **`self_unknown`** (cannot be determined — no asserted subject, or either side not linked to a
+  principal), and **blank only when both resolve and are genuinely different** — a verified four-eyes
+  decision. Because the audit is a sealed hash chain, a record written now can never gain or refine the
+  mark later, so absence must mean exactly one thing. Recorded on every approval path (the default
+  single-approver path, which skips the quorum/subject branch, included); one principal lookup per side;
+  the decision itself is unchanged. Pairs with the notification now showing the asserted subject:
+  self-approval becomes a conscious act *and* an unambiguously recorded one.
+
 - **The approval notification now shows the asserted subject — account and SID — not a bare login.**
   A request carries a machine-readable `subject_identity` (`os:CONTOSO\anna`, `sid:S-1-5-…`) that Core
   used only for routing/policy; the approver was shown just the free-text "Says: anna", which cannot be
