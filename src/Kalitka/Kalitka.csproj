@@ -32,14 +32,14 @@
          Linux at runtime). -->
     <PackageReference Include="System.DirectoryServices.Protocols" Version="9.0.0" />
     <PackageReference Include="MaxMind.GeoIP2" Version="6.1.0" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
-    <!-- Pin the native SQLite bundle above the version Microsoft.Data.Sqlite 9.0.0 pulls transitively
-         (SQLitePCLRaw.lib.e_sqlite3 2.1.10). GHSA-2m69-gcr7-jv3q (CVE-2025-6965) covers the whole
-         lib.e_sqlite3 <= 2.1.11 range; 2.1.13 is the first out of it, kept on the 2.1.x line that
-         Microsoft.Data.Sqlite 9.0.0 expects (the 3.0.x line is a major bump). Explicit here so it flows
-         to every project referencing Kalitka — those build with TreatWarningsAsErrors, where NU1903
-         would otherwise fail the build. -->
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
+    <!-- No explicit SQLitePCLRaw pin on purpose: MDS 10.0.12 already resolves the native
+         lib.e_sqlite3 to 2.1.12 transitively, which is OUT of GHSA-2m69-gcr7-jv3q (CVE-2025-6965,
+         <= 2.1.11). What now keeps a vulnerable native SQLite out is NuGetAudit (NU1903 fails the
+         build if a flagged version is ever resolved) — NOT a version here. So: do not disable
+         NuGetAudit, and if NU1903 ever fires on lib.e_sqlite3, re-pin bundle_e_sqlite3 above the
+         advisory range rather than silencing the audit. (We track MDS's own tested 2.1.x rather than
+         forcing 2.1.13, to avoid re-introducing a mystery floor.) -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
