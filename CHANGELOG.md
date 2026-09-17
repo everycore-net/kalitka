@@ -75,6 +75,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Gateway/RADIUS, the self-service portal, and the local pipe `rdp`/`rdp_activate` via
   `RedeemAndGrantAsync`), and the RDP **logoff** watcher (event 4634, ends a lease early) which still
   sits behind `Kalitka:RdpWatch`. Agent 0.10.6 → 0.10.7.
+  **Upgrade note — if you disabled NLA to make this watcher fire, re-enable it.** It never worked in
+  that configuration either (the server-side 4625 is not written on a TLS listener regardless), so
+  turning NLA off bought nothing but a weakened machine; upgrading removes the watcher but cannot undo
+  a manual NLA change, so re-enable it yourself.
 
 ## [0.48.2] - 2026-09-16
 
