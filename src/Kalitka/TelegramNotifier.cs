@@ -71,6 +71,9 @@ public sealed class TelegramNotifier : INotifier
         return "\U0001F514 <b>Someone is at the door</b>\n"
              + $"Target: <code>{Safe(r.Target, FieldKind.SecurityIdentifier)}</code>\n"
              + $"Says: <b>{Safe(r.Input, FieldKind.FreeText)}</b>\n"
+             // The asserted subject (os:DOMAIN\user + SID) — the identity the approval is really about,
+             // shown apart from the free-text "Says" a caller could type. Present only when asserted.
+             + (r.SubjectDisplay() is { Length: > 0 } subj ? $"Subject: <code>{Safe(subj, FieldKind.SecurityIdentifier)}</code>\n" : "")
              // The command is the crux of what is being approved — show it prominently, rendered safely.
              + (string.IsNullOrEmpty(r.Command) ? "" : $"Command: <code>{Safe(r.Command, FieldKind.FreeText)}</code>\n")
              + (string.IsNullOrEmpty(r.SourceAddr) ? "" : $"From-addr: <code>{Safe(r.SourceAddr, FieldKind.SecurityIdentifier)}</code>\n")

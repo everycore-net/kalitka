@@ -94,9 +94,10 @@ public sealed class GateService
     /// </summary>
     public async Task<(string state, string id)> RaiseAction(string resource, string subject, string ip, string actor, CancellationToken ct,
         IReadOnlyList<string>? agentTags = null, string profile = "", int maxUses = 0, string command = "", string sourceAddr = "",
-        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false, string scope = "")
+        string subjectIdentity = "", bool subjectTrusted = false, bool requireSigned = false, string scope = "",
+        string subjectSid = "")
     {
-        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags, profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned, scope);
+        var (state, id, request) = await _engine.RaiseAction(resource, subject, ip, actor, ct, agentTags, profile, maxUses, command, sourceAddr, subjectIdentity, subjectTrusted, requireSigned, scope, subjectSid);
         await AnnounceAll(request, ct);
         return (state, id);
     }

@@ -24,6 +24,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The approval notification now shows the asserted subject — account and SID — not a bare login.**
+  A request carries a machine-readable `subject_identity` (`os:CONTOSO\anna`, `sid:S-1-5-…`) that Core
+  used only for routing/policy; the approver was shown just the free-text "Says: anna", which cannot be
+  trusted to name a real person — undercutting the whole point of `subject.assert`. The Telegram, email
+  and Web Push notifications now render a **`Subject:`** line with the qualified account and, when known,
+  the SID (`os:CONTOSO\anna (sid:S-1-5-21-…)`), via a shared `PendingRequest.SubjectDisplay()`. The
+  Windows agent now also sends the OS-token **SID** (`subject_sid`); Core honours it only from an agent
+  that may **assert** the subject, so a caller without `subject.assert` cannot inject a SID into the
+  approver's view. Advisory/display-only — never used for matching or the dedup fingerprint. (The RADIUS
+  channel already carried the SID as its `sid:` identity, so it now shows too.) Agent 0.10.5 → 0.10.6.
+
 - **`Microsoft.Data.Sqlite` 9.0.0 → 10.0.12, and the explicit `SQLitePCLRaw.bundle_e_sqlite3` pin
   removed.** MDS 10.0.12 pulls the whole `SQLitePCLRaw` family at **2.1.12** transitively — already out
   of the `GHSA-2m69-gcr7-jv3q` (CVE-2025-6965) `≤ 2.1.11` range, so restore is clean with no `NU1903`

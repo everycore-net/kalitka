@@ -101,6 +101,48 @@ public class NotificationRoutingTests : IClassFixture<GateFactory>
     }
 
     [Fact]
+    public async Task The_notification_shows_the_asserted_account_and_sid()
+    {
+        await _f.Services.GetRequiredService<PrincipalService>()
+            .Save("zed", "Zed", new[] { "os:contoso\\zed", "telegram:808" }, "google:admin", default);
+        // subject.assert so the SID is honoured — the Windows-agent case the fix targets.
+        _f.Services.GetRequiredService<IAgentStore>().Create(new Agent(
+            "route-sid", "route-sid", "windows", "h", AgentStatus.Active, AgentSecrets.Hash("s"),
+            new[] { "ssh", AgentCapabilities.AssertSubject }, new[] { "ssh:*" }, "", _f.Clock.GetUtcNow(), null, "", null));
+        var before = _f.Telegram.Messages.Count;
+
+        await Raise("route-sid", "s", new()
+        {
+            ["host"] = "h5", ["user"] = "zed",
+            ["subject_identity"] = "os:contoso\\zed", ["subject_sid"] = "S-1-5-21-9-9-9-1104",
+        });
+
+        // The approver sees the qualified subject AND the SID — not the bare login it used to show.
+        var msgs = _f.Telegram.Messages.Skip(before).Select(m => m.Html).ToList();
+        Assert.Contains(msgs, h => h.Contains("Subject:") && h.Contains("S-1-5-21-9-9-9-1104"));
+    }
+
+    [Fact]
+    public async Task A_bare_agent_cannot_inject_a_sid_into_the_notification()
+    {
+        await _f.Services.GetRequiredService<PrincipalService>()
+            .Save("yan", "Yan", new[] { "os:contoso\\yan", "telegram:809" }, "google:admin", default);
+        Register("route-nosid", "s");   // no subject.assert
+        var before = _f.Telegram.Messages.Count;
+
+        await Raise("route-nosid", "s", new()
+        {
+            ["host"] = "h6", ["user"] = "yan",
+            ["subject_identity"] = "os:contoso\\yan", ["subject_sid"] = "S-1-5-21-6-6-6-1337",
+        });
+
+        // The subject identity still shows (it routes), but a SID from a non-asserting agent is dropped.
+        var msgs = _f.Telegram.Messages.Skip(before).Select(m => m.Html).ToList();
+        Assert.Contains(msgs, h => h.Contains("Subject:"));
+        Assert.DoesNotContain(msgs, h => h.Contains("S-1-5-21-6-6-6-1337"));
+    }
+
+    [Fact]
     public async Task IdentitiesOf_is_the_reverse_of_Resolve()
     {
         var svc = _f.Services.GetRequiredService<PrincipalService>();
