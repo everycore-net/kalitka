@@ -7,6 +7,19 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`Microsoft.Data.Sqlite` 9.0.0 → 10.0.12, and the explicit `SQLitePCLRaw.bundle_e_sqlite3` pin
+  removed.** MDS 10.0.12 pulls the whole `SQLitePCLRaw` family at **2.1.12** transitively — already out
+  of the `GHSA-2m69-gcr7-jv3q` (CVE-2025-6965) `≤ 2.1.11` range, so restore is clean with no `NU1903`
+  and the explicit **2.1.13** pin from the earlier build-hygiene fix is now redundant; keeping it would
+  only be a mystery floor. Deliberately **not** taking the Dependabot bump of `bundle_e_sqlite3` to
+  3.0.5: MDS 10 depends on the `2.1.x` line, so forcing the `3.x` native bundle would split the
+  `SQLitePCLRaw` family (bundle 3.x vs core 2.1.12) and break the native provider **at runtime** — on
+  the SQLite-backed audit hash-chain, the worst place for a silent break. Verified beyond compilation:
+  the audit, SQLite-store and durable-integration tests (41) and the full Core suite pass, and the net10
+  agent/MCP-gateway build clean under `TreatWarningsAsErrors`.
+
 ## [0.48.2] - 2026-09-16
 
 ### Fixed

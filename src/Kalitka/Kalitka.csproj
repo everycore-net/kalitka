@@ -32,14 +32,7 @@
          Linux at runtime). -->
     <PackageReference Include="System.DirectoryServices.Protocols" Version="9.0.0" />
     <PackageReference Include="MaxMind.GeoIP2" Version="6.1.0" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
-    <!-- Pin the native SQLite bundle above the version Microsoft.Data.Sqlite 9.0.0 pulls transitively
-         (SQLitePCLRaw.lib.e_sqlite3 2.1.10). GHSA-2m69-gcr7-jv3q (CVE-2025-6965) covers the whole
-         lib.e_sqlite3 <= 2.1.11 range; 2.1.13 is the first out of it, kept on the 2.1.x line that
-         Microsoft.Data.Sqlite 9.0.0 expects (the 3.0.x line is a major bump). Explicit here so it flows
-         to every project referencing Kalitka — those build with TreatWarningsAsErrors, where NU1903
-         would otherwise fail the build. -->
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
