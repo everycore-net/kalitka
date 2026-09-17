@@ -30,7 +30,7 @@
     <!-- Primary-credential verification for the RADIUS channel: an LDAP bind to the DC. First-party
          Microsoft package; only exercised when RADIUS + LdapUrl are configured (needs libldap on
          Linux at runtime). -->
-    <PackageReference Include="System.DirectoryServices.Protocols" Version="9.0.0" />
+    <PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.12" />
     <PackageReference Include="MaxMind.GeoIP2" Version="6.1.0" />
     <!-- No explicit SQLitePCLRaw pin on purpose: MDS 10.0.12 already resolves the native
          lib.e_sqlite3 to 2.1.12 transitively, which is OUT of GHSA-2m69-gcr7-jv3q (CVE-2025-6965,
